@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Play, UserPlus, ListChecks, ArrowLeft, Check, X, Spinner, Minus, List } from '@phosphor-icons/react';
+import { Play, UserPlus, ArrowLeft, X, List } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -109,29 +109,32 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     }
   };
 
-  const getStatusIcon = (status: StageStatus) => {
+  const getStatusIndicator = (status: StageStatus) => {
     switch (status) {
       case 'done':
-        return <Check size={16} weight="bold" className="text-success-foreground" />;
+        return (
+          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
+            <div className="h-2 w-2 rounded-full bg-success" />
+          </div>
+        );
       case 'failed':
-        return <X size={16} weight="bold" className="text-destructive-foreground" />;
+        return (
+          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive/10">
+            <X size={12} weight="bold" className="text-destructive" />
+          </div>
+        );
       case 'running':
-        return <Spinner size={16} className="text-warning-foreground animate-spin" />;
+        return (
+          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/10">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+          </div>
+        );
       default:
-        return <Minus size={16} className="text-muted-foreground" />;
-    }
-  };
-
-  const getStatusColor = (status: StageStatus) => {
-    switch (status) {
-      case 'done':
-        return 'bg-success text-success-foreground';
-      case 'failed':
-        return 'bg-destructive text-destructive-foreground';
-      case 'running':
-        return 'bg-warning text-warning-foreground';
-      default:
-        return 'bg-muted text-muted-foreground';
+        return (
+          <div className="flex h-6 w-6 items-center justify-center">
+            <div className="h-1.5 w-1.5 rounded-full bg-border" />
+          </div>
+        );
     }
   };
 
@@ -304,13 +307,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                           return (
                             <td key={stageId} className="px-3 py-3">
                               <div className="flex justify-center">
-                                <div
-                                  className={`flex h-8 w-8 items-center justify-center rounded-md ${getStatusColor(
-                                    status
-                                  )}`}
-                                >
-                                  {getStatusIcon(status)}
-                                </div>
+                                {getStatusIndicator(status)}
                               </div>
                             </td>
                           );

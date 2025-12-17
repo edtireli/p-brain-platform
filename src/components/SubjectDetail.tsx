@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, CheckCircle, XCircle, Clock } from '@phosphor-icons/react';
+import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, XCircle } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -159,20 +159,28 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                   {Object.entries(subject.stageStatuses).map(([stageId, status]) => (
                     <div
                       key={stageId}
-                      className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2.5 transition-colors hover:bg-muted/60"
+                      className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3 transition-colors hover:bg-muted/30"
                     >
-                      <span className="text-sm">
+                      <span className="text-sm font-normal">
                         {STAGE_NAMES[stageId as keyof typeof STAGE_NAMES]}
                       </span>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-2">
                         {status === 'done' ? (
-                          <CheckCircle size={16} weight="fill" className="text-success" />
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
+                            <div className="h-2 w-2 rounded-full bg-success" />
+                          </div>
                         ) : status === 'failed' ? (
-                          <XCircle size={16} weight="fill" className="text-destructive" />
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive/10">
+                            <XCircle size={12} weight="bold" className="text-destructive" />
+                          </div>
                         ) : status === 'running' ? (
-                          <Clock size={16} className="text-accent" />
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/10">
+                            <div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+                          </div>
                         ) : (
-                          <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />
+                          <div className="flex h-6 w-6 items-center justify-center">
+                            <div className="h-1.5 w-1.5 rounded-full bg-border" />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -186,54 +194,57 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                 <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground mb-4">
                   Data Availability
                 </h2>
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="rounded-md bg-muted/40 px-4 py-3">
-                    <div className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">T1 / IR</div>
-                    <div className="flex items-center gap-2">
-                      {subject.hasT1 ? (
-                        <>
-                          <CheckCircle size={18} weight="fill" className="text-success" />
-                          <span className="text-sm font-medium">Available</span>
-                        </>
-                      ) : (
-                        <>
-                          <XCircle size={18} weight="fill" className="text-muted-foreground" />
-                          <span className="text-sm font-medium text-muted-foreground">Missing</span>
-                        </>
-                      )}
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                    <div>
+                      <div className="mb-0.5 text-xs uppercase tracking-wide text-muted-foreground">T1 / IR</div>
+                      <div className="text-sm font-normal">
+                        {subject.hasT1 ? 'Available' : 'Missing'}
+                      </div>
                     </div>
+                    {subject.hasT1 ? (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
+                        <div className="h-2 w-2 rounded-full bg-success" />
+                      </div>
+                    ) : (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                      </div>
+                    )}
                   </div>
-                  <div className="rounded-md bg-muted/40 px-4 py-3">
-                    <div className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">DCE Series</div>
-                    <div className="flex items-center gap-2">
-                      {subject.hasDCE ? (
-                        <>
-                          <CheckCircle size={18} weight="fill" className="text-success" />
-                          <span className="text-sm font-medium">Available</span>
-                        </>
-                      ) : (
-                        <>
-                          <XCircle size={18} weight="fill" className="text-muted-foreground" />
-                          <span className="text-sm font-medium text-muted-foreground">Missing</span>
-                        </>
-                      )}
+                  <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                    <div>
+                      <div className="mb-0.5 text-xs uppercase tracking-wide text-muted-foreground">DCE Series</div>
+                      <div className="text-sm font-normal">
+                        {subject.hasDCE ? 'Available' : 'Missing'}
+                      </div>
                     </div>
+                    {subject.hasDCE ? (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
+                        <div className="h-2 w-2 rounded-full bg-success" />
+                      </div>
+                    ) : (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                      </div>
+                    )}
                   </div>
-                  <div className="rounded-md bg-muted/40 px-4 py-3">
-                    <div className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">Diffusion</div>
-                    <div className="flex items-center gap-2">
-                      {subject.hasDiffusion ? (
-                        <>
-                          <CheckCircle size={18} weight="fill" className="text-success" />
-                          <span className="text-sm font-medium">Available</span>
-                        </>
-                      ) : (
-                        <>
-                          <XCircle size={18} weight="fill" className="text-muted-foreground" />
-                          <span className="text-sm font-medium text-muted-foreground">Missing</span>
-                        </>
-                      )}
+                  <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                    <div>
+                      <div className="mb-0.5 text-xs uppercase tracking-wide text-muted-foreground">Diffusion</div>
+                      <div className="text-sm font-normal">
+                        {subject.hasDiffusion ? 'Available' : 'Missing'}
+                      </div>
                     </div>
+                    {subject.hasDiffusion ? (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
+                        <div className="h-2 w-2 rounded-full bg-success" />
+                      </div>
+                    ) : (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
