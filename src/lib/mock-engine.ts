@@ -14,7 +14,7 @@ import type {
   DeconvolutionData,
   MetricsTable,
 } from '@/types';
-import { DEFAULT_CONFIG, STAGE_DEPENDENCIES } from '@/types';
+import { DEFAULT_CONFIG, STAGE_DEPENDENCIES, STAGE_NAMES } from '@/types';
 
 class MockEngineAPI {
   private db = {
@@ -26,6 +26,7 @@ class MockEngineAPI {
 
   private jobListeners: Set<(job: Job) => void> = new Set();
   private statusListeners: Set<(update: { subjectId: string; stageId: StageId; status: StageStatus }) => void> = new Set();
+  private logListeners: Map<string, Set<(log: string) => void>> = new Map();
 
   constructor() {
     this.loadFromStorage();
@@ -149,12 +150,35 @@ class MockEngineAPI {
     return () => this.statusListeners.delete(listener);
   }
 
+  onJobLogs(jobId: string, listener: (log: string) => void) {
+    if (!this.logListeners.has(jobId)) {
+      this.logListeners.set(jobId, new Set());
+    }
+    this.logListeners.get(jobId)!.add(listener);
+    return () => {
+      const listeners = this.logListeners.get(jobId);
+      if (listeners) {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          this.logListeners.delete(jobId);
+        }
+      }
+    };
+  }
+
   private notifyJobUpdate(job: Job) {
     this.jobListeners.forEach(listener => listener(job));
   }
 
   private notifyStatusUpdate(subjectId: string, stageId: StageId, status: StageStatus) {
     this.statusListeners.forEach(listener => listener({ subjectId, stageId, status }));
+  }
+
+  private notifyJobLog(jobId: string, log: string) {
+    const listeners = this.logListeners.get(jobId);
+    if (listeners) {
+      listeners.forEach(listener => listener(log));
+    }
   }
 
   async getProjects(): Promise<Project[]> {
@@ -268,6 +292,7 @@ class MockEngineAPI {
       job.status = 'failed';
       job.error = 'Subject not found';
       this.notifyJobUpdate(job);
+      this.notifyJobLog(job.id, `[ERROR] Subject not found: ${job.subjectId}`);
       this.saveToStorage();
       return;
     }
@@ -278,6 +303,7 @@ class MockEngineAPI {
 
     job.status = 'running';
     this.notifyJobUpdate(job);
+    this.notifyJobLog(job.id, `[INFO] Starting ${STAGE_NAMES[job.stageId]} for subject ${subject.name}`);
 
     const steps = this.getStageSteps(job.stageId);
     const stepDuration = 2000;
@@ -286,6 +312,7 @@ class MockEngineAPI {
       job.progress = ((i + 1) / steps.length) * 100;
       job.currentStep = steps[i];
       this.notifyJobUpdate(job);
+      this.notifyJobLog(job.id, `[PROGRESS] ${Math.round(job.progress)}% - ${steps[i]}`);
 
       await new Promise(resolve => setTimeout(resolve, stepDuration));
 
@@ -296,6 +323,7 @@ class MockEngineAPI {
         subject.stageStatuses[job.stageId] = 'failed';
         this.notifyJobUpdate(job);
         this.notifyStatusUpdate(job.subjectId, job.stageId, 'failed');
+        this.notifyJobLog(job.id, `[ERROR] ${job.error}`);
         this.saveToStorage();
         return;
       }
@@ -309,6 +337,7 @@ class MockEngineAPI {
 
     this.notifyJobUpdate(job);
     this.notifyStatusUpdate(job.subjectId, job.stageId, 'done');
+    this.notifyJobLog(job.id, `[SUCCESS] ${STAGE_NAMES[job.stageId]} completed successfully`);
     this.saveToStorage();
   }
 

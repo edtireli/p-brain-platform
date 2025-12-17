@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Play, UserPlus, ListChecks, ArrowLeft, Check, X, Spinner, Minus } from '@phosphor-icons/react';
+import { Play, UserPlus, ListChecks, ArrowLeft, Check, X, Spinner, Minus, List } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -10,6 +10,7 @@ import { mockEngine } from '@/lib/mock-engine';
 import type { Project, Subject, StageId, StageStatus } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
+import { JobMonitorPanel } from './JobMonitorPanel';
 
 interface ProjectDashboardProps {
   projectId: string;
@@ -22,6 +23,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isJobMonitorOpen, setIsJobMonitorOpen] = useState(false);
+  const [activeJobsCount, setActiveJobsCount] = useState(0);
 
   useEffect(() => {
     loadProject();
@@ -37,8 +40,15 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       );
     });
 
+    const interval = setInterval(async () => {
+      const jobs = await mockEngine.getJobs({ projectId });
+      const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
+      setActiveJobsCount(active);
+    }, 2000);
+
     return () => {
       unsubscribe();
+      clearInterval(interval);
     };
   }, [projectId]);
 
@@ -158,6 +168,20 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
             </div>
 
             <div className="flex gap-3">
+              <Button 
+                variant="outline" 
+                onClick={() => setIsJobMonitorOpen(true)}
+                className="gap-2 relative"
+              >
+                <List size={20} weight="bold" />
+                Jobs
+                {activeJobsCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+                    {activeJobsCount}
+                  </span>
+                )}
+              </Button>
+
               <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
                 <DialogTrigger asChild>
                   <Button variant="secondary" className="gap-2">
@@ -301,6 +325,12 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
           </Card>
         )}
       </div>
+
+      <JobMonitorPanel
+        projectId={projectId}
+        isOpen={isJobMonitorOpen}
+        onClose={() => setIsJobMonitorOpen(false)}
+      />
     </div>
   );
 }

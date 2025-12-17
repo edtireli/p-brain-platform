@@ -50,11 +50,11 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 - **Success criteria**: Patlak plot shows x-y scatter with fit line; Tofts curves match measured data; Residue and h(t) curves display correctly; Metrics tables show GM/WM/parcel values; CTH computed accurately
 
 ### 6. Real-time Job Monitoring
-- **Functionality**: Background job execution with progress tracking, log streaming, cancel/retry controls
-- **Purpose**: Provide transparency into long-running computational tasks
-- **Trigger**: Any pipeline stage initiated
-- **Progression**: Job created → Queued → Running → Progress updates via WebSocket → Log stream display → Completion/failure → Artifact indexing
-- **Success criteria**: Progress percentage updates in real-time; logs stream to UI; cancel immediately stops job; retry restarts from clean state; multiple jobs queue properly
+- **Functionality**: Background job execution with progress tracking, log streaming, cancel/retry controls, WebSocket-based real-time updates
+- **Purpose**: Provide transparency into long-running computational tasks with live feedback
+- **Trigger**: Any pipeline stage initiated; Jobs button clicked in project dashboard
+- **Progression**: Job created → Queued → Running → Progress updates via event listeners → Log stream display → Completion/failure → Artifact indexing; User opens job monitor panel → Sees live job list → Filters by status → Expands job details → Views streaming logs → Takes action (cancel/retry)
+- **Success criteria**: Progress percentage updates in real-time; logs stream to UI with color-coded severity; cancel immediately stops job; retry restarts from clean state; multiple jobs queue properly; active job count badge updates on dashboard; connection status indicator shows system health; job cards update without page refresh
 
 ### 7. Input Function Management (AIF/VIF)
 - **Functionality**: Manual ROI drawing on concentration maps to extract arterial/venous curves
