@@ -71,10 +71,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       <div className="mx-auto max-w-7xl">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-              p-brain Local Studio
+            <h1 className="text-3xl font-medium tracking-tight text-foreground">
+              p-Brain Local Studio
             </h1>
-            <p className="mt-2 text-muted-foreground">
+            <p className="mt-1 text-sm text-muted-foreground">
               Local-first neuroimaging analysis platform
             </p>
           </div>
@@ -121,7 +121,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
                 <div className="flex items-center justify-between rounded-lg border border-border bg-card p-4">
                   <div className="space-y-0.5">
-                    <Label htmlFor="copyData" className="text-base">
+                    <Label htmlFor="copyData" className="text-base font-normal">
                       Copy data into project
                     </Label>
                     <p className="text-sm text-muted-foreground">
@@ -167,7 +167,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16">
               <Folder size={64} className="mb-4 text-muted-foreground" />
-              <h3 className="mb-2 text-lg font-medium">No projects yet</h3>
+              <h3 className="mb-2 text-base font-medium">No projects yet</h3>
               <p className="mb-6 text-center text-sm text-muted-foreground">
                 Create your first neuroimaging analysis project to get started
               </p>
@@ -182,12 +182,12 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             {projects.map(project => (
               <Card
                 key={project.id}
-                className="cursor-pointer transition-all hover:shadow-lg hover:border-accent"
+                className="cursor-pointer border-0 shadow-sm transition-all hover:shadow-md"
                 onClick={() => onSelectProject(project.id)}
               >
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Folder size={24} weight="fill" className="text-primary" />
+                  <CardTitle className="flex items-center gap-2 text-base font-medium">
+                    <Folder size={20} weight="fill" className="text-primary" />
                     {project.name}
                   </CardTitle>
                   <CardDescription className="mono text-xs">

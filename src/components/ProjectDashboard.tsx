@@ -154,16 +154,15 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   return (
     <div className="min-h-screen bg-background">
       <div className="border-b border-border bg-card">
-        <div className="mx-auto max-w-full px-6 py-4">
+        <div className="mx-auto max-w-full px-6 py-5">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Button variant="secondary" size="sm" onClick={onBack} className="gap-2">
-                <ArrowLeft size={16} />
-                Back
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">
+                <ArrowLeft size={18} />
               </Button>
               <div>
-                <h1 className="text-2xl font-semibold text-foreground">{project.name}</h1>
-                <p className="mono text-xs text-muted-foreground">{project.storagePath}</p>
+                <h1 className="text-2xl font-medium tracking-tight">{project.name}</h1>
+                <p className="mono text-xs text-muted-foreground mt-0.5">{project.storagePath}</p>
               </div>
             </div>
 
@@ -176,7 +175,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 <List size={20} weight="bold" />
                 Jobs
                 {activeJobsCount > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+                  <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-xs font-medium text-accent-foreground">
                     {activeJobsCount}
                   </span>
                 )}
@@ -241,7 +240,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16">
               <UserPlus size={64} className="mb-4 text-muted-foreground" />
-              <h3 className="mb-2 text-lg font-medium">No subjects yet</h3>
+              <h3 className="mb-2 text-base font-medium">No subjects yet</h3>
               <p className="mb-6 text-center text-sm text-muted-foreground">
                 Add subjects to begin neuroimaging analysis
               </p>
@@ -252,19 +251,19 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
             </CardContent>
           </Card>
         ) : (
-          <Card>
+          <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-border bg-muted/50">
-                      <th className="sticky left-0 z-10 bg-muted/50 px-4 py-3 text-left text-sm font-semibold">
+                      <th className="sticky left-0 z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                         Subject
                       </th>
                       {stages.map(stageId => (
                         <th
                           key={stageId}
-                          className="px-3 py-3 text-center text-xs font-semibold uppercase tracking-wider"
+                          className="px-3 py-3 text-center text-xs font-medium uppercase tracking-wider"
                         >
                           <div className="whitespace-nowrap">{STAGE_NAMES[stageId]}</div>
                         </th>
@@ -278,22 +277,22 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                         className="cursor-pointer border-b border-border transition-colors hover:bg-muted/50"
                         onClick={() => onSelectSubject(subject.id)}
                       >
-                        <td className="sticky left-0 z-10 bg-card px-4 py-3 font-medium hover:bg-muted/50">
+                        <td className="sticky left-0 z-10 bg-card px-4 py-3 font-normal hover:bg-muted/50">
                           <div className="flex flex-col gap-1">
-                            <span>{subject.name}</span>
+                            <span className="text-sm">{subject.name}</span>
                             <div className="flex gap-2">
                               {subject.hasT1 && (
-                                <Badge variant="secondary" className="text-xs">
+                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
                                   T1
                                 </Badge>
                               )}
                               {subject.hasDCE && (
-                                <Badge variant="secondary" className="text-xs">
+                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
                                   DCE
                                 </Badge>
                               )}
                               {subject.hasDiffusion && (
-                                <Badge variant="secondary" className="text-xs">
+                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
                                   DTI
                                 </Badge>
                               )}

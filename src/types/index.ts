@@ -79,6 +79,11 @@ export interface Job {
   endTime?: string;
   error?: string;
   logPath?: string;
+  logs?: Array<{
+    timestamp: Date;
+    level: 'info' | 'warning' | 'error';
+    message: string;
+  }>;
 }
 
 export interface Artifact {

@@ -3,13 +3,15 @@ import { Toaster } from '@/components/ui/sonner';
 import { ProjectsPage } from './components/ProjectsPage';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { SubjectDetail } from './components/SubjectDetail';
+import { JobsPage } from './components/JobsPage';
 import { Info, X } from '@phosphor-icons/react';
 import { Card } from './components/ui/card';
 
 type View = 
   | { type: 'projects' }
   | { type: 'project'; projectId: string }
-  | { type: 'subject'; subjectId: string };
+  | { type: 'subject'; subjectId: string }
+  | { type: 'jobs' };
 
 function App() {
   const [view, setView] = useState<View>({ type: 'projects' });
@@ -35,6 +37,8 @@ function App() {
       } else {
         setView({ type: 'projects' });
       }
+    } else if (view.type === 'jobs') {
+      setView({ type: 'projects' });
     }
   };
 
@@ -46,9 +50,9 @@ function App() {
             <div className="flex items-start gap-3">
               <Info size={24} weight="fill" className="flex-shrink-0 text-accent" />
               <div className="flex-1">
-                <h3 className="mb-1 font-semibold">Demo Mode</h3>
-                <p className="text-sm text-muted-foreground">
-                  This is a UI prototype demonstrating p-brain Local Studio's interface. In production, all computation
+                <h3 className="mb-1 font-medium text-sm">Demo Mode</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  This is a UI prototype demonstrating p-Brain Local Studio's interface. In production, all computation
                   would run locally via a Python engine with no external network calls.
                 </p>
               </div>
@@ -56,7 +60,7 @@ function App() {
                 onClick={() => setShowInfo(false)}
                 className="flex-shrink-0 text-muted-foreground hover:text-foreground"
               >
-                <X size={20} />
+                <X size={18} />
               </button>
             </div>
           </Card>
@@ -80,6 +84,10 @@ function App() {
             subjectId={view.subjectId}
             onBack={handleBackToDashboard}
           />
+        )}
+
+        {view.type === 'jobs' && (
+          <JobsPage onBack={handleBackToDashboard} />
         )}
       </div>
       <Toaster />

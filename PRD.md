@@ -123,17 +123,17 @@ A scientific color scheme with clinical authority and visual clarity for complex
 
 Typefaces should balance technical precision with contemporary readability, suitable for dense data displays and extended reading of scientific content.
 
-- **Primary**: **IBM Plex Sans** - Technical clarity with warmth; excellent for UI labels, buttons, and data tables
+- **Primary**: **Futura PT** - Clean geometric sans-serif with modern sophistication; excellent for headings, UI labels, buttons, and data tables
 - **Secondary**: **JetBrains Mono** - For numerical data, parameters, file paths, and log displays where monospace aids scanning
 
 **Typographic Hierarchy**:
-- H1 (Page Title): IBM Plex Sans SemiBold / 32px / tight (-0.02em) / line-height 1.2
-- H2 (Section Header): IBM Plex Sans Medium / 24px / tight (-0.01em) / line-height 1.3
-- H3 (Subsection): IBM Plex Sans Medium / 18px / normal / line-height 1.4
-- Body (Default): IBM Plex Sans Regular / 15px / normal / line-height 1.6
-- Caption (Metadata): IBM Plex Sans Regular / 13px / normal / line-height 1.5 / color muted
-- Code/Data: JetBrains Mono Regular / 14px / normal / line-height 1.5
-- Table Headers: IBM Plex Sans SemiBold / 14px / wide (0.02em) / uppercase
+- H1 (Page Title): Futura PT Medium / 28px / tight (-0.02em) / line-height 1.2
+- H2 (Section Header): Futura PT Medium / 20px / tight (-0.02em) / line-height 1.3
+- H3 (Subsection): Futura PT Medium / 16px / tight (-0.01em) / line-height 1.4
+- Body (Default): Futura PT Regular / 14px / tight (-0.01em) / line-height 1.6
+- Caption (Metadata): Futura PT Regular / 12px / normal / line-height 1.5 / color muted
+- Code/Data: JetBrains Mono Regular / 13px / normal / line-height 1.5
+- Table Headers: Futura PT Medium / 12px / wide (0.05em) / uppercase
 
 ## Animations
 
