@@ -248,6 +248,10 @@ class MockEngineAPI {
     ];
   }
 
+  async getMontageImages(_subjectId: string): Promise<Array<{ id: string; name: string; path: string }>> {
+    return [];
+  }
+
   async getVolumeInfo(path: string, _subjectId?: string): Promise<VolumeInfo> {
     return {
       path,

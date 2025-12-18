@@ -17,6 +17,10 @@ function backendUrl(): string {
   return (import.meta as any).env?.VITE_BACKEND_URL || 'http://127.0.0.1:8787';
 }
 
+export function getBackendBaseUrl(): string {
+  return backendUrl();
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${backendUrl()}${path}`, {
     ...init,
@@ -216,6 +220,13 @@ export class BackendEngineAPI {
   async getMapVolumes(subjectId: string): Promise<MapVolume[]> {
     const res = await api<{ maps: MapVolume[] }>(`/subjects/${encodeURIComponent(subjectId)}/maps`);
     return res.maps;
+  }
+
+  async getMontageImages(subjectId: string): Promise<Array<{ id: string; name: string; path: string }>> {
+    const res = await api<{ montages: Array<{ id: string; name: string; path: string }> }>(
+      `/subjects/${encodeURIComponent(subjectId)}/montages`
+    );
+    return res.montages;
   }
 
   async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {

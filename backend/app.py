@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 
@@ -136,6 +137,12 @@ class MapVolumeResponse(BaseModel):
     unit: str
     path: str
     group: str
+
+
+class MontageImageResponse(BaseModel):
+    id: str
+    name: str
+    path: str
 
 
 class DB:
@@ -267,9 +274,17 @@ def _nifti_dir_for_subject(project: Project, subject: Subject) -> Path:
     nifti_subfolder = str(fs.get("niftiSubfolder", "nifti"))
     root = Path(subject.sourcePath).expanduser().resolve()
     if use_nested:
+        # Try configured folder name first.
         candidate = root / nifti_subfolder
         if candidate.exists():
             return candidate
+
+        # Heuristic: p-brain datasets often use capitalised folder names.
+        for alt in ("NIfTI", "nifti", "NIFTI"):
+            candidate = root / alt
+            if candidate.exists():
+                return candidate
+
     return root
 
 
@@ -535,6 +550,28 @@ def _analysis_map_volumes(subject: Subject) -> List[Dict[str, Any]]:
         maps.append({"id": "fa", "name": "FA Map", "unit": "fraction", "path": str(legacy_fa), "group": "diffusion"})
 
     return maps
+
+
+def _montage_dir_for_subject(subject: Subject) -> Path:
+    return Path(subject.sourcePath).expanduser().resolve() / "Images" / "AI" / "Montages"
+
+
+def _subject_montage_images(subject: Subject) -> List[Dict[str, Any]]:
+    montage_dir = _montage_dir_for_subject(subject)
+    if not montage_dir.exists():
+        return []
+    images: List[Dict[str, Any]] = []
+    for p in sorted(montage_dir.glob("*.png")):
+        if not p.is_file():
+            continue
+        images.append(
+            {
+                "id": p.stem,
+                "name": p.name,
+                "path": str(p),
+            }
+        )
+    return images
 def _load_aif_curve(subject: Subject) -> "np.ndarray":
     _require_numpy()
     assert np is not None
@@ -1183,6 +1220,23 @@ def get_subject_maps(subject_id: str) -> Dict[str, Any]:
     subject = _find_subject(subject_id)
     maps = _analysis_map_volumes(subject)
     return {"maps": maps}
+
+
+@app.get("/subjects/{subject_id}/montages")
+def get_subject_montages(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    montages = _subject_montage_images(subject)
+    return {"montages": montages}
+
+
+@app.get("/subjects/{subject_id}/montages/image")
+def get_subject_montage_image(subject_id: str, path: str) -> FileResponse:
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+    p = _safe_resolve_path(project, subject, path)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Montage image not found")
+    return FileResponse(str(p), media_type="image/png")
 
 
 @app.get("/subjects/{subject_id}/patlak")
