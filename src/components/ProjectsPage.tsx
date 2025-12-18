@@ -102,10 +102,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   };
 
-  const openCreateDialog = (prefillName?: string) => {
-    setDraftName(prefillName ?? '');
-    const nextName = prefillName ?? draftName;
-    setDraftStoragePath(defaultStoragePath(nextName || 'project'));
+  const openCreateDialog = (prefill?: { name?: string; storagePath?: string }) => {
+    setDraftName(prefill?.name ?? '');
+    setDraftStoragePath(prefill?.storagePath ?? '');
     setIsCreateDialogOpen(true);
   };
 
@@ -129,8 +128,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     const rootEntry = entries[0];
     const fullPath = (rootEntry as any).fullPath || '';
     const inferredPath = fullPath && fullPath.startsWith('/') ? fullPath : `~/${rootEntry.name}`;
-    setDraftStoragePath(inferredPath);
-    openCreateDialog(rootEntry.name);
+    openCreateDialog({ name: rootEntry.name, storagePath: inferredPath });
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -161,7 +159,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   }, [processDroppedItems]);
 
-  const computedStoragePath = draftStoragePath || defaultStoragePath(draftName || 'my-study');
+  const computedStoragePath = defaultStoragePath(draftName || 'my-study');
 
   const handleSaveBackend = () => {
     setBackendError('');
@@ -223,20 +221,16 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   <Input
                     id="storagePath"
                     name="storagePath"
-                    placeholder={computedStoragePath}
+                    placeholder="Drop a folder to auto-fill (optional)"
                     value={draftStoragePath}
                     onChange={(e) => setDraftStoragePath(e.target.value)}
-                    required
                   />
-                  <p className="text-xs text-muted-foreground">
-                    For your dataset at <span className="mono">/Volumes/T5_EVO_EDT/data</span>, set this to the parent folder that contains subject folders.
-                  </p>
                 </div>
 
                 <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">Data handling</p>
                   <p>The backend copies subjects into the project folder before processing. Ensure the destination has space and is backed up.</p>
-                  <p className="mono text-xs">Project storage location<br />{draftStoragePath || computedStoragePath}</p>
+                  <p className="mono text-xs">Default project location: {computedStoragePath}</p>
                 </div>
 
                 <div className="flex justify-end gap-3">

@@ -38,5 +38,6 @@ __pycache__/
 # Local backend state
 backend/db.json
 backend/.pbrain-web/
+backend/certs/
 
 .spark-workbench-id
