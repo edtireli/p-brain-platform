@@ -209,10 +209,12 @@ export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
 
 export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {
   subjectFolderPattern: '{subject_id}',
-  t1Pattern: '*T1*.nii.gz',
-  dcePattern: '*DCE*.nii.gz',
-  diffusionPattern: '*DTI*.nii.gz',
-  niftiSubfolder: 'nifti',
+  // Defaults aligned with p-brain `utils/parameters.py` conventions.
+  // Patterns are comma-separated fallbacks (first match wins).
+  t1Pattern: 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*',
+  dcePattern: 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*',
+  diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
+  niftiSubfolder: 'NIfTI',
   useNestedStructure: true,
 };
 

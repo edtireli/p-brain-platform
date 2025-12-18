@@ -212,6 +212,20 @@ interface FolderStructureConfigProps {
 
 const PRESET_STRUCTURES = [
   {
+    id: 'pbrain-default',
+    name: 'p-brain (Default)',
+    description: 'Matches p-brain NIfTI folder + typical filename conventions',
+    config: {
+      subjectFolderPattern: '{subject_id}',
+      // Comma-separated fallbacks (first match wins)
+      t1Pattern: 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*',
+      dcePattern: 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*',
+      diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
+      niftiSubfolder: 'NIfTI',
+      useNestedStructure: true,
+    },
+  },
+  {
     id: 'bids',
     name: 'BIDS Standard',
     description: 'Brain Imaging Data Structure format',

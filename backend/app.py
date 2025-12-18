@@ -310,11 +310,50 @@ def _safe_resolve_path(project: Project, subject: Optional[Subject], path_str: s
 
 
 def _glob_first(base: Path, pattern: str) -> Optional[Path]:
-    # fnmatch against all files recursively; pattern can include * wildcards.
+    # fnmatch against all files recursively.
+    # Pattern can target a filename ("*.nii.gz") or a relative path ("anat/*T1w*.nii.gz").
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return None
     for f in base.rglob("*"):
-        if f.is_file() and fnmatch.fnmatch(f.name, pattern):
+        if not f.is_file():
+            continue
+        try:
+            rel = f.relative_to(base).as_posix()
+        except Exception:
+            rel = f.name
+        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(f.name, pattern):
             return f
     return None
+
+
+def _split_patterns(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        parts = [str(p).strip() for p in raw]
+        return [p for p in parts if p]
+    s = str(raw)
+    # Allow comma-separated patterns for fallbacks.
+    parts = [p.strip() for p in s.split(",")]
+    return [p for p in parts if p]
+
+
+def _nifti_dir_for_path(project: Project, root: Path) -> Path:
+    cfg = project.config or {}
+    fs = cfg.get("folderStructure") if isinstance(cfg.get("folderStructure"), dict) else {}
+    use_nested = bool(fs.get("useNestedStructure", True))
+    nifti_subfolder = str(fs.get("niftiSubfolder", "nifti"))
+
+    if use_nested:
+        candidate = root / nifti_subfolder if nifti_subfolder else root
+        if candidate.exists():
+            return candidate
+        for alt in ("NIfTI", "nifti", "NIFTI"):
+            candidate = root / alt
+            if candidate.exists():
+                return candidate
+    return root
 
 
 def _resolve_default_volume_path(project: Project, subject: Subject, kind: str) -> Path:
@@ -323,15 +362,19 @@ def _resolve_default_volume_path(project: Project, subject: Subject, kind: str) 
     nifti_dir = _nifti_dir_for_subject(project, subject)
 
     if kind == "dce":
-        pattern = str(fs.get("dcePattern", "*DCE*.nii.gz"))
+        patterns = _split_patterns(fs.get("dcePattern", "*DCE*.nii.gz"))
     elif kind == "t1":
-        pattern = str(fs.get("t1Pattern", "*T1*.nii.gz"))
+        patterns = _split_patterns(fs.get("t1Pattern", "*T1*.nii.gz"))
     elif kind == "diffusion":
-        pattern = str(fs.get("diffusionPattern", "*DTI*.nii.gz"))
+        patterns = _split_patterns(fs.get("diffusionPattern", "*DTI*.nii.gz"))
     else:
         raise HTTPException(status_code=400, detail="Unknown kind")
 
-    f = _glob_first(nifti_dir, pattern)
+    f: Optional[Path] = None
+    for pattern in patterns:
+        f = _glob_first(nifti_dir, pattern)
+        if f:
+            break
     if not f:
         # fallback: first nifti
         for ext in ("*.nii.gz", "*.nii"):
@@ -1337,6 +1380,11 @@ def get_subject_deconvolution(subject_id: str, region: str = "gm") -> Dict[str, 
 @app.post("/projects/{project_id}/subjects/import")
 def import_subjects(project_id: str, req: ImportSubjectsRequest) -> List[Dict[str, Any]]:
     project = _find_project(project_id)
+    cfg = project.config or {}
+    fs = cfg.get("folderStructure") if isinstance(cfg.get("folderStructure"), dict) else {}
+    t1_patterns = _split_patterns(fs.get("t1Pattern", "*T1*.nii.gz"))
+    dce_patterns = _split_patterns(fs.get("dcePattern", "*DCE*.nii.gz"))
+    diff_patterns = _split_patterns(fs.get("diffusionPattern", "*DTI*.nii.gz"))
 
     imported: List[Subject] = []
     for item in req.subjects:
@@ -1352,11 +1400,23 @@ def import_subjects(project_id: str, req: ImportSubjectsRequest) -> List[Dict[st
 
         sp = source_path.expanduser().resolve()
 
+        nifti_root = _nifti_dir_for_path(project, sp)
+
         # Basic data presence checks (very conservative; refined later via patterns).
-        has_nifti = any(sp.rglob("*.nii")) or any(sp.rglob("*.nii.gz"))
-        has_dce = any("dce" in p.name.lower() for p in sp.rglob("*.nii*"))
-        has_t1 = any("t1" in p.name.lower() for p in sp.rglob("*.nii*"))
-        has_diff = any("dwi" in p.name.lower() or "dti" in p.name.lower() for p in sp.rglob("*.nii*"))
+        has_nifti = any(nifti_root.rglob("*.nii")) or any(nifti_root.rglob("*.nii.gz"))
+
+        # Prefer configured patterns (can be comma-separated fallbacks).
+        has_t1 = any(_glob_first(nifti_root, patt) for patt in (t1_patterns or []))
+        has_dce = any(_glob_first(nifti_root, patt) for patt in (dce_patterns or []))
+        has_diff = any(_glob_first(nifti_root, patt) for patt in (diff_patterns or []))
+
+        # Fallback heuristics if patterns were empty or didn't match.
+        if not has_t1:
+            has_t1 = any("t1" in p.name.lower() for p in nifti_root.rglob("*.nii*"))
+        if not has_dce:
+            has_dce = any("dce" in p.name.lower() for p in nifti_root.rglob("*.nii*"))
+        if not has_diff:
+            has_diff = any("dwi" in p.name.lower() or "dti" in p.name.lower() for p in nifti_root.rglob("*.nii*"))
 
         subject = Subject(
             id=f"subj_{int(datetime.utcnow().timestamp()*1000)}_{name}",
