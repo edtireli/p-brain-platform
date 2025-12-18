@@ -11,6 +11,21 @@ import { mockEngine, engineKind, isBackendEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 
+function buildEngineSwitchUrl(nextEngine: 'backend' | 'demo'): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set('engine', nextEngine);
+
+  if (nextEngine === 'backend') {
+    const hasBackend = (url.searchParams.get('backend') || '').trim().length > 0;
+    if (!hasBackend) {
+      const defaultBackend = window.location.protocol === 'https:' ? 'https://127.0.0.1:8787' : 'http://127.0.0.1:8787';
+      url.searchParams.set('backend', defaultBackend);
+    }
+  }
+
+  return url.toString();
+}
+
 function slugify(input: string): string {
   return (input || '')
     .trim()
@@ -178,6 +193,16 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal">
               Engine: {engineKind}
             </Badge>
+
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => window.location.assign(buildEngineSwitchUrl(isBackendEngine ? 'demo' : 'backend'))}
+              className="h-7 px-2 text-xs"
+            >
+              {isBackendEngine ? 'Use demo' : 'Use backend'}
+            </Button>
           </div>
           
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>

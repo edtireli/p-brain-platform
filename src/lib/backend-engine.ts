@@ -14,8 +14,33 @@ import type {
 
 type Unsubscribe = () => void;
 
+function readBackendOverride(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const raw = (params.get('backend') || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw.replace(/\/$/, '');
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function backendUrl(): string {
-  return (import.meta as any).env?.VITE_BACKEND_URL || 'http://127.0.0.1:8787';
+  const override = readBackendOverride();
+  if (override) return override;
+
+  const envUrl = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
+  if (envUrl) return String(envUrl).replace(/\/$/, '');
+
+  // GitHub Pages is served over HTTPS; calling a local HTTP backend will be blocked as mixed content.
+  // Prefer HTTPS by default when the page itself is HTTPS.
+  try {
+    if (window.location.protocol === 'https:') return 'https://127.0.0.1:8787';
+  } catch {
+    // ignore
+  }
+  return 'http://127.0.0.1:8787';
 }
 
 export function getBackendBaseUrl(): string {
