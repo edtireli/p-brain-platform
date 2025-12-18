@@ -57,7 +57,7 @@ class MockEngineAPI {
     if (this.db.projects.length === 0) {
       const demoProject: Project = {
         id: 'demo_proj_001',
-        name: 'DCE-MRI Study 2024',
+        name: '[DEMO] DCE-MRI study',
         storagePath: '/Users/researcher/pbrain-projects/dce-study-2024',
         createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
         updatedAt: new Date().toISOString(),
@@ -774,14 +774,14 @@ const defaultEngine: 'backend' | 'demo' = env.VITE_ENGINE === 'backend' ? 'backe
 const allowDemo = String(env.VITE_ALLOW_DEMO ?? 'true').toLowerCase() !== 'false';
 const override = readEngineOverride();
 
-const effectiveEngine: 'backend' | 'demo' =
+export const engineKind: 'backend' | 'demo' =
   override === 'backend'
     ? 'backend'
     : override === 'demo'
       ? (allowDemo ? 'demo' : 'backend')
       : defaultEngine;
 
-const useBackend = effectiveEngine === 'backend';
+export const isBackendEngine = engineKind === 'backend';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const mockEngine: any = useBackend ? new BackendEngineAPI() : new MockEngineAPI();
+export const mockEngine: any = isBackendEngine ? new BackendEngineAPI() : new MockEngineAPI();

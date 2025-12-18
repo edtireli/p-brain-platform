@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check } from '@phosphor-icons/react';
+import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check, Info } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { mockEngine } from '@/lib/mock-engine';
+import { mockEngine, isBackendEngine } from '@/lib/mock-engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig } from '@/types';
 import { STAGE_NAMES } from '@/types';
@@ -44,6 +44,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [detectedSubjects, setDetectedSubjects] = useState<DetectedSubject[]>([]);
   const [droppedFolderName, setDroppedFolderName] = useState<string>('');
   const dropZoneRef = useRef<HTMLDivElement>(null);
+
+  const [showDemoInfo, setShowDemoInfo] = useState(true);
 
   useEffect(() => {
     loadProject();
@@ -420,6 +422,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     return <div className="flex h-screen items-center justify-center">Loading...</div>;
   }
 
+  const isDemoProject = projectId === 'demo_proj_001';
+
   const stages: StageId[] = [
     'import',
     't1_fit',
@@ -436,6 +440,30 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     <div className="min-h-screen bg-background">
       <div className="border-b border-border bg-card">
         <div className="mx-auto max-w-full px-6 py-5">
+          {!isBackendEngine && isDemoProject && showDemoInfo && (
+            <Card className="mb-4 border-accent bg-card">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <Info size={22} weight="fill" className="flex-shrink-0 text-accent" />
+                  <div className="flex-1">
+                    <h3 className="mb-1 text-sm font-medium">Demo Mode</h3>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      This is a UI prototype demonstrating p-Brain web. In production, all computation would run locally
+                      via a Python engine with no external network calls.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowDemoInfo(false)}
+                    className="flex-shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label="Dismiss demo mode message"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">

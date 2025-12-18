@@ -72,10 +72,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-medium tracking-tight text-foreground">
-              p-Brain Local Studio
+              <span className="italic">p</span>-Brain web
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Local-first neuroimaging analysis platform
+              Advanced neuroimaging analysis platform
             </p>
           </div>
           
