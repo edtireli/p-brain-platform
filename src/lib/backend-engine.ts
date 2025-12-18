@@ -123,6 +123,10 @@ export class BackendEngineAPI {
     return api<Project>('/projects', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  async deleteProject(projectId: string): Promise<void> {
+    await api(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+  }
+
   async updateProjectConfig(projectId: string, configUpdate: any): Promise<Project | undefined> {
     return api<Project>(`/projects/${encodeURIComponent(projectId)}/config`, {
       method: 'PATCH',

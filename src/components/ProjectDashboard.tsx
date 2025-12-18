@@ -440,30 +440,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     <div className="min-h-screen bg-background">
       <div className="border-b border-border bg-card">
         <div className="mx-auto max-w-full px-6 py-5">
-          {!isBackendEngine && isDemoProject && showDemoInfo && (
-            <Card className="mb-4 border-accent bg-card">
-              <CardContent className="p-4">
-                <div className="flex items-start gap-3">
-                  <Info size={22} weight="fill" className="flex-shrink-0 text-accent" />
-                  <div className="flex-1">
-                    <h3 className="mb-1 text-sm font-medium">Demo Mode</h3>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      This is a UI prototype demonstrating p-Brain web. In production, all computation would run locally
-                      via a Python engine with no external network calls.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setShowDemoInfo(false)}
-                    className="flex-shrink-0 text-muted-foreground hover:text-foreground"
-                    aria-label="Dismiss demo mode message"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">
@@ -866,6 +842,30 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
         isOpen={isJobMonitorOpen}
         onClose={() => setIsJobMonitorOpen(false)}
       />
+
+      {!isBackendEngine && isDemoProject && showDemoInfo && (
+        <Card className="fixed bottom-6 right-6 z-50 w-96 border-accent bg-card p-0 shadow-xl">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <Info size={22} weight="fill" className="flex-shrink-0 text-accent" />
+              <div className="flex-1">
+                <h3 className="mb-1 text-sm font-medium">Demo Mode</h3>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  This is a UI prototype demonstrating p-Brain web. In production, all computation would run locally
+                  via a Python engine with no external network calls.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowDemoInfo(false)}
+                className="flex-shrink-0 text-muted-foreground hover:text-foreground"
+                aria-label="Dismiss demo mode message"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

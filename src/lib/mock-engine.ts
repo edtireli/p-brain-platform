@@ -54,14 +54,38 @@ class MockEngineAPI {
   }
 
   private initializeDemoData() {
+    const demoDeleted = localStorage.getItem('pbrain_demo_deleted') === 'true';
+    if (demoDeleted) return;
+
+    const demoProjectId = 'demo_proj_001';
+    const demoProjectName = '[DEMO] DCE-MRI study';
+
+    // Migrate existing demo project name (localStorage may already contain the old name).
+    const existingDemo = this.db.projects.find(p => p.id === demoProjectId);
+    if (existingDemo) {
+      let changed = false;
+      if (existingDemo.name !== demoProjectName) {
+        existingDemo.name = demoProjectName;
+        changed = true;
+      }
+      if (existingDemo.copyDataIntoProject !== true) {
+        existingDemo.copyDataIntoProject = true;
+        changed = true;
+      }
+      if (changed) {
+        existingDemo.updatedAt = new Date().toISOString();
+        this.saveToStorage();
+      }
+    }
+
     if (this.db.projects.length === 0) {
       const demoProject: Project = {
-        id: 'demo_proj_001',
-        name: '[DEMO] DCE-MRI study',
+        id: demoProjectId,
+        name: demoProjectName,
         storagePath: '/Users/researcher/pbrain-projects/dce-study-2024',
         createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
         updatedAt: new Date().toISOString(),
-        copyDataIntoProject: false,
+        copyDataIntoProject: true,
         config: DEFAULT_CONFIG,
       };
 
@@ -188,6 +212,21 @@ class MockEngineAPI {
 
   async getProject(id: string): Promise<Project | undefined> {
     return this.db.projects.find(p => p.id === id);
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    if (projectId === 'demo_proj_001') {
+      localStorage.setItem('pbrain_demo_deleted', 'true');
+    }
+
+    const subjectIds = new Set(this.db.subjects.filter(s => s.projectId === projectId).map(s => s.id));
+
+    this.db.projects = this.db.projects.filter(p => p.id !== projectId);
+    this.db.subjects = this.db.subjects.filter(s => s.projectId !== projectId);
+    this.db.jobs = this.db.jobs.filter(j => j.projectId !== projectId && !subjectIds.has(j.subjectId));
+    this.db.artifacts = this.db.artifacts.filter(a => !subjectIds.has(a.subjectId));
+
+    this.saveToStorage();
   }
 
   async resolveDefaultVolume(_subjectId: string, kind: 'dce' | 't1' | 'diffusion' = 'dce'): Promise<string> {

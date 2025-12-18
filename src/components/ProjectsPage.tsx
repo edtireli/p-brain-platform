@@ -1,14 +1,26 @@
-import { useState, useEffect } from 'react';
-import { FolderPlus, Folder, Calendar, HardDrive } from '@phosphor-icons/react';
+import { useState, useEffect, useCallback } from 'react';
+import { FolderPlus, Folder, Calendar, HardDrive, Trash, UploadSimple } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { mockEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
+
+function slugify(input: string): string {
+  return (input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '')
+    .slice(0, 60) || 'project';
+}
+
+function defaultStoragePath(projectName: string): string {
+  return `~/pbrain-projects/${slugify(projectName)}`;
+}
 
 interface ProjectsPageProps {
   onSelectProject: (projectId: string) => void;
@@ -18,6 +30,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  const [draftName, setDraftName] = useState('');
+  const [isDraggingCreate, setIsDraggingCreate] = useState(false);
+  const dropZoneId = 'project-drop-zone';
 
   useEffect(() => {
     loadProjects();
@@ -38,26 +54,25 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const handleCreateProject = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    
-    const name = formData.get('name') as string;
-    const storagePath = formData.get('storagePath') as string;
-    const copyDataIntoProject = formData.get('copyData') === 'on';
 
-    if (!name || !storagePath) {
-      toast.error('Please fill in all required fields');
+    const name = draftName.trim();
+    if (!name) {
+      toast.error('Please enter a project name');
       return;
     }
+
+    const storagePath = defaultStoragePath(name);
 
     try {
       const project = await mockEngine.createProject({
         name,
         storagePath,
-        copyDataIntoProject,
+        copyDataIntoProject: true,
       });
       
       toast.success('Project created successfully');
       setIsCreateDialogOpen(false);
+      setDraftName('');
       loadProjects();
       onSelectProject(project.id);
     } catch (error) {
@@ -65,6 +80,73 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       console.error(error);
     }
   };
+
+  const handleDeleteDemoProject = async (projectId: string) => {
+    try {
+      await mockEngine.deleteProject(projectId);
+      toast.success('Demo project deleted');
+      loadProjects();
+    } catch (error) {
+      toast.error('Failed to delete project');
+      console.error(error);
+    }
+  };
+
+  const openCreateDialog = (prefillName?: string) => {
+    setDraftName(prefillName ?? '');
+    setIsCreateDialogOpen(true);
+  };
+
+  const processDroppedItems = useCallback((items: DataTransferItemList) => {
+    const entries: FileSystemDirectoryEntry[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const entry = item.webkitGetAsEntry();
+        if (entry?.isDirectory) {
+          entries.push(entry as FileSystemDirectoryEntry);
+        }
+      }
+    }
+
+    if (entries.length === 0) {
+      toast.error('Please drop a folder');
+      return;
+    }
+
+    const rootEntry = entries[0];
+    openCreateDialog(rootEntry.name);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingCreate(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const related = e.relatedTarget as HTMLElement | null;
+    if (!related) {
+      setIsDraggingCreate(false);
+      return;
+    }
+    if (!related.closest(`#${dropZoneId}`)) {
+      setIsDraggingCreate(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingCreate(false);
+    if (e.dataTransfer.items) {
+      processDroppedItems(e.dataTransfer.items);
+    }
+  }, [processDroppedItems]);
+
+  const computedStoragePath = defaultStoragePath(draftName || 'my-study');
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -90,7 +172,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               <DialogHeader>
                 <DialogTitle>Create New Project</DialogTitle>
                 <DialogDescription>
-                  Set up a new neuroimaging analysis project with local storage.
+                  Create a new neuroimaging analysis project.
                 </DialogDescription>
               </DialogHeader>
               
@@ -101,34 +183,21 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                     id="name"
                     name="name"
                     placeholder="My Study 2024"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
                     required
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="storagePath">Storage Path</Label>
-                  <Input
-                    id="storagePath"
-                    name="storagePath"
-                    placeholder="/Users/researcher/pbrain-projects/my-study"
-                    required
-                    className="mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Local directory where project data and artifacts will be stored
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    This web app writes and manipulates data on your machine. You are responsible for maintaining
+                    backups. We are not liable for loss or corruption of data.
                   </p>
-                </div>
-
-                <div className="flex items-center justify-between rounded-lg border border-border bg-card p-4">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="copyData" className="text-base font-normal">
-                      Copy data into project
-                    </Label>
-                    <p className="text-sm text-muted-foreground">
-                      Import files to project storage instead of referencing source paths
-                    </p>
+                  <div className="mt-3">
+                    <p className="text-xs text-muted-foreground">Project storage location</p>
+                    <p className="mono text-xs text-foreground mt-1">{computedStoragePath}</p>
                   </div>
-                  <Switch id="copyData" name="copyData" />
                 </div>
 
                 <div className="flex justify-end gap-3">
@@ -145,6 +214,38 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             </DialogContent>
           </Dialog>
         </div>
+
+        <Card
+          id={dropZoneId}
+          className={`mb-8 border-dashed ${
+            isDraggingCreate ? 'border-accent bg-accent/5' : 'hover:border-muted-foreground/50'
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => openCreateDialog()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') openCreateDialog();
+          }}
+        >
+          <CardContent className="flex items-center justify-between gap-4 py-6">
+            <div className="flex items-center gap-3">
+              <UploadSimple size={24} className={isDraggingCreate ? 'text-accent' : 'text-muted-foreground'} />
+              <div>
+                <p className="text-sm font-medium text-foreground">Drop a study folder to create a project</p>
+                <p className="text-xs text-muted-foreground">
+                  Drag and drop a folder here (or click) to prefill project details.
+                </p>
+              </div>
+            </div>
+            <Button variant="secondary" className="gap-2" onClick={(e) => { e.stopPropagation(); openCreateDialog(); }}>
+              <FolderPlus size={18} weight="bold" />
+              Create
+            </Button>
+          </CardContent>
+        </Card>
 
         {isLoading ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -186,9 +287,25 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                 onClick={() => onSelectProject(project.id)}
               >
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base font-medium">
-                    <Folder size={20} weight="fill" className="text-primary" />
-                    {project.name}
+                  <CardTitle className="flex items-start justify-between gap-3 text-base font-medium">
+                    <span className="flex items-center gap-2">
+                      <Folder size={20} weight="fill" className="text-primary" />
+                      {project.name}
+                    </span>
+
+                    {project.id === 'demo_proj_001' && (
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label="Delete demo project"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteDemoProject(project.id);
+                        }}
+                      >
+                        <Trash size={18} />
+                      </button>
+                    )}
                   </CardTitle>
                   <CardDescription className="mono text-xs">
                     {project.storagePath}

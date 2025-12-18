@@ -977,6 +977,25 @@ def get_project(project_id: str) -> Dict[str, Any]:
     return asdict(p)
 
 
+@app.delete("/projects/{project_id}")
+def delete_project(project_id: str) -> Dict[str, Any]:
+    _find_project(project_id)
+
+    subject_ids = {s.id for s in db.subjects if s.projectId == project_id}
+
+    db.projects = [p for p in db.projects if p.id != project_id]
+    db.subjects = [s for s in db.subjects if s.projectId != project_id]
+    db.jobs = [j for j in db.jobs if j.projectId != project_id and j.subjectId not in subject_ids]
+
+    # best-effort cleanup of in-memory runners
+    for subject_id in subject_ids:
+        db._subject_job_ids.pop(subject_id, None)
+        db._subject_stage_index.pop(subject_id, None)
+
+    db.save()
+    return {"ok": True}
+
+
 @app.post("/projects")
 def create_project(req: CreateProjectRequest) -> Dict[str, Any]:
     project = Project(
