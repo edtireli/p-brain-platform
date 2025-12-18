@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Folder, FolderOpen, FileCode, TreeStructure, Info, FloppyDisk, ArrowCounterClockwise, CaretRight, CaretDown } from '@phosphor-icons/react';
+import { useState, useEffect, useMemo } from 'react';
+import { Folder, FolderOpen, FileCode, TreeStructure, FloppyDisk, ArrowCounterClockwise, CaretRight, CaretDown, Warning, CheckCircle } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -14,6 +14,196 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { FolderStructureConfig as FolderConfig, Project } from '@/types';
 import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
+
+interface PatternValidation {
+  isValid: boolean;
+  warnings: string[];
+  suggestions: string[];
+}
+
+function validateGlobPattern(pattern: string, patternType: 'file' | 'folder'): PatternValidation {
+  const warnings: string[] = [];
+  const suggestions: string[] = [];
+  let isValid = true;
+
+  if (!pattern || pattern.trim() === '') {
+    return { isValid: false, warnings: ['Pattern cannot be empty'], suggestions: ['Enter a valid pattern'] };
+  }
+
+  const trimmed = pattern.trim();
+
+  if (trimmed.includes('**') && !trimmed.includes('/')) {
+    warnings.push('Double asterisk (**) is typically used with paths');
+    suggestions.push('Use single * for simple wildcards, or **/pattern for recursive matching');
+  }
+
+  if (/\*{3,}/.test(trimmed)) {
+    warnings.push('Three or more consecutive asterisks are invalid');
+    suggestions.push('Use * for single-level or ** for recursive matching');
+    isValid = false;
+  }
+
+  const brackets = trimmed.match(/\[|\]/g) || [];
+  const openBrackets = brackets.filter(b => b === '[').length;
+  const closeBrackets = brackets.filter(b => b === ']').length;
+  if (openBrackets !== closeBrackets) {
+    warnings.push('Unmatched brackets in character class');
+    suggestions.push('Ensure each [ has a matching ]');
+    isValid = false;
+  }
+
+  const braces = trimmed.match(/\{|\}/g) || [];
+  const openBraces = braces.filter(b => b === '{').length;
+  const closeBraces = braces.filter(b => b === '}').length;
+  if (openBraces !== closeBraces) {
+    if (!trimmed.includes('{subject_id}')) {
+      warnings.push('Unmatched braces in pattern');
+      suggestions.push('Ensure each { has a matching }');
+      isValid = false;
+    }
+  }
+
+  if (patternType === 'file') {
+    if (!trimmed.includes('.')) {
+      warnings.push('No file extension specified');
+      suggestions.push('Add extension like .nii.gz or .nii');
+    }
+
+    if (trimmed.includes('.nii') && !trimmed.endsWith('.nii') && !trimmed.endsWith('.nii.gz')) {
+      warnings.push('NIfTI extension may be malformed');
+      suggestions.push('Use .nii or .nii.gz as the file extension');
+    }
+
+    if (trimmed.startsWith('/')) {
+      warnings.push('Pattern should not start with /');
+      suggestions.push('Remove leading slash for relative path matching');
+    }
+  }
+
+  if (patternType === 'folder') {
+    if (trimmed.includes('.nii')) {
+      warnings.push('Folder pattern should not contain file extensions');
+      suggestions.push('Remove file extension from folder pattern');
+    }
+  }
+
+  if (/[<>:"|?]/.test(trimmed)) {
+    warnings.push('Pattern contains invalid path characters');
+    suggestions.push('Remove characters: < > : " | ?');
+    isValid = false;
+  }
+
+  if (trimmed.includes('//')) {
+    warnings.push('Double slashes detected in pattern');
+    suggestions.push('Use single slashes between path segments');
+  }
+
+  if (trimmed.endsWith('/') && patternType === 'file') {
+    warnings.push('File pattern should not end with /');
+    suggestions.push('Remove trailing slash');
+  }
+
+  return { isValid, warnings, suggestions };
+}
+
+interface PatternInputProps {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  patternType: 'file' | 'folder';
+  label: string;
+  colorIndicator?: string;
+}
+
+function PatternInput({ id, value, onChange, placeholder, patternType, label, colorIndicator }: PatternInputProps) {
+  const validation = useMemo(() => validateGlobPattern(value, patternType), [value, patternType]);
+  
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id} className="text-xs flex items-center gap-2">
+        {colorIndicator && <span className={`h-2 w-2 rounded-full ${colorIndicator}`} />}
+        {label}
+      </Label>
+      <div className="relative">
+        <Input
+          id={id}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`mono text-sm pr-8 ${
+            !validation.isValid 
+              ? 'border-destructive focus-visible:ring-destructive/50' 
+              : validation.warnings.length > 0 
+                ? 'border-warning focus-visible:ring-warning/50' 
+                : ''
+          }`}
+        />
+        <div className="absolute right-2 top-1/2 -translate-y-1/2">
+          {!validation.isValid ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Warning size={16} className="text-destructive" weight="fill" />
+                </TooltipTrigger>
+                <TooltipContent side="left" className="max-w-xs">
+                  <div className="space-y-1">
+                    {validation.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-destructive-foreground">{w}</p>
+                    ))}
+                    {validation.suggestions.length > 0 && (
+                      <div className="pt-1 border-t border-border mt-1">
+                        {validation.suggestions.map((s, i) => (
+                          <p key={i} className="text-xs text-muted-foreground">💡 {s}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : validation.warnings.length > 0 ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Warning size={16} className="text-warning" weight="fill" />
+                </TooltipTrigger>
+                <TooltipContent side="left" className="max-w-xs">
+                  <div className="space-y-1">
+                    {validation.warnings.map((w, i) => (
+                      <p key={i} className="text-xs">{w}</p>
+                    ))}
+                    {validation.suggestions.length > 0 && (
+                      <div className="pt-1 border-t border-border mt-1">
+                        {validation.suggestions.map((s, i) => (
+                          <p key={i} className="text-xs text-muted-foreground">💡 {s}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : value.length > 0 ? (
+            <CheckCircle size={16} className="text-success" weight="fill" />
+          ) : null}
+        </div>
+      </div>
+      <AnimatePresence>
+        {!validation.isValid && validation.warnings.length > 0 && (
+          <motion.p
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="text-[10px] text-destructive"
+          >
+            {validation.warnings[0]}
+          </motion.p>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 interface FolderStructureConfigProps {
   project: Project;
@@ -197,6 +387,21 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
     new Set(['root', 'subject', 'nifti', 'anat', 'perf', 'dwi'])
   );
 
+  const validationState = useMemo(() => {
+    const subjectValidation = validateGlobPattern(config.subjectFolderPattern, 'folder');
+    const t1Validation = validateGlobPattern(config.t1Pattern, 'file');
+    const dceValidation = validateGlobPattern(config.dcePattern, 'file');
+    const diffusionValidation = validateGlobPattern(config.diffusionPattern, 'file');
+    
+    const allValid = subjectValidation.isValid && t1Validation.isValid && 
+                     dceValidation.isValid && diffusionValidation.isValid;
+    
+    const totalWarnings = subjectValidation.warnings.length + t1Validation.warnings.length +
+                          dceValidation.warnings.length + diffusionValidation.warnings.length;
+    
+    return { allValid, totalWarnings };
+  }, [config]);
+
   useEffect(() => {
     const matchingPreset = PRESET_STRUCTURES.find(
       p => p.id !== 'custom' && 
@@ -214,9 +419,19 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   };
 
   const handleSave = () => {
+    if (!validationState.allValid) {
+      toast.error('Please fix invalid patterns before saving');
+      return;
+    }
+    if (validationState.totalWarnings > 0) {
+      toast.warning('Configuration saved with warnings', {
+        description: `${validationState.totalWarnings} pattern warning(s) detected`
+      });
+    } else {
+      toast.success('Folder structure configuration saved');
+    }
     onSave(config);
     setIsOpen(false);
-    toast.success('Folder structure configuration saved');
   };
 
   const handleReset = () => {
@@ -516,36 +731,20 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="space-y-2">
-                        <Label htmlFor="subjectPattern" className="text-xs">
-                          Pattern for subject folder names
-                        </Label>
-                        <div className="flex gap-2">
-                          <Input
-                            id="subjectPattern"
-                            value={config.subjectFolderPattern}
-                            onChange={(e) => setConfig(prev => ({ 
-                              ...prev, 
-                              subjectFolderPattern: e.target.value 
-                            }))}
-                            placeholder="sub-{subject_id}"
-                            className="mono text-sm"
-                          />
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" className="shrink-0">
-                                  <Info size={16} />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-xs">
-                                <p className="text-xs">
-                                  Use <code className="mono bg-muted px-1 rounded">{'{subject_id}'}</code> as a 
-                                  placeholder for the subject identifier.
-                                </p>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        </div>
+                        <PatternInput
+                          id="subjectPattern"
+                          value={config.subjectFolderPattern}
+                          onChange={(value) => setConfig(prev => ({ 
+                            ...prev, 
+                            subjectFolderPattern: value 
+                          }))}
+                          placeholder="sub-{subject_id}"
+                          patternType="folder"
+                          label="Pattern for subject folder names"
+                        />
+                        <p className="text-[10px] text-muted-foreground">
+                          Use <code className="mono bg-muted px-1 rounded">{'{subject_id}'}</code> as a placeholder for the subject identifier.
+                        </p>
                       </div>
 
                       <div className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
@@ -597,67 +796,57 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                       <CardTitle className="text-sm font-medium flex items-center gap-2">
                         <FileCode size={16} className="text-accent" />
                         File Matching Patterns
+                        {validationState.totalWarnings > 0 && validationState.allValid && (
+                          <Badge variant="outline" className="ml-auto border-warning text-warning text-[10px]">
+                            {validationState.totalWarnings} warning{validationState.totalWarnings > 1 ? 's' : ''}
+                          </Badge>
+                        )}
+                        {!validationState.allValid && (
+                          <Badge variant="outline" className="ml-auto border-destructive text-destructive text-[10px]">
+                            Invalid patterns
+                          </Badge>
+                        )}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="grid gap-4 sm:grid-cols-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="t1Pattern" className="text-xs flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-success" />
-                            T1/Anatomical Pattern
-                          </Label>
-                          <Input
-                            id="t1Pattern"
-                            value={config.t1Pattern}
-                            onChange={(e) => setConfig(prev => ({ 
-                              ...prev, 
-                              t1Pattern: e.target.value 
-                            }))}
-                            placeholder="*T1*.nii.gz"
-                            className="mono text-sm"
-                          />
-                        </div>
+                        <PatternInput
+                          id="t1Pattern"
+                          value={config.t1Pattern}
+                          onChange={(value) => setConfig(prev => ({ ...prev, t1Pattern: value }))}
+                          placeholder="*T1*.nii.gz"
+                          patternType="file"
+                          label="T1/Anatomical Pattern"
+                          colorIndicator="bg-success"
+                        />
 
-                        <div className="space-y-2">
-                          <Label htmlFor="dcePattern" className="text-xs flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-accent" />
-                            DCE Pattern
-                          </Label>
-                          <Input
-                            id="dcePattern"
-                            value={config.dcePattern}
-                            onChange={(e) => setConfig(prev => ({ 
-                              ...prev, 
-                              dcePattern: e.target.value 
-                            }))}
-                            placeholder="*DCE*.nii.gz"
-                            className="mono text-sm"
-                          />
-                        </div>
+                        <PatternInput
+                          id="dcePattern"
+                          value={config.dcePattern}
+                          onChange={(value) => setConfig(prev => ({ ...prev, dcePattern: value }))}
+                          placeholder="*DCE*.nii.gz"
+                          patternType="file"
+                          label="DCE Pattern"
+                          colorIndicator="bg-accent"
+                        />
 
-                        <div className="space-y-2">
-                          <Label htmlFor="diffusionPattern" className="text-xs flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-warning" />
-                            Diffusion Pattern
-                          </Label>
-                          <Input
-                            id="diffusionPattern"
-                            value={config.diffusionPattern}
-                            onChange={(e) => setConfig(prev => ({ 
-                              ...prev, 
-                              diffusionPattern: e.target.value 
-                            }))}
-                            placeholder="*DTI*.nii.gz"
-                            className="mono text-sm"
-                          />
-                        </div>
+                        <PatternInput
+                          id="diffusionPattern"
+                          value={config.diffusionPattern}
+                          onChange={(value) => setConfig(prev => ({ ...prev, diffusionPattern: value }))}
+                          placeholder="*DTI*.nii.gz"
+                          patternType="file"
+                          label="Diffusion Pattern"
+                          colorIndicator="bg-warning"
+                        />
                       </div>
 
                       <div className="rounded-lg bg-muted/50 p-3">
                         <p className="text-xs text-muted-foreground">
                           <strong>Pattern syntax:</strong> Use <code className="mono bg-background px-1 rounded">*</code> as 
                           a wildcard. For example, <code className="mono bg-background px-1 rounded">*T1*.nii.gz</code> matches 
-                          any file containing "T1" with a .nii.gz extension.
+                          any file containing "T1" with a .nii.gz extension. Use <code className="mono bg-background px-1 rounded">**/</code> for 
+                          recursive matching.
                         </p>
                       </div>
                     </CardContent>
@@ -752,10 +941,30 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
             <Button variant="secondary" onClick={() => setIsOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSave} className="gap-2">
-              <FloppyDisk size={16} />
-              Save Configuration
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button 
+                      onClick={handleSave} 
+                      className="gap-2"
+                      disabled={!validationState.allValid}
+                    >
+                      <FloppyDisk size={16} />
+                      Save Configuration
+                      {validationState.totalWarnings > 0 && validationState.allValid && (
+                        <Warning size={14} className="text-warning" weight="fill" />
+                      )}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {!validationState.allValid && (
+                  <TooltipContent>
+                    <p className="text-xs">Fix invalid patterns before saving</p>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </div>
       </DialogContent>
