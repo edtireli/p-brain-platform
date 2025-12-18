@@ -85,6 +85,27 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     };
   }, [projectId]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+        const target = e.target as HTMLElement;
+        const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+        
+        if (!isInputField && subjects.length > 0) {
+          e.preventDefault();
+          if (selectedSubjectIds.size === subjects.length) {
+            setSelectedSubjectIds(new Set());
+          } else {
+            setSelectedSubjectIds(new Set(subjects.map(s => s.id)));
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [subjects, selectedSubjectIds]);
+
   const loadProject = async () => {
     const data = await mockEngine.getProject(projectId);
     if (data) setProject(data);
