@@ -2,30 +2,60 @@ import { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Download } from '@phosphor-icons/react';
 import { mockEngine } from '@/lib/mock-engine';
+import { motion } from 'framer-motion';
 import type { MetricsTable } from '@/types';
 
 interface TablesViewProps {
   subjectId: string;
 }
 
+const metricDescriptions: Record<string, string> = {
+  Ki: 'Transfer constant from Patlak analysis — unidirectional transport rate across blood-brain barrier',
+  vp: 'Plasma volume fraction from Patlak or Extended Tofts model',
+  Ktrans: 'Volume transfer constant from Extended Tofts — indicates vascular permeability',
+  ve: 'Extravascular extracellular volume fraction',
+  CBF: 'Cerebral blood flow from deconvolution analysis',
+  MTT: 'Mean transit time — average time for blood to traverse capillary network',
+  CTH: 'Capillary transit-time heterogeneity — standard deviation of transit-time distribution',
+};
+
+function MetricHeader({ label, unit }: { label: string; unit: string }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="cursor-help">
+            <div>{label}</div>
+            <div className="mono text-xs font-normal text-muted-foreground">{unit}</div>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-[200px]">
+          <p className="text-xs">{metricDescriptions[label]}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export function TablesView({ subjectId }: TablesViewProps) {
   const [metricsTable, setMetricsTable] = useState<MetricsTable | null>(null);
 
   useEffect(() => {
-  Ktrans: 'Volume transfer constant from Extended Tofts — indicates vascular permeability',
+    const loadData = async () => {
+      try {
+        const data = await mockEngine.getMetricsTable(subjectId);
+        setMetricsTable(data);
+      } catch (error) {
+        console.error('Failed to load metrics table:', error);
+      }
+    };
+    loadData();
   }, [subjectId]);
 
-  const loadData = async () => {
-    try {
-      const data = await mockEngine.getMetricsTable(subjectId);
-      setMetricsTable(data);
-export function TablesView({ subjectId }: TablesViewProps) {
-    }
-  };
-  useEffect(() => {
-    loadData();
+  const handleExport = () => {
     if (!metricsTable) return;
 
     const headers = ['Region', 'Ki (ml/100g/min)', 'vp', 'Ktrans (min⁻¹)', 've', 'CBF (ml/100g/min)', 'MTT (s)', 'CTH (s)'];
@@ -33,9 +63,9 @@ export function TablesView({ subjectId }: TablesViewProps) {
       row.region,
       row.Ki?.toFixed(2) || 'N/A',
       row.vp?.toFixed(3) || 'N/A',
-      console.error('Failed to load metrics table:', error);
+      row.Ktrans?.toFixed(3) || 'N/A',
       row.ve?.toFixed(3) || 'N/A',
-  };
+      row.CBF?.toFixed(1) || 'N/A',
       row.MTT?.toFixed(2) || 'N/A',
       row.CTH?.toFixed(2) || 'N/A',
     ]);
@@ -46,99 +76,70 @@ export function TablesView({ subjectId }: TablesViewProps) {
     const a = document.createElement('a');
     a.href = url;
     a.download = `metrics_${subjectId}_${Date.now()}.csv`;
+    a.click();
     URL.revokeObjectURL(url);
-      row.CBF?.toFixed(1) || 'N/A',
+  };
 
   return (
-    ]);
-me="p-6">
-    const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-          <Button onClick={handleExport} variant="secondary" className="gap-2" disabled={!metricsTable}>
-            <Download size={18} weight="bold" />
-            Export CSV
-          </Button>
-        {metricsTable ? (
-          <div className="overflow-x-auto">
-  };
-              <TableHeader>
-                <TableRow>
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-                    <div className="mono text-xs font-normal text-muted-foreground">ml/100g/min</div>
-                  </TableHead>
-                  <TableHead className="text-right">
-                    <div className="mono text-xs font-normal text-muted-foreground">fraction</div>
-        </TooltipTrigger>
-                  <TableHead className="text-right">
-          <p className="text-xs">{metricDescriptions[label]}</p>
-                    <div className="mono text-xs font-normal text-muted-foreground">min⁻¹</div>
-        </TooltipContent>
-                    <div>ve</div>
-    </TooltipProvider>nt-normal text-muted-foreground">fraction</div>
-                  </TableHead>
-me="text-right">
-  return (v>
-    <div className="space-y-6">l text-muted-foreground">ml/100g/min</div>
-      <div className="rounded-xl border border-border/60 bg-card/50">
-                  <TableHead className="text-right">
+    <div className="space-y-6">
+      <Card className="rounded-xl border border-border/60 bg-card/50 p-6">
+        <div className="mb-4 flex items-center justify-between">
           <h3 className="text-[13px] font-medium">Quantitative Metrics by Region</h3>
-          <Button font-normal text-muted-foreground">s</div>
-            onClick={handleExport} 
-            variant="ghost" 
-                    <div>CTH</div>
-                    <div className="mono text-xs font-normal text-muted-foreground">s</div>
+          <Button
+            onClick={handleExport}
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-xs"
             disabled={!metricsTable}
           >
-              </TableHeader>
+            <Download size={14} weight="bold" />
             Export CSV
-                {metricsTable.rows.map(row => (
-                  <TableRow key={row.region}>
-           <TableCell className="font-medium">{row.region}</TableCell>
-        {metricsTable ? ("mono text-right">{row.Ki?.toFixed(2) || 'N/A'}</TableCell>
-          <div className="overflow-x-auto">p?.toFixed(3) || 'N/A'}</TableCell>
-                    <TableCell className="mono text-right">{row.Ktrans?.toFixed(3) || 'N/A'}</TableCell>
-                    <TableCell className="mono text-right">{row.ve?.toFixed(3) || 'N/A'}</TableCell>
-                <TableRow className="hover:bg-transparent">.CBF?.toFixed(1) || 'N/A'}</TableCell>
-                    <TableCell className="mono text-right">{row.CTH?.toFixed(2) || 'N/A'}</TableCell>
+          </Button>
+        </div>
+
+        {metricsTable ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="text-left">Region</TableHead>
                   <TableHead className="text-right">
-                ))}
-              </TableBody>
-                  <TableHead className="text-right">
-          </div>
+                    <MetricHeader label="Ki" unit="ml/100g/min" />
                   </TableHead>
-          <div className="flex h-[300px] items-center justify-center text-muted-foreground">
-            No metrics data available
-          </div>
-      </Card>
-            <span className="mono font-semibold text-foreground">Ki</span> - Transfer constant from Patlak analysis,
-            quantifying unidirectional transport across the blood-brain barrier
                   <TableHead className="text-right">
-          <div>
-                  </TableHead>epresenting the
-                  <TableHead className="text-right">
-          </div>
+                    <MetricHeader label="vp" unit="fraction" />
                   </TableHead>
-                  <TableHead className="text-right">transfer constant from Extended
+                  <TableHead className="text-right">
+                    <MetricHeader label="Ktrans" unit="min⁻¹" />
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHeader label="ve" unit="fraction" />
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHeader label="CBF" unit="ml/100g/min" />
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHeader label="MTT" unit="s" />
+                  </TableHead>
+                  <TableHead className="text-right">
                     <MetricHeader label="CTH" unit="s" />
                   </TableHead>
-          <div>
+                </TableRow>
               </TableHeader>
               <TableBody>
                 {metricsTable.rows.map((row, idx) => (
-                  <motion.trnvolution
+                  <motion.tr
                     key={row.region}
-          </div>
-          <div>
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: idx * 0.03 }}
-            to traverse the capillary network
+                    className="border-b border-border/40 hover:bg-muted/30"
                   >
-          <div>
-            <span className="mono font-semibold text-foreground">CTH</span> - Capillary transit-time heterogeneity,
-            standard deviation of the transit-time distribution
-          </div>
-        </div>
+                    <TableCell className="font-medium text-[12px]">{row.region}</TableCell>
+                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.Ki?.toFixed(2) || '—'}</TableCell>
+                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.vp?.toFixed(3) || '—'}</TableCell>
+                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.Ktrans?.toFixed(3) || '—'}</TableCell>
+                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.ve?.toFixed(3) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.CBF?.toFixed(1) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.MTT?.toFixed(2) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.CTH?.toFixed(2) || '—'}</TableCell>
@@ -147,4 +148,46 @@ me="text-right">
               </TableBody>
             </Table>
           </div>
-        )}    </div>
+        ) : (
+          <div className="flex h-[300px] items-center justify-center text-muted-foreground text-sm">
+            No metrics data available
+          </div>
+        )}
+      </Card>
+
+      <Card className="rounded-xl border border-border/60 bg-card/50 p-6">
+        <h3 className="mb-4 text-[13px] font-medium">Metric Definitions</h3>
+        <div className="grid gap-3 text-xs text-muted-foreground">
+          <div>
+            <span className="mono font-semibold text-foreground">Ki</span> — Transfer constant from Patlak analysis,
+            quantifying unidirectional transport across the blood-brain barrier
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">vp</span> — Plasma volume fraction representing the
+            vascular space within tissue
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">Ktrans</span> — Volume transfer constant from Extended
+            Tofts model indicating vessel permeability
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">ve</span> — Extravascular extracellular volume
+            fraction
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">CBF</span> — Cerebral blood flow from deconvolution
+            analysis
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">MTT</span> — Mean transit time for blood to traverse
+            the capillary network
+          </div>
+          <div>
+            <span className="mono font-semibold text-foreground">CTH</span> — Capillary transit-time heterogeneity,
+            standard deviation of the transit-time distribution
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
