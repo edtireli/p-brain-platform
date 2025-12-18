@@ -63,28 +63,35 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 - **Progression**: Click play button → Audio context resumed → All pipeline stages queued for subject → Toast notification shown → Running indicator replaces play button → Jobs execute sequentially → Completion/failure audio feedback
 - **Success criteria**: Play button visible on each subject row; button disabled while subject pipeline is running; spinner shown during execution; clicking row still navigates to subject detail; tooltip provides clear action description
 
-### 8. Input Function Management (AIF/VIF)
+### 8. Batch Subject Selection & Pipeline Execution
+- **Functionality**: Select multiple subjects via checkboxes and run pipeline for all selected subjects simultaneously
+- **Purpose**: Enable efficient batch processing of specific subject subsets without running the entire cohort
+- **Trigger**: User clicks checkbox on subject rows or "Select All" checkbox in header, then clicks "Run Selected" button
+- **Progression**: Click subject checkboxes → Selection counter updates → "Run Selected (N)" button appears → Click run button → Audio context resumed → Pipelines queued for all selected subjects → Toast notification with count → Selection cleared → Jobs execute → Status grid updates
+- **Success criteria**: Checkbox column visible on each subject row; "Select All" checkbox toggles all subjects; partial selection shows indeterminate state; selected rows visually highlighted; "Run Selected" button appears with count when subjects selected; "Clear" button to deselect all; selection persists during scroll; running subjects show spinner; audio feedback on completion
+
+### 9. Input Function Management (AIF/VIF)
 - **Functionality**: Manual ROI drawing on concentration maps to extract arterial/venous curves
 - **Purpose**: Define input functions required for all pharmacokinetic models
 - **Trigger**: Stage 4 execution or manual ROI editor invocation
 - **Progression**: Concentration map displayed → User draws ROI on vessel → Curve extracted → Time-shift analysis → Venous-to-arterial adjustment → Final AIF/VIF saved
 - **Success criteria**: ROI drawing responsive; curves extract correctly; cross-correlation shift computed; adjusted curves stored; used in downstream modeling
 
-### 9. Cohort Status Dashboard
-- **Functionality**: Grid view with subjects as rows, stages as columns, color-coded status indicators, per-subject run button
-- **Purpose**: At-a-glance understanding of analysis progress across entire cohort with quick access to individual subject pipeline execution
+### 10. Cohort Status Dashboard
+- **Functionality**: Grid view with subjects as rows, stages as columns, color-coded status indicators, per-subject run button, batch selection checkboxes
+- **Purpose**: At-a-glance understanding of analysis progress across entire cohort with quick access to individual and batch subject pipeline execution
 - **Trigger**: User opens project
-- **Progression**: Project loaded → Subject list fetched → Stage status queried → Grid rendered with run buttons → Status updates via WebSocket → Cell clicked → Stage detail modal
-- **Success criteria**: Grid renders quickly for 50+ subjects; status colors accurate (grey/yellow/green/red); run button accessible on each row; clicking cell shows logs and artifacts; updates in real-time during job execution
+- **Progression**: Project loaded → Subject list fetched → Stage status queried → Grid rendered with run buttons and checkboxes → Status updates via WebSocket → Cell clicked → Stage detail modal
+- **Success criteria**: Grid renders quickly for 50+ subjects; status colors accurate (grey/yellow/green/red); run button accessible on each row; checkbox enables batch selection; clicking cell shows logs and artifacts; updates in real-time during job execution
 
-### 10. Segmentation & Tissue ROIs
+### 11. Segmentation & Tissue ROIs
 - **Functionality**: FastSurfer integration with fallback to threshold-based masks; registration to DCE space
 - **Purpose**: Define anatomical regions for parcel-level analysis
 - **Trigger**: Stage 6 execution
 - **Progression**: T1 map loaded → FastSurfer invoked (if available) → Segmentation produced → Registration to DCE space via flirt/affine → Masks extracted → Parcel stats initialized
 - **Success criteria**: FastSurfer runs successfully when installed; fallback masks created when not; segmentation aligns with DCE volumes; GM/WM/parcels defined; registration quality acceptable
 
-### 11. Interactive Curve & Plot Visualization
+### 12. Interactive Curve & Plot Visualization
 - **Functionality**: Plotly-based rendering of concentration curves, model fits, residue functions, transit-time distributions
 - **Purpose**: Enable interactive exploration of physiological time-series and model quality
 - **Trigger**: User navigates to Curves/Maps tabs in Subject Detail

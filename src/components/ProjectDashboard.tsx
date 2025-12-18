@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, UserPlus, ArrowLeft, X, List } from '@phosphor-icons/react';
+import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -12,7 +12,7 @@ import type { Project, Subject, StageId, StageStatus, Job } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface ProjectDashboardProps {
   projectId: string;
@@ -28,6 +28,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [isJobMonitorOpen, setIsJobMonitorOpen] = useState(false);
   const [activeJobsCount, setActiveJobsCount] = useState(0);
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
   const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
 
   useEffect(() => {
@@ -142,6 +143,52 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     }
   };
 
+  const handleRunSelectedPipeline = async () => {
+    if (selectedSubjectIds.size === 0) {
+      toast.error('No subjects selected');
+      return;
+    }
+
+    resumeAudioContext();
+    setIsRunning(true);
+    try {
+      const subjectIds = Array.from(selectedSubjectIds);
+      setRunningSubjectIds(prev => new Set([...prev, ...subjectIds]));
+      await mockEngine.runFullPipeline(projectId, subjectIds);
+      toast.success(`Pipeline started for ${subjectIds.length} subject${subjectIds.length > 1 ? 's' : ''}`);
+      setSelectedSubjectIds(new Set());
+    } catch (error) {
+      toast.error('Failed to start pipeline');
+      console.error(error);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleSelectSubjectToggle = (subjectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedSubjectIds(prev => {
+      const next = new Set(prev);
+      if (next.has(subjectId)) {
+        next.delete(subjectId);
+      } else {
+        next.add(subjectId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selectedSubjectIds.size === subjects.length) {
+      setSelectedSubjectIds(new Set());
+    } else {
+      setSelectedSubjectIds(new Set(subjects.map(s => s.id)));
+    }
+  };
+
+  const isAllSelected = subjects.length > 0 && selectedSubjectIds.size === subjects.length;
+  const isSomeSelected = selectedSubjectIds.size > 0 && selectedSubjectIds.size < subjects.length;
+
   const handleRunSubjectPipeline = async (e: React.MouseEvent, subjectId: string, subjectName: string) => {
     e.stopPropagation();
     resumeAudioContext();
@@ -231,7 +278,39 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
               </div>
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex gap-3 items-center">
+              <AnimatePresence>
+                {selectedSubjectIds.size > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex items-center gap-3"
+                  >
+                    <span className="text-sm text-muted-foreground">
+                      {selectedSubjectIds.size} selected
+                    </span>
+                    <Button 
+                      onClick={handleRunSelectedPipeline} 
+                      disabled={isRunning} 
+                      className="gap-2 bg-accent hover:bg-accent/90"
+                    >
+                      <Play size={18} weight="fill" />
+                      Run Selected ({selectedSubjectIds.size})
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedSubjectIds(new Set())}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      Clear
+                    </Button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <Button 
                 variant="outline" 
                 onClick={() => setIsJobMonitorOpen(true)}
@@ -303,7 +382,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
 
               <Button onClick={handleRunFullPipeline} disabled={isRunning || subjects.length === 0} className="gap-2">
                 <Play size={20} weight="fill" />
-                Run Full Auto Pipeline
+                Run All
               </Button>
             </div>
           </div>
@@ -329,38 +408,72 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border bg-muted/50">
-                      <th className="sticky left-0 z-10 bg-muted/50 px-2 py-3 text-center text-xs font-medium uppercase tracking-wider w-12">
-                        Run
-                      </th>
-                      <th className="sticky left-12 z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                        Subject
-                      </th>
-                      {stages.map(stageId => (
-                        <th
-                          key={stageId}
-                          className="px-3 py-3 text-center text-xs font-medium uppercase tracking-wider"
-                        >
-                          <div className="whitespace-nowrap">{STAGE_NAMES[stageId]}</div>
+                <TooltipProvider>
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/50">
+                        <th className="sticky left-0 z-10 bg-muted/50 px-3 py-3 text-center w-10">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                onClick={handleSelectAll}
+                                className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-muted"
+                              >
+                                {isAllSelected ? (
+                                  <CheckSquare size={18} weight="fill" className="text-primary" />
+                                ) : isSomeSelected ? (
+                                  <MinusSquare size={18} weight="fill" className="text-primary" />
+                                ) : (
+                                  <Square size={18} className="text-muted-foreground" />
+                                )}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {isAllSelected ? 'Deselect all' : 'Select all'}
+                            </TooltipContent>
+                          </Tooltip>
                         </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <TooltipProvider>
+                        <th className="sticky left-10 z-10 bg-muted/50 px-2 py-3 text-center text-xs font-medium uppercase tracking-wider w-12">
+                          Run
+                        </th>
+                        <th className="sticky left-[5.5rem] z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                          Subject
+                        </th>
+                        {stages.map(stageId => (
+                          <th
+                            key={stageId}
+                            className="px-3 py-3 text-center text-xs font-medium uppercase tracking-wider"
+                          >
+                            <div className="whitespace-nowrap">{STAGE_NAMES[stageId]}</div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
                       {subjects.map(subject => {
                         const isSubjectRunning = runningSubjectIds.has(subject.id) || 
                           Object.values(subject.stageStatuses).some(s => s === 'running');
+                        const isSelected = selectedSubjectIds.has(subject.id);
                         
                         return (
                           <tr
                             key={subject.id}
-                            className="cursor-pointer border-b border-border transition-colors hover:bg-muted/50"
+                            className={`cursor-pointer border-b border-border transition-colors hover:bg-muted/50 ${isSelected ? 'bg-primary/5' : ''}`}
                             onClick={() => onSelectSubject(subject.id)}
                           >
-                            <td className="sticky left-0 z-10 bg-card px-2 py-3 hover:bg-muted/50">
+                            <td className={`sticky left-0 z-10 px-3 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
+                              <button
+                                onClick={(e) => handleSelectSubjectToggle(subject.id, e)}
+                                className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-muted"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare size={18} weight="fill" className="text-primary" />
+                                ) : (
+                                  <Square size={18} className="text-muted-foreground hover:text-foreground" />
+                                )}
+                              </button>
+                            </td>
+                            <td className={`sticky left-10 z-10 px-2 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <button
@@ -388,7 +501,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                 </TooltipContent>
                               </Tooltip>
                             </td>
-                            <td className="sticky left-12 z-10 bg-card px-4 py-3 font-normal hover:bg-muted/50">
+                            <td className={`sticky left-[5.5rem] z-10 px-4 py-3 font-normal ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
                               <div className="flex flex-col gap-1">
                                 <span className="text-sm">{subject.name}</span>
                                 <div className="flex gap-2">
@@ -423,9 +536,9 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                           </tr>
                         );
                       })}
-                    </TooltipProvider>
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </TooltipProvider>
               </div>
             </CardContent>
           </Card>
