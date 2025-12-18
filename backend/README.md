@@ -17,16 +17,31 @@ pip install -r requirements.txt
 export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
 
 # Start API
-uvicorn app:app --host 127.0.0.1 --port 8787 --reload
+./scripts/run_http.sh
+
+## Run (HTTPS, for GitHub Pages)
+
+If you load the UI from GitHub Pages (HTTPS), browsers will block calls to an HTTP `localhost` API.
+Run the backend over HTTPS instead:
+
+```zsh
+cd /Users/edt/p-brain-web/backend
+
+# Generates a local self-signed cert (first run only), then starts uvicorn with TLS
+./scripts/run_https.sh
+
+# One-time browser step:
+# open https://127.0.0.1:8787/health and accept the certificate warning
+```
 ```
 
-## Frontend (backend mode)
+## Frontend
 
 In another terminal:
 
 ```zsh
 cd /Users/edt/p-brain-web
-VITE_ENGINE=backend VITE_BACKEND_URL=http://127.0.0.1:8787 npm run dev
+npm run dev
 ```
 
 Notes:

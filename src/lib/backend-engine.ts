@@ -47,6 +47,33 @@ export function getBackendBaseUrl(): string {
   return backendUrl();
 }
 
+type HealthResponse = { ok: boolean };
+
+let lastHealthCheckAt = 0;
+let lastHealthOk: boolean | null = null;
+let backoffMs = 0;
+
+async function isBackendHealthy(): Promise<boolean> {
+  const now = Date.now();
+  const wait = Math.max(1200, backoffMs || 0);
+  if (lastHealthOk !== null && now - lastHealthCheckAt < wait) return lastHealthOk;
+
+  lastHealthCheckAt = now;
+  try {
+    const res = await fetch(`${backendUrl()}/health`, {
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+    });
+    lastHealthOk = res.ok;
+    backoffMs = 0;
+    return lastHealthOk;
+  } catch {
+    lastHealthOk = false;
+    backoffMs = Math.min(Math.max(backoffMs || 1200, 1200) * 2, 15000);
+    return false;
+  }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${backendUrl()}${path}`, {
     ...init,
@@ -82,6 +109,10 @@ export class BackendEngineAPI {
 
     this.pollTimer = window.setInterval(async () => {
       try {
+        // Avoid spamming the network (and console) when the local backend is not reachable.
+        const ok = await isBackendHealthy();
+        if (!ok) return;
+
         const jobs = await this.getJobs({});
         for (const job of jobs) {
           const prev = this.lastJobs.get(job.id);
