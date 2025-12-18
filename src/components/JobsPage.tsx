@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, FunnelSimple, MagnifyingGlass, Check, X, Spinner, Clock, Play, ArrowsClockwise } from '@phosphor-icons/react';
+import { ArrowLeft, FunnelSimple, MagnifyingGlass, Check, X, Clock, Play, ArrowsClockwise } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { mockEngine } from '@/lib/mock-engine';
 import type { Job } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface JobsPageProps {
   onBack: () => void;
@@ -77,6 +78,22 @@ export function JobsPage({ onBack }: JobsPageProps) {
     }
   };
 
+  const RunningIndicator = () => (
+    <div className="relative flex h-4 w-4 items-center justify-center">
+      <motion.div
+        className="absolute h-4 w-4 rounded-full border-2 border-accent/30"
+        animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+      />
+      <motion.div
+        className="absolute h-3 w-3 rounded-full border-2 border-transparent border-t-accent"
+        animate={{ rotate: 360 }}
+        transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+      />
+      <div className="h-1.5 w-1.5 rounded-full bg-accent" />
+    </div>
+  );
+
   const getStatusIcon = (status: Job['status']) => {
     switch (status) {
       case 'completed':
@@ -84,7 +101,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
       case 'failed':
         return <X size={16} weight="bold" className="text-destructive" />;
       case 'running':
-        return <Spinner size={16} className="animate-spin text-accent" />;
+        return <RunningIndicator />;
       case 'queued':
         return <Clock size={16} className="text-muted-foreground" />;
       default:
@@ -210,124 +227,178 @@ export function JobsPage({ onBack }: JobsPageProps) {
           </Card>
         ) : (
           <div className="space-y-2">
-            {filteredJobs.map(job => (
-              <Card key={job.id} className="overflow-hidden transition-all hover:shadow-sm">
-                <div
-                  className="flex cursor-pointer items-center justify-between p-4"
-                  onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+            <AnimatePresence mode="popLayout">
+              {filteredJobs.map(job => (
+                <motion.div
+                  key={job.id}
+                  layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.2 }}
                 >
-                  <div className="flex flex-1 items-center gap-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      {getStatusIcon(job.status)}
-                    </div>
+                  <Card className={`overflow-hidden transition-all hover:shadow-sm ${job.status === 'running' ? 'border-accent/40 shadow-accent/5 shadow-lg' : ''}`}>
+                    <div
+                      className="flex cursor-pointer items-center justify-between p-4"
+                      onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+                    >
+                      <div className="flex flex-1 items-center gap-4">
+                        <motion.div 
+                          className={`flex h-10 w-10 items-center justify-center rounded-lg ${job.status === 'running' ? 'bg-accent/10' : 'bg-muted'}`}
+                          animate={job.status === 'running' ? { 
+                            boxShadow: ['0 0 0 0 rgba(var(--accent), 0)', '0 0 0 8px rgba(var(--accent), 0.1)', '0 0 0 0 rgba(var(--accent), 0)']
+                          } : {}}
+                          transition={{ duration: 2, repeat: Infinity }}
+                        >
+                          {getStatusIcon(job.status)}
+                        </motion.div>
 
-                    <div className="flex-1 space-y-1">
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-medium">
-                          {STAGE_NAMES[job.stageId as keyof typeof STAGE_NAMES]}
-                        </span>
-                        <Badge variant={getStatusBadgeVariant(job.status)} className="text-xs">
-                          {job.status}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span className="mono">{job.subjectId}</span>
-                        <span>•</span>
-                        <span>{job.startTime ? new Date(job.startTime).toLocaleString() : 'N/A'}</span>
-                        {job.status === 'running' && job.startTime && (() => {
-                          const start = job.startTime;
-                          return (
-                            <>
-                              <span>•</span>
-                              <span>{formatDuration(start)}</span>
-                            </>
-                          );
-                        })()}
-                        {job.endTime && job.startTime && (() => {
-                          const start = job.startTime;
-                          const end = job.endTime;
-                          return (
-                            <>
-                              <span>•</span>
-                              <span>Duration: {formatDuration(start, end)}</span>
-                            </>
-                          );
-                        })()}
-                      </div>
-                    </div>
-
-                    {job.status === 'running' && job.progress !== undefined && (
-                      <div className="flex items-center gap-3">
-                        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-full bg-accent transition-all duration-300"
-                            style={{ width: `${job.progress}%` }}
-                          />
-                        </div>
-                        <span className="text-sm font-medium tabular-nums">{job.progress}%</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {job.status === 'running' && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleCancelJob(job.id);
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    )}
-                    {job.status === 'failed' && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleRetryJob(job.id);
-                        }}
-                        className="gap-2"
-                      >
-                        <ArrowsClockwise size={16} />
-                        Retry
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {expandedJobId === job.id && job.logs && (
-                  <div className="border-t border-border bg-muted/20 p-4">
-                    <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Logs
-                    </div>
-                    <ScrollArea className="h-64 rounded-md border border-border bg-card">
-                      <pre className="mono p-4 text-xs leading-relaxed">
-                        {job.logs.map((log, i) => (
-                          <div key={i} className="py-0.5">
-                            <span className="text-muted-foreground">[{log.timestamp.toLocaleTimeString()}]</span>{' '}
-                            <span
-                              className={
-                                log.level === 'error'
-                                  ? 'text-destructive'
-                                  : log.level === 'warning'
-                                  ? 'text-warning'
-                                  : ''
-                              }
-                            >
-                              {log.message}
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-medium">
+                              {STAGE_NAMES[job.stageId as keyof typeof STAGE_NAMES]}
                             </span>
+                            <Badge variant={getStatusBadgeVariant(job.status)} className={`text-xs ${job.status === 'running' ? 'animate-pulse' : ''}`}>
+                              {job.status}
+                            </Badge>
                           </div>
-                        ))}
-                      </pre>
-                    </ScrollArea>
-                  </div>
-                )}
-              </Card>
-            ))}
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span className="mono">{job.subjectId}</span>
+                            <span>•</span>
+                            <span>{job.startTime ? new Date(job.startTime).toLocaleString() : 'N/A'}</span>
+                            {job.status === 'running' && job.startTime && (() => {
+                              const start = job.startTime;
+                              return (
+                                <>
+                                  <span>•</span>
+                                  <motion.span
+                                    key={formatDuration(start)}
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                  >
+                                    {formatDuration(start)}
+                                  </motion.span>
+                                </>
+                              );
+                            })()}
+                            {job.endTime && job.startTime && (() => {
+                              const start = job.startTime;
+                              const end = job.endTime;
+                              return (
+                                <>
+                                  <span>•</span>
+                                  <span>Duration: {formatDuration(start, end)}</span>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+
+                        {job.status === 'running' && job.progress !== undefined && (
+                          <div className="flex items-center gap-3">
+                            <div className="relative h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                              <motion.div
+                                className="absolute inset-y-0 left-0 bg-accent"
+                                initial={{ width: 0 }}
+                                animate={{ width: `${job.progress}%` }}
+                                transition={{ duration: 0.5, ease: "easeOut" }}
+                              />
+                              <motion.div
+                                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                                animate={{ x: ['-100%', '200%'] }}
+                                transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                              />
+                            </div>
+                            <motion.span 
+                              className="text-sm font-medium tabular-nums"
+                              key={job.progress}
+                              initial={{ scale: 1.2, color: 'var(--accent)' }}
+                              animate={{ scale: 1, color: 'var(--foreground)' }}
+                              transition={{ duration: 0.3 }}
+                            >
+                              {job.progress}%
+                            </motion.span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {job.status === 'running' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleCancelJob(job.id);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        )}
+                        {job.status === 'failed' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleRetryJob(job.id);
+                            }}
+                            className="gap-2"
+                          >
+                            <ArrowsClockwise size={16} />
+                            Retry
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <AnimatePresence>
+                      {expandedJobId === job.id && job.logs && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="border-t border-border bg-muted/20 p-4">
+                            <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                              Logs
+                            </div>
+                            <ScrollArea className="h-64 rounded-md border border-border bg-card">
+                              <pre className="mono p-4 text-xs leading-relaxed">
+                                {job.logs.map((log, i) => (
+                                  <motion.div 
+                                    key={i} 
+                                    className="py-0.5"
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    transition={{ delay: i * 0.02 }}
+                                  >
+                                    <span className="text-muted-foreground">[{log.timestamp.toLocaleTimeString()}]</span>{' '}
+                                    <span
+                                      className={
+                                        log.level === 'error'
+                                          ? 'text-destructive'
+                                          : log.level === 'warning'
+                                          ? 'text-warning'
+                                          : ''
+                                      }
+                                    >
+                                      {log.message}
+                                    </span>
+                                  </motion.div>
+                                ))}
+                              </pre>
+                            </ScrollArea>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </Card>
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         )}
       </div>

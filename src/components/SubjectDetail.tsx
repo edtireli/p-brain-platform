@@ -11,6 +11,7 @@ import { VolumeViewer } from './VolumeViewer';
 import { CurvesView } from './CurvesView';
 import { MapsView } from './MapsView';
 import { TablesView } from './TablesView';
+import { motion } from 'framer-motion';
 
 interface SubjectDetailProps {
   subjectId: string;
@@ -174,8 +175,18 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                             <XCircle size={12} weight="bold" className="text-destructive" />
                           </div>
                         ) : status === 'running' ? (
-                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/10">
-                            <div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+                          <div className="relative flex h-6 w-6 items-center justify-center">
+                            <motion.div
+                              className="absolute h-6 w-6 rounded-full border-2 border-accent/30"
+                              animate={{ scale: [1, 1.3, 1], opacity: [0.6, 0, 0.6] }}
+                              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+                            />
+                            <motion.div
+                              className="absolute h-4 w-4 rounded-full border-2 border-transparent border-t-accent"
+                              animate={{ rotate: 360 }}
+                              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                            />
+                            <div className="h-2 w-2 rounded-full bg-accent" />
                           </div>
                         ) : (
                           <div className="flex h-6 w-6 items-center justify-center">

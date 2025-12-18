@@ -3,7 +3,6 @@ import { Play, UserPlus, ArrowLeft, X, List } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { mockEngine } from '@/lib/mock-engine';
@@ -11,6 +10,7 @@ import type { Project, Subject, StageId, StageStatus } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
+import { motion } from 'framer-motion';
 
 interface ProjectDashboardProps {
   projectId: string;
@@ -125,8 +125,18 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
         );
       case 'running':
         return (
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/10">
-            <div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+          <div className="relative flex h-6 w-6 items-center justify-center">
+            <motion.div
+              className="absolute h-6 w-6 rounded-full border-2 border-accent/30"
+              animate={{ scale: [1, 1.3, 1], opacity: [0.6, 0, 0.6] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+            />
+            <motion.div
+              className="absolute h-4 w-4 rounded-full border-2 border-transparent border-t-accent"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            />
+            <div className="h-2 w-2 rounded-full bg-accent" />
           </div>
         );
       default:
@@ -178,9 +188,19 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 <List size={20} weight="bold" />
                 Jobs
                 {activeJobsCount > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-xs font-medium text-accent-foreground">
-                    {activeJobsCount}
-                  </span>
+                  <motion.span 
+                    className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-xs font-medium text-accent-foreground"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 25 }}
+                  >
+                    <motion.span
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                    >
+                      {activeJobsCount}
+                    </motion.span>
+                  </motion.span>
                 )}
               </Button>
 
