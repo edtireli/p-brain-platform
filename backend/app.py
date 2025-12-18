@@ -1125,6 +1125,11 @@ def spark_loaded() -> Dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/_spark/loaded")
+def spark_loaded_post() -> Dict[str, Any]:
+    return {"ok": True}
+
+
 @app.get("/projects")
 def get_projects() -> List[Dict[str, Any]]:
     return [asdict(p) for p in db.projects]

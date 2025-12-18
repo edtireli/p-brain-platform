@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { mockEngine } from '@/lib/mock-engine';
+import { mockEngine, backendConfigured, setBackendOverride } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 
@@ -34,10 +34,14 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
+  const [backendUrl, setBackendUrl] = useState<string>(backendConfigured() ? (mockEngine as any).baseUrl ?? '' : '');
+  const [backendError, setBackendError] = useState<string>('');
   const dropZoneId = 'project-drop-zone';
 
   useEffect(() => {
-    loadProjects();
+    if (backendConfigured()) {
+      loadProjects();
+    }
   }, []);
 
   const loadProjects = async () => {
@@ -158,6 +162,18 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   }, [processDroppedItems]);
 
   const computedStoragePath = draftStoragePath || defaultStoragePath(draftName || 'my-study');
+
+  const handleSaveBackend = () => {
+    setBackendError('');
+    const cleaned = setBackendOverride(backendUrl);
+    if (!cleaned) {
+      setBackendError('Enter a valid http(s) URL, e.g. https://127.0.0.1:8787');
+      return;
+    }
+    setBackendUrl(cleaned);
+    toast.success('Backend URL saved');
+    loadProjects();
+  };
 
   return (
     <div className="min-h-screen bg-background p-6">

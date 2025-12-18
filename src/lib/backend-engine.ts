@@ -14,37 +14,90 @@ import type {
 
 type Unsubscribe = () => void;
 
+const STORAGE_KEY = 'pbrain.backendUrl';
+
+function sanitizeUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  return trimmed.replace(/\/$/, '');
+}
+
 function readBackendOverride(): string | null {
   try {
     const params = new URLSearchParams(window.location.search);
-    const raw = (params.get('backend') || '').trim();
-    if (!raw) return null;
-    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw.replace(/\/$/, '');
+    const raw = params.get('backend');
+    const cleaned = sanitizeUrl(raw);
+    if (cleaned) {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, cleaned);
+      } catch {
+        /* ignore */
+      }
+      return cleaned;
+    }
     return null;
   } catch {
     return null;
   }
 }
 
-function backendUrl(): string {
+function readStoredBackend(): string | null {
+  try {
+    return sanitizeUrl(window.localStorage.getItem(STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function setBackendOverride(url: string): string | null {
+  const cleaned = sanitizeUrl(url);
+  if (!cleaned) return null;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, cleaned);
+  } catch {
+    /* ignore */
+  }
+  return cleaned;
+}
+
+function backendUrl(): string | null {
   const override = readBackendOverride();
   if (override) return override;
 
   const envUrl = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
-  if (envUrl) return String(envUrl).replace(/\/$/, '');
+  if (envUrl) return sanitizeUrl(envUrl);
 
-  // GitHub Pages is served over HTTPS; calling a local HTTP backend will be blocked as mixed content.
-  // Prefer HTTPS by default when the page itself is HTTPS.
+  const stored = readStoredBackend();
+  if (stored) return stored;
+
+  // If hosted on GitHub Pages (https), avoid defaulting to localhost which will be blocked/refused.
+  try {
+    const host = (window.location.hostname || '').toLowerCase();
+    const isGithubPages = host.endsWith('github.io');
+    if (isGithubPages) return null;
+  } catch {
+    /* ignore */
+  }
+
+  // Fallbacks for local dev.
   try {
     if (window.location.protocol === 'https:') return 'https://127.0.0.1:8787';
   } catch {
-    // ignore
+    /* ignore */
   }
   return 'http://127.0.0.1:8787';
 }
 
+export function backendConfigured(): boolean {
+  return !!backendUrl();
+}
+
 export function getBackendBaseUrl(): string {
-  return backendUrl();
+  const url = backendUrl();
+  if (!url) throw new Error('BACKEND_NOT_CONFIGURED');
+  return url;
 }
 
 type HealthResponse = { ok: boolean };
@@ -75,7 +128,10 @@ async function isBackendHealthy(): Promise<boolean> {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${backendUrl()}${path}`, {
+  const url = backendUrl();
+  if (!url) throw new Error('BACKEND_NOT_CONFIGURED');
+
+  const res = await fetch(`${url}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -109,6 +165,7 @@ export class BackendEngineAPI {
 
     this.pollTimer = window.setInterval(async () => {
       try {
+        if (!backendConfigured()) return;
         // Avoid spamming the network (and console) when the local backend is not reachable.
         const ok = await isBackendHealthy();
         if (!ok) return;
