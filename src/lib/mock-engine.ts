@@ -15,6 +15,7 @@ import type {
   MetricsTable,
 } from '@/types';
 import { DEFAULT_CONFIG, STAGE_DEPENDENCIES, STAGE_NAMES } from '@/types';
+import { BackendEngineAPI } from '@/lib/backend-engine';
 
 class MockEngineAPI {
   private db = {
@@ -187,6 +188,48 @@ class MockEngineAPI {
 
   async getProject(id: string): Promise<Project | undefined> {
     return this.db.projects.find(p => p.id === id);
+  }
+
+  async resolveDefaultVolume(_subjectId: string, kind: 'dce' | 't1' | 'diffusion' = 'dce'): Promise<string> {
+    if (kind === 't1') return '/mock/t1.nii.gz';
+    if (kind === 'diffusion') return '/mock/diffusion.nii.gz';
+    return '/mock/dce.nii.gz';
+  }
+
+  async getVolumeInfo(path: string, _subjectId?: string): Promise<VolumeInfo> {
+    return {
+      path,
+      dimensions: [256, 256, 64, 80],
+      voxelSize: [1.0, 1.0, 2.5],
+      dataType: 'float32',
+      min: 0,
+      max: 4095,
+    };
+  }
+
+  async getSliceData(
+    _path: string,
+    z: number,
+    t: number = 0,
+    _subjectId?: string
+  ): Promise<{ data: number[][]; min: number; max: number }> {
+    const size = 256;
+    const data: number[][] = [];
+    for (let y = 0; y < size; y++) {
+      const row: number[] = [];
+      for (let x = 0; x < size; x++) {
+        const centerX = size / 2;
+        const centerY = size / 2;
+        const dx = x - centerX;
+        const dy = y - centerY;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        const brainRadius = size * 0.35;
+        const value = r < brainRadius ? 1000 + Math.sin(r / 10 + z * 0.1 + t * 0.05) * 500 : 0;
+        row.push(value);
+      }
+      data.push(row);
+    }
+    return { data, min: 0, max: 2000 };
   }
 
   async createProject(data: {
@@ -521,45 +564,6 @@ class MockEngineAPI {
     return jobs;
   }
 
-  async getVolumeInfo(path: string): Promise<VolumeInfo> {
-    return {
-      path,
-      dimensions: [256, 256, 64, 80],
-      voxelSize: [1.0, 1.0, 2.5],
-      dataType: 'float32',
-      min: 0,
-      max: 4095,
-    };
-  }
-
-  async getSliceData(
-    path: string,
-    z: number,
-    t: number = 0
-  ): Promise<{ data: number[][]; min: number; max: number }> {
-    const size = 256;
-    const data: number[][] = [];
-
-    for (let y = 0; y < size; y++) {
-      const row: number[] = [];
-      for (let x = 0; x < size; x++) {
-        const centerX = size / 2;
-        const centerY = size / 2;
-        const dx = x - centerX;
-        const dy = y - centerY;
-        const r = Math.sqrt(dx * dx + dy * dy);
-        
-        const brainRadius = size * 0.35;
-        const value = r < brainRadius ? 1000 + Math.sin(r / 10 + z * 0.1 + t * 0.05) * 500 : 0;
-        
-        row.push(value);
-      }
-      data.push(row);
-    }
-
-    return { data, min: 0, max: 2000 };
-  }
-
   async getCurves(subjectId: string): Promise<Curve[]> {
     const timePoints = Array.from({ length: 80 }, (_, i) => i * 2.5);
     
@@ -743,4 +747,10 @@ class MockEngineAPI {
   }
 }
 
-export const mockEngine = new MockEngineAPI();
+// Allow switching to a real local backend without touching the UI components.
+// Set `VITE_ENGINE=backend` and `VITE_BACKEND_URL=http://127.0.0.1:8787`.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const useBackend = (import.meta as any).env?.VITE_ENGINE === 'backend';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const mockEngine: any = useBackend ? new BackendEngineAPI() : new MockEngineAPI();

@@ -11,6 +11,9 @@ interface VolumeViewerProps {
 
 export function VolumeViewer({ subjectId }: VolumeViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [volumePath, setVolumePath] = useState<string | null>(null);
+  const [maxZ, setMaxZ] = useState(63);
+  const [maxT, setMaxT] = useState(79);
   const [sliceZ, setSliceZ] = useState(32);
   const [timeFrame, setTimeFrame] = useState(0);
   const [windowMin, setWindowMin] = useState(0);
@@ -21,8 +24,32 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
   const [sliceData, setSliceData] = useState<number[][] | null>(null);
 
   useEffect(() => {
+    const load = async () => {
+      try {
+        const p = await mockEngine.resolveDefaultVolume(subjectId, 'dce');
+        setVolumePath(p);
+
+        const info = await mockEngine.getVolumeInfo(p, subjectId);
+        const zMax = Math.max(0, (info.dimensions[2] ?? 1) - 1);
+        const tMax = Math.max(0, (info.dimensions[3] ?? 1) - 1);
+        setMaxZ(zMax);
+        setMaxT(tMax);
+
+        setSliceZ(prev => Math.min(prev, zMax));
+        setTimeFrame(prev => Math.min(prev, tMax));
+        setWindowMin(Math.floor(info.min));
+        setWindowMax(Math.ceil(info.max) || 1);
+      } catch (error) {
+        console.error('Failed to resolve volume:', error);
+        setVolumePath(null);
+      }
+    };
+    load();
+  }, [subjectId]);
+
+  useEffect(() => {
     loadSlice();
-  }, [subjectId, sliceZ, timeFrame]);
+  }, [subjectId, volumePath, sliceZ, timeFrame]);
 
   useEffect(() => {
     if (sliceData) {
@@ -32,7 +59,8 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
 
   const loadSlice = async () => {
     try {
-      const data = await mockEngine.getSliceData('/mock/dce.nii.gz', sliceZ, timeFrame);
+      if (!volumePath) return;
+      const data = await mockEngine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
       setSliceData(data.data);
     } catch (error) {
       console.error('Failed to load slice:', error);
@@ -131,7 +159,7 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
               value={[sliceZ]}
               onValueChange={([value]) => setSliceZ(value)}
               min={0}
-              max={63}
+              max={maxZ}
               step={1}
               className="w-full"
             />
@@ -143,7 +171,7 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
               value={[timeFrame]}
               onValueChange={([value]) => setTimeFrame(value)}
               min={0}
-              max={79}
+              max={maxT}
               step={1}
               className="w-full"
             />
@@ -154,8 +182,8 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
             <Slider
               value={[windowMin]}
               onValueChange={([value]) => setWindowMin(value)}
-              min={0}
-              max={2000}
+              min={Math.min(windowMin, windowMax)}
+              max={windowMax}
               step={10}
               className="w-full"
             />
@@ -166,8 +194,8 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
             <Slider
               value={[windowMax]}
               onValueChange={([value]) => setWindowMax(value)}
-              min={0}
-              max={4000}
+              min={Math.min(windowMin, windowMax)}
+              max={Math.max(windowMax, windowMin + 1)}
               step={10}
               className="w-full"
             />

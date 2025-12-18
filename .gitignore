@@ -31,4 +31,12 @@ pids
 .file-manifest
 .devcontainer/
 
+# Python
+__pycache__/
+*.pyc
+
+# Local backend state
+backend/db.json
+backend/.pbrain-web/
+
 .spark-workbench-id

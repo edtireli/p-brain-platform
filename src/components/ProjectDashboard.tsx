@@ -178,7 +178,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
         if (child.isDirectory && !child.name.startsWith('.')) {
           subjectFolders.push({
             name: child.name,
-            path: child.fullPath,
+            path: child.name,
             selected: true,
           });
         }
