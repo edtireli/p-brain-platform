@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
-import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare } from '@phosphor-icons/react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { mockEngine } from '@/lib/mock-engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Project, Subject, StageId, StageStatus, Job } from '@/types';
@@ -13,6 +14,12 @@ import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
 import { motion, AnimatePresence } from 'framer-motion';
+
+interface DetectedSubject {
+  name: string;
+  path: string;
+  selected: boolean;
+}
 
 interface ProjectDashboardProps {
   projectId: string;
@@ -31,6 +38,11 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
   const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
   const lastSelectedIndexRef = useRef<number | null>(null);
+  
+  const [isDragging, setIsDragging] = useState(false);
+  const [detectedSubjects, setDetectedSubjects] = useState<DetectedSubject[]>([]);
+  const [droppedFolderName, setDroppedFolderName] = useState<string>('');
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadProject();
@@ -116,32 +128,128 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     setSubjects(data);
   };
 
-  const handleAddSubjects = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const subjectNames = (formData.get('subjectNames') as string)
-      .split('\n')
-      .filter(name => name.trim());
+  const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
+    const entries: FileSystemDirectoryEntry[] = [];
+    
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const entry = item.webkitGetAsEntry();
+        if (entry?.isDirectory) {
+          entries.push(entry as FileSystemDirectoryEntry);
+        }
+      }
+    }
 
-    if (subjectNames.length === 0) {
-      toast.error('Please enter at least one subject name');
+    if (entries.length === 0) {
+      toast.error('Please drop a folder containing subject folders');
       return;
     }
 
-    const subjectsToImport = subjectNames.map(name => ({
-      name: name.trim(),
-      sourcePath: `/data/subjects/${name.trim()}`,
+    const rootEntry = entries[0];
+    setDroppedFolderName(rootEntry.name);
+
+    const subjectFolders: DetectedSubject[] = [];
+
+    const reader = rootEntry.createReader();
+    const readEntries = (): Promise<FileSystemEntry[]> => {
+      return new Promise((resolve, reject) => {
+        reader.readEntries(resolve, reject);
+      });
+    };
+
+    try {
+      const childEntries = await readEntries();
+      
+      for (const child of childEntries) {
+        if (child.isDirectory && !child.name.startsWith('.')) {
+          subjectFolders.push({
+            name: child.name,
+            path: child.fullPath,
+            selected: true,
+          });
+        }
+      }
+
+      subjectFolders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      if (subjectFolders.length === 0) {
+        toast.error('No subject folders found in the dropped directory');
+        return;
+      }
+
+      setDetectedSubjects(subjectFolders);
+      toast.success(`Found ${subjectFolders.length} subject folder${subjectFolders.length > 1 ? 's' : ''}`);
+    } catch (error) {
+      console.error('Error reading directory:', error);
+      toast.error('Failed to read folder contents');
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dropZoneRef.current && !dropZoneRef.current.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    if (e.dataTransfer.items) {
+      processDroppedItems(e.dataTransfer.items);
+    }
+  }, [processDroppedItems]);
+
+  const handleToggleSubject = (index: number) => {
+    setDetectedSubjects(prev => 
+      prev.map((s, i) => i === index ? { ...s, selected: !s.selected } : s)
+    );
+  };
+
+  const handleSelectAllDetected = () => {
+    const allSelected = detectedSubjects.every(s => s.selected);
+    setDetectedSubjects(prev => prev.map(s => ({ ...s, selected: !allSelected })));
+  };
+
+  const handleImportSelected = async () => {
+    const toImport = detectedSubjects.filter(s => s.selected);
+    
+    if (toImport.length === 0) {
+      toast.error('No subjects selected for import');
+      return;
+    }
+
+    const subjectsToImport = toImport.map(s => ({
+      name: s.name,
+      sourcePath: s.path,
     }));
 
     try {
       await mockEngine.importSubjects(projectId, subjectsToImport);
-      toast.success(`Added ${subjectsToImport.length} subject(s)`);
+      toast.success(`Imported ${subjectsToImport.length} subject${subjectsToImport.length > 1 ? 's' : ''}`);
       setIsAddDialogOpen(false);
+      setDetectedSubjects([]);
+      setDroppedFolderName('');
       loadSubjects();
     } catch (error) {
-      toast.error('Failed to add subjects');
+      toast.error('Failed to import subjects');
       console.error(error);
     }
+  };
+
+  const handleClearDropped = () => {
+    setDetectedSubjects([]);
+    setDroppedFolderName('');
   };
 
   const handleRunFullPipeline = async () => {
@@ -383,48 +491,154 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 )}
               </Button>
 
-              <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+              <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
+                setIsAddDialogOpen(open);
+                if (!open) {
+                  setDetectedSubjects([]);
+                  setDroppedFolderName('');
+                  setIsDragging(false);
+                }
+              }}>
                 <DialogTrigger asChild>
                   <Button variant="secondary" className="gap-2">
                     <UserPlus size={20} weight="bold" />
                     Add Subjects
                   </Button>
                 </DialogTrigger>
-                <DialogContent>
+                <DialogContent className="max-w-lg">
                   <DialogHeader>
-                    <DialogTitle>Add Subjects</DialogTitle>
+                    <DialogTitle>Import Subjects</DialogTitle>
                     <DialogDescription>
-                      Enter subject names (one per line) to import into the project.
+                      Drag and drop a folder containing subject folders to import them into the pipeline.
                     </DialogDescription>
                   </DialogHeader>
 
-                  <form onSubmit={handleAddSubjects} className="space-y-6">
-                    <div className="space-y-2">
-                      <Label htmlFor="subjectNames">Subject Names</Label>
-                      <textarea
-                        id="subjectNames"
-                        name="subjectNames"
-                        rows={8}
-                        className="mono w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        placeholder="subject_001&#10;subject_002&#10;subject_003"
-                        required
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Each subject should have NIfTI data in the expected structure
-                      </p>
-                    </div>
+                  <div className="space-y-4">
+                    {detectedSubjects.length === 0 ? (
+                      <div
+                        ref={dropZoneRef}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        className={`relative flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-10 transition-all ${
+                          isDragging 
+                            ? 'border-accent bg-accent/5 scale-[1.02]' 
+                            : 'border-border hover:border-muted-foreground/50'
+                        }`}
+                      >
+                        <AnimatePresence>
+                          {isDragging && (
+                            <motion.div 
+                              className="absolute inset-0 rounded-lg bg-accent/10"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                            />
+                          )}
+                        </AnimatePresence>
+                        <FolderOpen 
+                          size={48} 
+                          weight={isDragging ? 'fill' : 'duotone'} 
+                          className={`mb-3 transition-colors ${isDragging ? 'text-accent' : 'text-muted-foreground'}`} 
+                        />
+                        <p className="text-sm font-medium text-foreground">
+                          {isDragging ? 'Drop folder here' : 'Drop a subjects folder here'}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          The folder should contain individual subject folders
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <FolderOpen size={18} className="text-accent" />
+                            <span className="mono text-sm font-medium">{droppedFolderName}</span>
+                            <Badge variant="secondary" className="text-xs">
+                              {detectedSubjects.filter(s => s.selected).length} / {detectedSubjects.length} selected
+                            </Badge>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleClearDropped}
+                            className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                          >
+                            <Trash size={16} />
+                          </Button>
+                        </div>
+                        
+                        <div className="flex items-center gap-2 border-b border-border pb-2">
+                          <Checkbox
+                            id="select-all-detected"
+                            checked={detectedSubjects.every(s => s.selected)}
+                            onCheckedChange={handleSelectAllDetected}
+                          />
+                          <label 
+                            htmlFor="select-all-detected" 
+                            className="text-xs font-medium text-muted-foreground cursor-pointer"
+                          >
+                            Select all
+                          </label>
+                        </div>
 
-                    <div className="flex justify-end gap-3">
+                        <ScrollArea className="h-[280px] pr-3">
+                          <div className="space-y-1">
+                            {detectedSubjects.map((subject, index) => (
+                              <motion.div
+                                key={subject.path}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: index * 0.02 }}
+                                className={`flex items-center gap-3 rounded-md px-3 py-2 transition-colors ${
+                                  subject.selected ? 'bg-accent/10' : 'hover:bg-muted/50'
+                                }`}
+                              >
+                                <Checkbox
+                                  id={`subject-${index}`}
+                                  checked={subject.selected}
+                                  onCheckedChange={() => handleToggleSubject(index)}
+                                />
+                                <label 
+                                  htmlFor={`subject-${index}`}
+                                  className="flex-1 cursor-pointer"
+                                >
+                                  <span className="mono text-sm">{subject.name}</span>
+                                </label>
+                                {subject.selected && (
+                                  <Check size={14} className="text-success" />
+                                )}
+                              </motion.div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-2">
                       <Button
                         type="button"
                         variant="secondary"
-                        onClick={() => setIsAddDialogOpen(false)}
+                        onClick={() => {
+                          setIsAddDialogOpen(false);
+                          setDetectedSubjects([]);
+                          setDroppedFolderName('');
+                        }}
                       >
                         Cancel
                       </Button>
-                      <Button type="submit">Import Subjects</Button>
+                      <Button 
+                        onClick={handleImportSelected}
+                        disabled={detectedSubjects.filter(s => s.selected).length === 0}
+                        className="gap-2"
+                      >
+                        <UserPlus size={18} />
+                        Import {detectedSubjects.filter(s => s.selected).length > 0 
+                          ? `(${detectedSubjects.filter(s => s.selected).length})` 
+                          : ''}
+                      </Button>
                     </div>
-                  </form>
+                  </div>
                 </DialogContent>
               </Dialog>
 

@@ -22,11 +22,11 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 - **Success criteria**: Project created with valid storage structure; accessible from project list; persists across app restarts
 
 ### 2. Subject Import & Indexing
-- **Functionality**: Discover and validate NIfTI files, DCE series, T1/IR sequences from local folders
-- **Purpose**: Prepare subject data for pipeline execution with clear requirements validation
-- **Trigger**: User clicks "Add Subjects" and selects folder(s)
-- **Progression**: Folder selection → File discovery → Validation checks → Missing data warnings → Confirm import → Subject added to cohort
-- **Success criteria**: Subject appears in dashboard grid; required/optional data clearly indicated; invalid subjects rejected with actionable feedback
+- **Functionality**: Discover and validate NIfTI files, DCE series, T1/IR sequences from local folders via drag-and-drop folder import
+- **Purpose**: Prepare subject data for pipeline execution with clear requirements validation using an intuitive folder-based import workflow
+- **Trigger**: User clicks "Add Subjects" button and drags a folder containing subject sub-folders into the drop zone
+- **Progression**: Click Add Subjects → Dialog opens with drop zone → Drag folder over drop zone → Drop folder → Sub-folders scanned → Subject list displayed with checkboxes → User selects/deselects subjects → Click Import → Subjects added to cohort
+- **Success criteria**: Drop zone provides visual feedback during drag; folder contents scanned immediately; subject folders detected and listed with selection checkboxes; select all/none toggle available; selected count shown; import only selected subjects; invalid folders show clear error; subjects appear in dashboard grid after import
 
 ### 3. Full Auto Pipeline Execution
 - **Functionality**: Execute all 10 stages sequentially with dependency management
