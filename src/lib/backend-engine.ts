@@ -235,6 +235,16 @@ export class BackendEngineAPI {
     return res.montages;
   }
 
+  async ensureSubjectArtifacts(
+    subjectId: string,
+    kind: 'all' | 'maps' | 'curves' | 'montages' = 'all'
+  ): Promise<{ started: boolean; jobs: any[]; reason: string }> {
+    return api<{ started: boolean; jobs: any[]; reason: string }>(
+      `/subjects/${encodeURIComponent(subjectId)}/ensure?kind=${encodeURIComponent(kind)}`,
+      { method: 'POST', body: JSON.stringify({}) }
+    );
+  }
+
   async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {
     return api<PatlakData>(
       `/subjects/${encodeURIComponent(subjectId)}/patlak?region=${encodeURIComponent(region)}`

@@ -117,6 +117,12 @@ class RunFullPipelineRequest(BaseModel):
     subjectIds: List[str]
 
 
+class EnsureArtifactsResponse(BaseModel):
+    started: bool
+    jobs: List[Dict[str, Any]] = Field(default_factory=list)
+    reason: str = ""
+
+
 class ResolveDefaultVolumeResponse(BaseModel):
     path: str
 
@@ -479,7 +485,7 @@ def _region_to_ai_key(region: str) -> str:
     return mapping.get(r, "cortical_gm")
 
 
-def _load_time_points(subject: Subject) -> "np.ndarray":
+def _load_time_points(subject: Subject) -> Any:
     _require_numpy()
     assert np is not None
     analysis_dir = _analysis_dir_for_subject(subject)
@@ -572,7 +578,9 @@ def _subject_montage_images(subject: Subject) -> List[Dict[str, Any]]:
             }
         )
     return images
-def _load_aif_curve(subject: Subject) -> "np.ndarray":
+
+
+def _load_aif_curve(subject: Subject) -> Any:
     _require_numpy()
     assert np is not None
     analysis_dir = _analysis_dir_for_subject(subject)
@@ -596,7 +604,7 @@ def _load_aif_curve(subject: Subject) -> "np.ndarray":
     raise HTTPException(status_code=404, detail="No AIF curve found")
 
 
-def _load_ai_tissue_curve(subject: Subject, region_key: str) -> "np.ndarray":
+def _load_ai_tissue_curve(subject: Subject, region_key: str) -> Any:
     _require_numpy()
     assert np is not None
     analysis_dir = _analysis_dir_for_subject(subject)
@@ -605,7 +613,7 @@ def _load_ai_tissue_curve(subject: Subject, region_key: str) -> "np.ndarray":
         patt = f"{region_key}_AI_Tissue_slice_*_segmented_median.npy"
         files = sorted(ai_dir.glob(patt))
         if files:
-            curves: List["np.ndarray"] = []
+            curves: List[Any] = []
             for p in files:
                 arr = np.asarray(np.load(str(p)), dtype=float).reshape(-1)
                 if arr.size >= 3 and np.all(np.isfinite(arr) | np.isnan(arr)):
@@ -627,7 +635,7 @@ def _load_ai_tissue_curve(subject: Subject, region_key: str) -> "np.ndarray":
     raise HTTPException(status_code=404, detail="No tissue curve found")
 
 
-def _align_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray") -> tuple["np.ndarray", "np.ndarray", "np.ndarray", float]:
+def _align_curves(t: Any, aif: Any, tissue: Any) -> tuple[Any, Any, Any, float]:
     _require_numpy()
     assert np is not None
     n = int(min(t.size, aif.size, tissue.size))
@@ -645,7 +653,7 @@ def _align_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray") -> t
     return t, aif, tissue, dt
 
 
-def _patlak_from_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray", *, window_start_fraction: float) -> Dict[str, Any]:
+def _patlak_from_curves(t: Any, aif: Any, tissue: Any, *, window_start_fraction: float) -> Dict[str, Any]:
     _require_numpy()
     assert np is not None
 
@@ -699,7 +707,7 @@ def _patlak_from_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray"
     }
 
 
-def _extended_tofts_model(t: "np.ndarray", Ktrans: float, ve: float, vp: float, Cp: "np.ndarray") -> "np.ndarray":
+def _extended_tofts_model(t: Any, Ktrans: float, ve: float, vp: float, Cp: Any) -> Any:
     _require_numpy()
     assert np is not None
     Ktrans = float(max(Ktrans, 1e-12))
@@ -715,7 +723,7 @@ def _extended_tofts_model(t: "np.ndarray", Ktrans: float, ve: float, vp: float, 
     return out
 
 
-def _tofts_from_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray", *, lambd: float) -> Dict[str, Any]:
+def _tofts_from_curves(t: Any, aif: Any, tissue: Any, *, lambd: float) -> Dict[str, Any]:
     _require_numpy()
     _require_scipy()
     assert np is not None
@@ -724,7 +732,7 @@ def _tofts_from_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray",
     # Fit Ktrans, ve, vp (all >= 0)
     x0 = np.array([0.001, 0.2, 0.05], dtype=float)
 
-    def residual(theta: "np.ndarray") -> "np.ndarray":
+    def residual(theta: Any) -> Any:
         theta = np.clip(theta, 1e-12, None)
         Ktrans, ve, vp = float(theta[0]), float(theta[1]), float(theta[2])
         Ct_pred = _extended_tofts_model(t, Ktrans, ve, vp, aif)
@@ -752,9 +760,9 @@ def _tofts_from_curves(t: "np.ndarray", aif: "np.ndarray", tissue: "np.ndarray",
 
 
 def _deconvolution_from_curves(
-    t: "np.ndarray",
-    aif: "np.ndarray",
-    tissue: "np.ndarray",
+    t: Any,
+    aif: Any,
+    tissue: Any,
     *,
     dt: float,
     lambd: float,
@@ -1392,34 +1400,73 @@ async def run_full(project_id: str, req: RunFullPipelineRequest) -> List[Dict[st
 
     for subject_id in req.subjectIds:
         subject = _find_subject(subject_id)
-
-        # Create one job per stage to match the existing UI.
-        job_ids: List[str] = []
-        for stage in STAGES:
-            jid = f"job_{int(datetime.utcnow().timestamp()*1000)}_{subject.id}_{stage}"
-            job = Job(
-                id=jid,
-                projectId=project.id,
-                subjectId=subject.id,
-                stageId=stage,
-                status="queued",
-                progress=0,
-                currentStep="Queued",
-            )
-            db.jobs.append(job)
-            created.append(job)
-            job_ids.append(jid)
-            await asyncio.sleep(0)  # yield
-
-        db._subject_job_ids[subject.id] = job_ids
-
-        # Background task runs the real p-brain auto pipeline (and will update stage jobs).
-        task = asyncio.create_task(_run_pbrain_auto(project=project, subject=subject))
-        for jid in job_ids:
-            db._job_tasks[jid] = task
+        created.extend(await _start_subject_run(project=project, subject=subject))
 
     db.save()
     return [asdict(j) for j in created]
+
+
+async def _start_subject_run(*, project: Project, subject: Subject) -> List[Job]:
+    # Disallow starting if there is an active run for this subject.
+    if any(j.subjectId == subject.id and j.status in {"queued", "running"} for j in db.jobs):
+        raise HTTPException(status_code=409, detail="Subject already has a queued/running job")
+
+    created: List[Job] = []
+    job_ids: List[str] = []
+    for stage in STAGES:
+        jid = f"job_{int(datetime.utcnow().timestamp()*1000)}_{subject.id}_{stage}"
+        job = Job(
+            id=jid,
+            projectId=project.id,
+            subjectId=subject.id,
+            stageId=stage,
+            status="queued",
+            progress=0,
+            currentStep="Queued",
+        )
+        db.jobs.append(job)
+        created.append(job)
+        job_ids.append(jid)
+        await asyncio.sleep(0)
+
+    db._subject_job_ids[subject.id] = job_ids
+    task = asyncio.create_task(_run_pbrain_auto(project=project, subject=subject))
+    for jid in job_ids:
+        db._job_tasks[jid] = task
+    return created
+
+
+@app.post("/subjects/{subject_id}/ensure")
+async def ensure_subject_artifacts(subject_id: str, kind: str = "all") -> Dict[str, Any]:
+    """Ensure key artifacts exist; if missing, trigger a p-brain auto run.
+
+    kind: one of "all", "maps", "curves", "montages".
+    """
+
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    want = (kind or "all").strip().lower()
+    if want not in {"all", "maps", "curves", "montages"}:
+        raise HTTPException(status_code=400, detail="Invalid kind")
+
+    missing: List[str] = []
+    if want in {"all", "curves"}:
+        if len(_analysis_curves(subject)) == 0:
+            missing.append("curves")
+    if want in {"all", "maps"}:
+        if len(_analysis_map_volumes(subject)) == 0:
+            missing.append("maps")
+    if want in {"all", "montages"}:
+        if len(_subject_montage_images(subject)) == 0:
+            missing.append("montages")
+
+    if not missing:
+        return {"started": False, "jobs": [], "reason": "Artifacts already present"}
+
+    created = await _start_subject_run(project=project, subject=subject)
+    db.save()
+    return {"started": True, "jobs": [asdict(j) for j in created], "reason": f"Missing: {', '.join(missing)}"}
 
 
 @app.post("/jobs/{job_id}/cancel")

@@ -3,18 +3,23 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { VolumeViewer } from '@/components/VolumeViewer';
-import { mockEngine } from '@/lib/mock-engine';
+import { mockEngine, isBackendEngine } from '@/lib/mock-engine';
 import { getBackendBaseUrl } from '@/lib/backend-engine';
-import type { MapVolume } from '@/types';
+import type { MapVolume, Subject } from '@/types';
 
 interface MapsViewProps {
   subjectId: string;
 }
 
 export function MapsView({ subjectId }: MapsViewProps) {
+  const [subject, setSubject] = useState<Subject | null>(null);
   const [maps, setMaps] = useState<MapVolume[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const selected = useMemo(() => maps.find(m => m.id === selectedId) ?? null, [maps, selectedId]);
+
+  const [ensuringMaps, setEnsuringMaps] = useState(false);
+  const [ensureMsg, setEnsureMsg] = useState<string>('');
+  const [ensureOnce, setEnsureOnce] = useState(false);
 
   const [montages, setMontages] = useState<Array<{ id: string; name: string; path: string }>>([]);
   const [selectedMontageId, setSelectedMontageId] = useState<string>('');
@@ -27,6 +32,10 @@ export function MapsView({ subjectId }: MapsViewProps) {
     let cancelled = false;
     const load = async () => {
       try {
+        const s = await mockEngine.getSubject(subjectId);
+        if (cancelled) return;
+        setSubject(s ?? null);
+
         const list = await mockEngine.getMapVolumes(subjectId);
         if (cancelled) return;
         setMaps(list);
@@ -47,6 +56,51 @@ export function MapsView({ subjectId }: MapsViewProps) {
       cancelled = true;
     };
   }, [subjectId]);
+
+  useEffect(() => {
+    if (!isBackendEngine) return;
+    if (ensureOnce) return;
+    if (!subject) return;
+    if (maps.length > 0) return;
+
+    // If modelling hasn't been run yet (or failed), auto-trigger the pipeline once.
+    const modelling = (subject.stageStatuses as any)?.modelling;
+    if (modelling === 'done') return;
+
+    setEnsureOnce(true);
+    setEnsuringMaps(true);
+    setEnsureMsg('Running p-brain to generate maps…');
+    mockEngine
+      .ensureSubjectArtifacts(subjectId, 'maps')
+      .then((res: any) => {
+        setEnsureMsg(res?.reason || 'Started');
+      })
+      .catch((e: any) => {
+        setEnsureMsg(String(e?.message || e || 'Failed to start pipeline'));
+      })
+      .finally(() => setEnsuringMaps(false));
+  }, [subjectId, subject, maps.length, ensureOnce]);
+
+  useEffect(() => {
+    if (!isBackendEngine) return;
+    if (!subject) return;
+    if (maps.length > 0) return;
+
+    // While modelling is running, poll for new map outputs.
+    const modelling = (subject.stageStatuses as any)?.modelling;
+    if (modelling !== 'running') return;
+    const t = window.setInterval(async () => {
+      try {
+        const list = await mockEngine.getMapVolumes(subjectId);
+        setMaps(list);
+        const s = await mockEngine.getSubject(subjectId);
+        setSubject(s ?? null);
+      } catch {
+        // ignore
+      }
+    }, 2500);
+    return () => window.clearInterval(t);
+  }, [subjectId, subject, maps.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,8 +132,31 @@ export function MapsView({ subjectId }: MapsViewProps) {
       <Card className="p-6">
         <h2 className="mb-4 text-lg font-semibold">Parameter Maps</h2>
         {maps.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-6 text-sm text-muted-foreground">
-            No parameter-map volumes found for this subject.
+          <div className="space-y-3 rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-6 text-sm text-muted-foreground">
+            <div>No parameter-map volumes found for this subject.</div>
+            {isBackendEngine ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">{ensuringMaps ? ensureMsg : ensureMsg}</div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      setEnsuringMaps(true);
+                      const res = await mockEngine.ensureSubjectArtifacts(subjectId, 'maps');
+                      setEnsureMsg(res?.reason || 'Started');
+                    } catch (e: any) {
+                      setEnsureMsg(String(e?.message || e || 'Failed to start pipeline'));
+                    } finally {
+                      setEnsuringMaps(false);
+                    }
+                  }}
+                  disabled={ensuringMaps}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {ensuringMaps ? 'Running…' : 'Run p-brain'}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <>
@@ -97,9 +174,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
                 >
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="font-semibold">{map.name}</h3>
-                    <Badge variant="default" className="bg-success text-success-foreground">
-                      Ready
-                    </Badge>
+                    <Badge variant="secondary">Available</Badge>
                   </div>
                   <div className="mono text-xs text-muted-foreground">{map.unit}</div>
                   <div className="mt-3 text-xs text-muted-foreground">

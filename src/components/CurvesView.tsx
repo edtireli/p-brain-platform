@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { mockEngine } from '@/lib/mock-engine';
+import { mockEngine, isBackendEngine } from '@/lib/mock-engine';
 import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
 
 interface CurvesViewProps {
@@ -14,6 +14,9 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   const [patlakData, setPatlakData] = useState<PatlakData | null>(null);
   const [toftsData, setToftsData] = useState<ToftsData | null>(null);
   const [deconvData, setDeconvData] = useState<DeconvolutionData | null>(null);
+  const [ensuring, setEnsuring] = useState(false);
+  const [ensureMsg, setEnsureMsg] = useState('');
+  const [ensureOnce, setEnsureOnce] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -36,6 +39,40 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
       console.error('Failed to load curves:', error);
     }
   };
+
+  useEffect(() => {
+    if (!isBackendEngine) return;
+    if (ensureOnce) return;
+    if (curves.length > 0) return;
+
+    setEnsureOnce(true);
+    setEnsuring(true);
+    setEnsureMsg('Running p-brain to generate curves…');
+    mockEngine
+      .ensureSubjectArtifacts(subjectId, 'curves')
+      .then((res: any) => setEnsureMsg(res?.reason || 'Started'))
+      .catch((e: any) => setEnsureMsg(String(e?.message || e || 'Failed to start pipeline')))
+      .finally(() => setEnsuring(false));
+  }, [subjectId, curves.length, ensureOnce]);
+
+  useEffect(() => {
+    if (!isBackendEngine) return;
+    if (curves.length > 0) return;
+    if (!ensureOnce) return;
+
+    const t = window.setInterval(async () => {
+      try {
+        const curvesData = await mockEngine.getCurves(subjectId);
+        if (curvesData.length > 0) {
+          setCurves(curvesData);
+          window.clearInterval(t);
+        }
+      } catch {
+        // ignore
+      }
+    }, 2500);
+    return () => window.clearInterval(t);
+  }, [subjectId, curves.length, ensureOnce]);
 
   return (
     <div className="space-y-6">
@@ -80,8 +117,31 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                 style={{ width: '100%', height: '500px' }}
               />
             ) : (
-              <div className="flex h-[400px] items-center justify-center text-muted-foreground">
-                No curve data available
+              <div className="flex h-[400px] flex-col items-center justify-center gap-3 text-muted-foreground">
+                <div>No curve data available</div>
+                {isBackendEngine ? (
+                  <div className="flex items-center gap-3">
+                    <div className="text-xs">{ensureMsg}</div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          setEnsuring(true);
+                          const res = await mockEngine.ensureSubjectArtifacts(subjectId, 'curves');
+                          setEnsureMsg(res?.reason || 'Started');
+                        } catch (e: any) {
+                          setEnsureMsg(String(e?.message || e || 'Failed to start pipeline'));
+                        } finally {
+                          setEnsuring(false);
+                        }
+                      }}
+                      disabled={ensuring}
+                      className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                    >
+                      {ensuring ? 'Running…' : 'Run p-brain'}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )}
           </Card>

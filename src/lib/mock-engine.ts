@@ -261,6 +261,10 @@ class MockEngineAPI {
     return [];
   }
 
+  async ensureSubjectArtifacts(_subjectId: string, _kind: 'all' | 'maps' | 'curves' | 'montages' = 'all') {
+    return { started: false, jobs: [], reason: 'Demo mode' };
+  }
+
   async getVolumeInfo(path: string, _subjectId?: string): Promise<VolumeInfo> {
     return {
       path,
