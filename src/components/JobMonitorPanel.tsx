@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, ArrowsClockwise, Check, XCircle, Clock, List, Timer } from '@phosphor-icons/react';
+import { X, ArrowClockwise, Check, XCircle, Clock, List, Timer } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -90,23 +90,23 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
     }
   };
 
-  const RunningIndicator = ({ size = 20 }: { size?: number }) => (
+  const RunningIndicator = ({ size = 12 }: { size?: number }) => (
     <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
       <motion.div
-        className="absolute rounded-full border-2 border-accent/30"
+        className="absolute rounded-full border border-accent/40"
         style={{ width: size, height: size }}
-        animate={{ scale: [1, 1.4, 1], opacity: [0.6, 0, 0.6] }}
-        transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ scale: [1, 1.3, 1], opacity: [0.5, 0, 0.5] }}
+        transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
       />
       <motion.div
-        className="absolute rounded-full border-2 border-transparent border-t-accent"
-        style={{ width: size * 0.75, height: size * 0.75 }}
+        className="absolute rounded-full border border-transparent border-t-accent"
+        style={{ width: size * 0.8, height: size * 0.8 }}
         animate={{ rotate: 360 }}
-        transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+        transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
       />
       <div 
         className="rounded-full bg-accent" 
-        style={{ width: size * 0.3, height: size * 0.3 }}
+        style={{ width: size * 0.25, height: size * 0.25 }}
       />
     </div>
   );
@@ -114,30 +114,30 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
   const getStatusIcon = (status: JobStatus) => {
     switch (status) {
       case 'completed':
-        return <Check size={20} weight="bold" className="text-success" />;
+        return <Check size={14} className="text-success" />;
       case 'failed':
-        return <XCircle size={20} weight="fill" className="text-destructive" />;
+        return <XCircle size={14} className="text-destructive" />;
       case 'running':
-        return <RunningIndicator />;
+        return <RunningIndicator size={14} />;
       case 'cancelled':
-        return <X size={20} weight="bold" className="text-muted-foreground" />;
+        return <X size={14} className="text-muted-foreground" />;
       case 'queued':
-        return <Clock size={20} className="text-muted-foreground" />;
+        return <Clock size={14} className="text-muted-foreground" />;
     }
   };
 
-  const getStatusColor = (status: JobStatus) => {
+  const getStatusBadgeStyle = (status: JobStatus) => {
     switch (status) {
       case 'completed':
-        return 'bg-success text-success-foreground';
+        return 'bg-success/10 text-success border-success/20';
       case 'failed':
-        return 'bg-destructive text-destructive-foreground';
+        return 'bg-destructive/10 text-destructive border-destructive/20';
       case 'running':
-        return 'bg-accent text-accent-foreground';
+        return 'bg-accent/10 text-accent border-accent/20';
       case 'cancelled':
-        return 'bg-muted text-muted-foreground';
+        return 'bg-muted text-muted-foreground border-border';
       case 'queued':
-        return 'bg-secondary text-secondary-foreground';
+        return 'bg-secondary/50 text-secondary-foreground border-border';
     }
   };
 
@@ -171,92 +171,76 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full max-w-2xl border-l border-border bg-background shadow-2xl">
+    <div className="fixed inset-y-0 right-0 z-50 w-full max-w-xl border-l border-border bg-background shadow-2xl">
       <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
-          <div className="flex items-center gap-3">
-            <List size={24} weight="bold" className="text-primary" />
+        <div className="flex items-center justify-between border-b border-border bg-card px-5 py-3">
+          <div className="flex items-center gap-2.5">
+            <List size={16} className="text-primary" />
             <div>
-              <h2 className="text-xl font-semibold">Job Monitor</h2>
-              <ConnectionStatus isConnected={isConnected} className="mt-1" />
+              <h2 className="text-sm font-medium tracking-tight">Job Monitor</h2>
+              <ConnectionStatus isConnected={isConnected} className="mt-0.5" />
             </div>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            <X size={20} />
+          <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0">
+            <X size={14} />
           </Button>
         </div>
 
-        <div className="border-b border-border bg-muted/30 px-6 py-4">
-          <div className="grid grid-cols-4 gap-4">
-            <Card className="border-accent/20">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2">
-                  <RunningIndicator size={20} />
-                  <div>
-                    <p className="text-2xl font-semibold">{runningCount}</p>
-                    <p className="text-xs text-muted-foreground">Running</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        <div className="border-b border-border bg-muted/20 px-5 py-3">
+          <div className="grid grid-cols-4 gap-2">
+            <div className="flex items-center gap-2 rounded-md border border-accent/20 bg-card px-3 py-2">
+              <RunningIndicator size={10} />
+              <div>
+                <p className="text-base font-medium leading-none">{runningCount}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Running</p>
+              </div>
+            </div>
             
-            <Card>
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2">
-                  <Clock size={20} className="text-muted-foreground" />
-                  <div>
-                    <p className="text-2xl font-semibold">{queuedCount}</p>
-                    <p className="text-xs text-muted-foreground">Queued</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">
+              <Clock size={10} className="text-muted-foreground" />
+              <div>
+                <p className="text-base font-medium leading-none">{queuedCount}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Queued</p>
+              </div>
+            </div>
             
-            <Card className="border-success/20">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2">
-                  <Check size={20} weight="bold" className="text-success" />
-                  <div>
-                    <p className="text-2xl font-semibold">{completedCount}</p>
-                    <p className="text-xs text-muted-foreground">Completed</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="flex items-center gap-2 rounded-md border border-success/20 bg-card px-3 py-2">
+              <Check size={10} className="text-success" />
+              <div>
+                <p className="text-base font-medium leading-none">{completedCount}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Done</p>
+              </div>
+            </div>
             
-            <Card className="border-destructive/20">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2">
-                  <XCircle size={20} weight="fill" className="text-destructive" />
-                  <div>
-                    <p className="text-2xl font-semibold">{failedCount}</p>
-                    <p className="text-xs text-muted-foreground">Failed</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-card px-3 py-2">
+              <XCircle size={10} className="text-destructive" />
+              <div>
+                <p className="text-base font-medium leading-none">{failedCount}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Failed</p>
+              </div>
+            </div>
           </div>
         </div>
 
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as JobStatus | 'all')} className="flex-1 flex flex-col">
-          <div className="border-b border-border px-6">
-            <TabsList className="w-full justify-start">
-              <TabsTrigger value="all">All ({jobs.length})</TabsTrigger>
-              <TabsTrigger value="running">Running ({runningCount})</TabsTrigger>
-              <TabsTrigger value="queued">Queued ({queuedCount})</TabsTrigger>
-              <TabsTrigger value="completed">Completed ({completedCount})</TabsTrigger>
-              <TabsTrigger value="failed">Failed ({failedCount})</TabsTrigger>
+        <Tabs value={filter} onValueChange={(v) => setFilter(v as JobStatus | 'all')} className="flex-1 flex flex-col overflow-hidden">
+          <div className="border-b border-border px-5">
+            <TabsList className="w-full justify-start h-9 bg-transparent p-0 gap-0">
+              <TabsTrigger value="all" className="text-xs px-3 h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent">All ({jobs.length})</TabsTrigger>
+              <TabsTrigger value="running" className="text-xs px-3 h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent">Running ({runningCount})</TabsTrigger>
+              <TabsTrigger value="queued" className="text-xs px-3 h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent">Queued ({queuedCount})</TabsTrigger>
+              <TabsTrigger value="completed" className="text-xs px-3 h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent">Done ({completedCount})</TabsTrigger>
+              <TabsTrigger value="failed" className="text-xs px-3 h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent">Failed ({failedCount})</TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value={filter} className="flex-1 mt-0">
+          <TabsContent value={filter} className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="space-y-3 p-6">
+              <div className="space-y-2 p-4">
                 {filteredJobs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-16 text-center">
-                    <List size={64} className="mb-4 text-muted-foreground" />
-                    <h3 className="mb-2 text-lg font-medium">No jobs</h3>
-                    <p className="text-sm text-muted-foreground">
+                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                    <List size={32} className="mb-3 text-muted-foreground/50" />
+                    <h3 className="text-sm font-medium text-muted-foreground">No jobs</h3>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
                       {filter === 'all' ? 'No jobs have been started yet' : `No ${filter} jobs`}
                     </p>
                   </div>
@@ -269,102 +253,82 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
                         <motion.div
                           key={job.id}
                           layout
-                          initial={{ opacity: 0, y: 20 }}
+                          initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ duration: 0.2 }}
+                          exit={{ opacity: 0, scale: 0.98 }}
+                          transition={{ duration: 0.15 }}
                         >
-                          <Card className={`overflow-hidden transition-all ${job.status === 'running' ? 'border-accent/40 shadow-accent/5 shadow-md' : ''}`}>
+                          <Card className={`overflow-hidden transition-all ${job.status === 'running' ? 'border-accent/30 shadow-sm' : 'border-border'}`}>
                             <div
-                              className="cursor-pointer p-4 hover:bg-muted/50"
+                              className="cursor-pointer px-3 py-2.5 hover:bg-muted/30 transition-colors"
                               onClick={() => setExpandedJobId(isExpanded ? null : job.id)}
                             >
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="flex items-start gap-3 flex-1 min-w-0">
-                                  <motion.div 
-                                    className="mt-1"
-                                    animate={job.status === 'running' ? { scale: [1, 1.1, 1] } : {}}
-                                    transition={{ duration: 2, repeat: Infinity }}
-                                  >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                                  <div className="mt-0.5 flex-shrink-0">
                                     {getStatusIcon(job.status)}
-                                  </motion.div>
+                                  </div>
                                   
                                   <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <h3 className="font-semibold truncate">{STAGE_NAMES[job.stageId]}</h3>
-                                      <Badge variant="outline" className="mono text-xs">
-                                        {job.id.split('_').slice(-1)[0]}
-                                      </Badge>
+                                    <div className="flex items-center gap-2">
+                                      <h3 className="text-xs font-medium truncate">{STAGE_NAMES[job.stageId]}</h3>
+                                      <span className="mono text-[10px] text-muted-foreground/60">
+                                        #{job.id.split('_').slice(-1)[0]}
+                                      </span>
                                     </div>
                                     
-                                    <p className="text-sm text-muted-foreground mb-2 truncate">
-                                      Subject: {job.subjectId}
+                                    <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                                      {job.subjectId}
                                     </p>
                                     
                                     {job.status === 'running' && (
-                                      <div className="space-y-2">
-                                        <div className="flex items-center justify-between text-sm">
+                                      <div className="mt-2 space-y-1.5">
+                                        <div className="flex items-center justify-between">
                                           <motion.span 
-                                            className="text-muted-foreground"
+                                            className="text-[10px] text-muted-foreground"
                                             key={job.currentStep}
-                                            initial={{ opacity: 0, x: -10 }}
-                                            animate={{ opacity: 1, x: 0 }}
+                                            initial={{ opacity: 0 }}
+                                            animate={{ opacity: 1 }}
                                           >
                                             {job.currentStep}
                                           </motion.span>
-                                          <motion.span 
-                                            className="font-medium mono"
-                                            key={job.progress}
-                                            initial={{ scale: 1.2, color: 'var(--accent)' }}
-                                            animate={{ scale: 1, color: 'var(--foreground)' }}
-                                          >
+                                          <span className="text-[10px] font-medium mono text-accent">
                                             {Math.round(job.progress)}%
-                                          </motion.span>
+                                          </span>
                                         </div>
-                                        <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+                                        <div className="relative h-1 w-full overflow-hidden rounded-full bg-muted">
                                           <motion.div
                                             className="absolute inset-y-0 left-0 rounded-full bg-accent"
                                             initial={{ width: 0 }}
                                             animate={{ width: `${job.progress}%` }}
-                                            transition={{ duration: 0.5, ease: "easeOut" }}
-                                          />
-                                          <motion.div
-                                            className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent"
-                                            animate={{ x: ['-100%', '200%'] }}
-                                            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                                            transition={{ duration: 0.3, ease: "easeOut" }}
                                           />
                                         </div>
                                         {job.estimatedTimeRemaining !== undefined && (
-                                          <motion.div 
-                                            className="flex items-center gap-1.5 text-xs text-accent"
-                                            initial={{ opacity: 0 }}
-                                            animate={{ opacity: 1 }}
-                                          >
-                                            <Timer size={14} weight="bold" />
+                                          <div className="flex items-center gap-1 text-[10px] text-accent/80">
+                                            <Timer size={10} />
                                             <span className="mono">{formatEstimatedTime(job.estimatedTimeRemaining)}</span>
-                                          </motion.div>
+                                          </div>
                                         )}
                                       </div>
                                     )}
                                     
                                     {job.status === 'failed' && job.error && (
-                                      <p className="text-sm text-destructive mt-2">{job.error}</p>
+                                      <p className="text-[10px] text-destructive mt-1.5 line-clamp-1">{job.error}</p>
                                     )}
                                     
-                                    <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                                      <span>Duration: {formatDuration(job.startTime, job.endTime)}</span>
+                                    <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground/60">
+                                      <span>{formatDuration(job.startTime, job.endTime)}</span>
                                       {job.startTime && (
-                                        <span>Started: {new Date(job.startTime).toLocaleTimeString()}</span>
+                                        <span>{new Date(job.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                                       )}
                                     </div>
                                   </div>
                                 </div>
                                 
-                                <div className="flex items-center gap-2">
-                                  <Badge className={`${getStatusColor(job.status)} ${job.status === 'running' ? 'animate-pulse' : ''}`}>
-                                    {job.status}
-                                  </Badge>
-                                </div>
+                                <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-5 font-normal ${getStatusBadgeStyle(job.status)}`}>
+                                  {job.status}
+                                </Badge>
                               </div>
                             </div>
                             
@@ -374,36 +338,32 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
                                   initial={{ height: 0, opacity: 0 }}
                                   animate={{ height: 'auto', opacity: 1 }}
                                   exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.2 }}
+                                  transition={{ duration: 0.15 }}
                                   className="overflow-hidden"
                                 >
-                                  <div className="border-t border-border bg-muted/30 p-4">
-                                    <div className="space-y-4">
+                                  <div className="border-t border-border bg-muted/20 px-3 py-3">
+                                    <div className="space-y-3">
                                       <div>
-                                        <h4 className="mb-2 text-sm font-semibold">Job Details</h4>
-                                        <div className="mono space-y-1 text-xs text-muted-foreground">
+                                        <h4 className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">Details</h4>
+                                        <div className="mono space-y-0.5 text-[10px]">
                                           <div className="flex justify-between">
-                                            <span>Job ID:</span>
-                                            <span>{job.id}</span>
+                                            <span className="text-muted-foreground">Job ID</span>
+                                            <span className="text-foreground">{job.id}</span>
                                           </div>
                                           <div className="flex justify-between">
-                                            <span>Subject ID:</span>
-                                            <span>{job.subjectId}</span>
-                                          </div>
-                                          <div className="flex justify-between">
-                                            <span>Stage:</span>
-                                            <span>{job.stageId}</span>
+                                            <span className="text-muted-foreground">Stage</span>
+                                            <span className="text-foreground">{job.stageId}</span>
                                           </div>
                                           {job.startTime && (
                                             <div className="flex justify-between">
-                                              <span>Started:</span>
-                                              <span>{new Date(job.startTime).toLocaleString()}</span>
+                                              <span className="text-muted-foreground">Started</span>
+                                              <span className="text-foreground">{new Date(job.startTime).toLocaleString()}</span>
                                             </div>
                                           )}
                                           {job.endTime && (
                                             <div className="flex justify-between">
-                                              <span>Ended:</span>
-                                              <span>{new Date(job.endTime).toLocaleString()}</span>
+                                              <span className="text-muted-foreground">Ended</span>
+                                              <span className="text-foreground">{new Date(job.endTime).toLocaleString()}</span>
                                             </div>
                                           )}
                                         </div>
@@ -411,30 +371,30 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
                                       
                                       {job.logPath && (
                                         <div>
-                                          <h4 className="mb-2 text-sm font-semibold">Log Path</h4>
-                                          <p className="mono text-xs text-muted-foreground">{job.logPath}</p>
+                                          <h4 className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Log Path</h4>
+                                          <p className="mono text-[10px] text-foreground/80 break-all">{job.logPath}</p>
                                         </div>
                                       )}
                                       
                                       {(job.status === 'running' || job.status === 'completed' || job.status === 'failed') && (
                                         <div>
-                                          <h4 className="mb-2 text-sm font-semibold">Live Logs</h4>
+                                          <h4 className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">Live Logs</h4>
                                           <LogStream jobId={job.id} />
                                         </div>
                                       )}
                                       
-                                      <div className="flex gap-2">
+                                      <div className="flex gap-2 pt-1">
                                         {(job.status === 'running' || job.status === 'queued') && (
                                           <Button
                                             size="sm"
-                                            variant="destructive"
+                                            variant="outline"
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               handleCancel(job.id);
                                             }}
-                                            className="gap-2"
+                                            className="h-7 text-[11px] gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
                                           >
-                                            <X size={16} weight="bold" />
+                                            <X size={12} />
                                             Cancel
                                           </Button>
                                         )}
@@ -442,14 +402,14 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
                                         {(job.status === 'failed' || job.status === 'cancelled') && (
                                           <Button
                                             size="sm"
-                                            variant="secondary"
+                                            variant="outline"
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               handleRetry(job.id);
                                             }}
-                                            className="gap-2"
+                                            className="h-7 text-[11px] gap-1.5"
                                           >
-                                            <ArrowsClockwise size={16} weight="bold" />
+                                            <ArrowClockwise size={12} />
                                             Retry
                                           </Button>
                                         )}
