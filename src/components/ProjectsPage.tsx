@@ -5,26 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import { mockEngine, engineKind, isBackendEngine } from '@/lib/mock-engine';
+import { mockEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
-
-function buildEngineSwitchUrl(nextEngine: 'backend' | 'demo'): string {
-  const url = new URL(window.location.href);
-  url.searchParams.set('engine', nextEngine);
-
-  if (nextEngine === 'backend') {
-    const hasBackend = (url.searchParams.get('backend') || '').trim().length > 0;
-    if (!hasBackend) {
-      const defaultBackend = window.location.protocol === 'https:' ? 'https://127.0.0.1:8787' : 'http://127.0.0.1:8787';
-      url.searchParams.set('backend', defaultBackend);
-    }
-  }
-
-  return url.toString();
-}
 
 function slugify(input: string): string {
   return (input || '')
@@ -50,7 +33,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
-  const [draftCopyData, setDraftCopyData] = useState(true);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
@@ -90,14 +72,13 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       const project = await mockEngine.createProject({
         name,
         storagePath,
-        copyDataIntoProject: !!draftCopyData,
+        copyDataIntoProject: true,
       });
       
       toast.success('Project created successfully');
       setIsCreateDialogOpen(false);
       setDraftName('');
       setDraftStoragePath('');
-      setDraftCopyData(true);
       loadProjects();
       onSelectProject(project.id);
     } catch (error) {
@@ -121,7 +102,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     setDraftName(prefillName ?? '');
     const nextName = prefillName ?? draftName;
     setDraftStoragePath(defaultStoragePath(nextName || 'project'));
-    setDraftCopyData(true);
     setIsCreateDialogOpen(true);
   };
 
@@ -143,6 +123,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     const rootEntry = entries[0];
+    const fullPath = (rootEntry as any).fullPath || '';
+    const inferredPath = fullPath && fullPath.startsWith('/') ? fullPath : `~/${rootEntry.name}`;
+    setDraftStoragePath(inferredPath);
     openCreateDialog(rootEntry.name);
   }, []);
 
@@ -174,7 +157,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   }, [processDroppedItems]);
 
-  const computedStoragePath = defaultStoragePath(draftName || 'my-study');
+  const computedStoragePath = draftStoragePath || defaultStoragePath(draftName || 'my-study');
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -189,22 +172,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal">
-              Engine: {engineKind}
-            </Badge>
+          <div />
 
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => window.location.assign(buildEngineSwitchUrl(isBackendEngine ? 'demo' : 'backend'))}
-              className="h-7 px-2 text-xs"
-            >
-              {isBackendEngine ? 'Use demo' : 'Use backend'}
-            </Button>
-          </div>
-          
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button size="lg" className="gap-2">
@@ -248,29 +217,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   </p>
                 </div>
 
-                <div className="flex items-start gap-3 rounded-lg border border-border bg-card p-4">
-                  <Checkbox
-                    id="copyData"
-                    checked={draftCopyData}
-                    onCheckedChange={(v) => setDraftCopyData(v === true)}
-                  />
-                  <div className="space-y-1">
-                    <Label htmlFor="copyData">Copy data into project</Label>
-                    <p className="text-xs text-muted-foreground">
-                      When enabled, the backend copies subjects into the project folder before processing.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border bg-card p-4">
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    This web app writes and manipulates data on your machine. You are responsible for maintaining
-                    backups. We are not liable for loss or corruption of data.
-                  </p>
-                  <div className="mt-3">
-                    <p className="text-xs text-muted-foreground">Project storage location</p>
-                    <p className="mono text-xs text-foreground mt-1">{draftStoragePath || computedStoragePath}</p>
-                  </div>
+                <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+                  <p className="font-medium text-foreground">Data handling</p>
+                  <p>The backend copies subjects into the project folder before processing. Ensure the destination has space and is backed up.</p>
+                  <p className="mono text-xs">Project storage location<br />{draftStoragePath || computedStoragePath}</p>
                 </div>
 
                 <div className="flex justify-end gap-3">

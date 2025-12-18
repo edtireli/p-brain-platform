@@ -255,6 +255,12 @@ export class BackendEngineAPI {
     });
   }
 
+  async scanProjectSubjects(projectId: string): Promise<{ subjects: Array<{ name: string; sourcePath: string }> }> {
+    return api<{ subjects: Array<{ name: string; sourcePath: string }> }>(
+      `/projects/${encodeURIComponent(projectId)}/scan-subject-folders`
+    );
+  }
+
   async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
     return api<Job[]>(`/projects/${encodeURIComponent(projectId)}/run-full`, {
       method: 'POST',

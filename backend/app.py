@@ -1136,6 +1136,26 @@ def get_project(project_id: str) -> Dict[str, Any]:
     return asdict(p)
 
 
+@app.get("/projects/{project_id}/scan-subject-folders")
+def scan_subject_folders(project_id: str) -> Dict[str, Any]:
+    p = _find_project(project_id)
+    root = Path(p.storagePath).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail="Project storage path is not a directory")
+
+    subjects: List[Dict[str, str]] = []
+    for entry in os.scandir(root):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name.startswith("."):
+            continue
+        subjects.append({"name": name, "sourcePath": str(Path(entry.path).resolve())})
+
+    subjects.sort(key=lambda x: x["name"].lower())
+    return {"subjects": subjects}
+
+
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: str) -> Dict[str, Any]:
     _find_project(project_id)

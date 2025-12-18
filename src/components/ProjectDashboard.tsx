@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { mockEngine, isBackendEngine } from '@/lib/mock-engine';
+import { mockEngine } from '@/lib/mock-engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig } from '@/types';
 import { STAGE_NAMES } from '@/types';
@@ -15,7 +15,6 @@ import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
 import { FolderStructureConfig as FolderStructureConfigComponent } from './FolderStructureConfig';
 import { motion, AnimatePresence } from 'framer-motion';
-import { engineKind } from '@/lib/mock-engine';
 
 interface DetectedSubject {
   name: string;
@@ -45,6 +44,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [detectedSubjects, setDetectedSubjects] = useState<DetectedSubject[]>([]);
   const [droppedFolderName, setDroppedFolderName] = useState<string>('');
   const dropZoneRef = useRef<HTMLDivElement>(null);
+
+  const [isScanning, setIsScanning] = useState(false);
 
   const [showDemoInfo, setShowDemoInfo] = useState(true);
 
@@ -268,6 +269,30 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     setDroppedFolderName('');
   };
 
+  const handleScanAndImport = async () => {
+    if (!project) return;
+    setIsScanning(true);
+    try {
+      const result = await mockEngine.scanProjectSubjects(projectId);
+      const existing = new Set(subjects.map(s => s.name.toLowerCase()));
+      const toImport = (result?.subjects || []).filter(s => !existing.has(s.name.toLowerCase()));
+
+      if (toImport.length === 0) {
+        toast.info('No new subject folders found in project storage path');
+        return;
+      }
+
+      await mockEngine.importSubjects(projectId, toImport);
+      toast.success(`Imported ${toImport.length} subject${toImport.length > 1 ? 's' : ''} from storage`);
+      loadSubjects();
+    } catch (error) {
+      toast.error('Failed to scan or import subjects');
+      console.error(error);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   const handleRunFullPipeline = async () => {
     if (subjects.length === 0) {
       toast.error('No subjects to process');
@@ -453,9 +478,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
             </div>
 
             <div className="flex gap-3 items-center">
-              <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal">
-                Engine: {engineKind}
-              </Badge>
               <AnimatePresence>
                 {selectedSubjectIds.size > 0 && (
                   <motion.div
@@ -510,6 +532,16 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                     </motion.span>
                   </motion.span>
                 )}
+              </Button>
+
+              <Button
+                variant="secondary"
+                onClick={handleScanAndImport}
+                disabled={isScanning}
+                className="gap-2"
+              >
+                <FolderOpen size={18} />
+                {isScanning ? 'Scanning…' : 'Scan & add subjects'}
               </Button>
 
               <FolderStructureConfigComponent 
