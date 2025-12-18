@@ -169,6 +169,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const handleSelectSubjectToggle = (subjectId: string, index: number, e: React.MouseEvent) => {
     e.stopPropagation();
     
+    const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+    
     if (e.shiftKey && lastSelectedIndexRef.current !== null) {
       const start = Math.min(lastSelectedIndexRef.current, index);
       const end = Math.max(lastSelectedIndexRef.current, index);
@@ -177,6 +179,16 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       setSelectedSubjectIds(prev => {
         const next = new Set(prev);
         rangeIds.forEach(id => next.add(id));
+        return next;
+      });
+    } else if (isCtrlOrCmd) {
+      setSelectedSubjectIds(prev => {
+        const next = new Set(prev);
+        if (next.has(subjectId)) {
+          next.delete(subjectId);
+        } else {
+          next.add(subjectId);
+        }
         return next;
       });
     } else {
@@ -492,7 +504,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                 </TooltipTrigger>
                                 <TooltipContent>
                                   <span>Click to select</span>
-                                  <span className="block text-xs text-muted-foreground">Shift+click for range</span>
+                                  <span className="block text-xs text-muted-foreground">Shift+click for range · Ctrl+click to toggle</span>
                                 </TooltipContent>
                               </Tooltip>
                             </td>
