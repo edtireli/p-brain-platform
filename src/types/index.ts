@@ -77,6 +77,7 @@ export interface Job {
   currentStep: string;
   startTime?: string;
   endTime?: string;
+  estimatedTimeRemaining?: number;
   error?: string;
   logPath?: string;
   logs?: Array<{

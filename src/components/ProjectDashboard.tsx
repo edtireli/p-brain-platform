@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play, UserPlus, ArrowLeft, X, List } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { mockEngine } from '@/lib/mock-engine';
-import type { Project, Subject, StageId, StageStatus } from '@/types';
+import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
+import type { Project, Subject, StageId, StageStatus, Job } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
@@ -25,12 +27,14 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [isRunning, setIsRunning] = useState(false);
   const [isJobMonitorOpen, setIsJobMonitorOpen] = useState(false);
   const [activeJobsCount, setActiveJobsCount] = useState(0);
+  const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
+  const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
 
   useEffect(() => {
     loadProject();
     loadSubjects();
 
-    const unsubscribe = mockEngine.onStatusUpdate(update => {
+    const unsubscribeStatus = mockEngine.onStatusUpdate(update => {
       setSubjects(prev =>
         prev.map(s =>
           s.id === update.subjectId
@@ -40,14 +44,41 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       );
     });
 
+    const unsubscribeJob = mockEngine.onJobUpdate((job: Job) => {
+      const previousStatus = previousJobStatusesRef.current.get(job.id);
+      
+      if (previousStatus && previousStatus !== job.status) {
+        if (job.status === 'completed' && previousStatus === 'running') {
+          playSuccessSound();
+        } else if (job.status === 'failed' && previousStatus === 'running') {
+          playErrorSound();
+        }
+      }
+      
+      previousJobStatusesRef.current.set(job.id, job.status);
+
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        setRunningSubjectIds(prev => {
+          const next = new Set(prev);
+          next.delete(job.subjectId);
+          return next;
+        });
+      }
+    });
+
     const interval = setInterval(async () => {
       const jobs = await mockEngine.getJobs({ projectId });
       const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
       setActiveJobsCount(active);
+      
+      jobs.forEach(job => {
+        previousJobStatusesRef.current.set(job.id, job.status);
+      });
     }, 2000);
 
     return () => {
-      unsubscribe();
+      unsubscribeStatus();
+      unsubscribeJob();
       clearInterval(interval);
     };
   }, [projectId]);
@@ -96,9 +127,11 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       return;
     }
 
+    resumeAudioContext();
     setIsRunning(true);
     try {
       const subjectIds = subjects.map(s => s.id);
+      setRunningSubjectIds(new Set(subjectIds));
       await mockEngine.runFullPipeline(projectId, subjectIds);
       toast.success('Pipeline started for all subjects');
     } catch (error) {
@@ -106,6 +139,25 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       console.error(error);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const handleRunSubjectPipeline = async (e: React.MouseEvent, subjectId: string, subjectName: string) => {
+    e.stopPropagation();
+    resumeAudioContext();
+    
+    setRunningSubjectIds(prev => new Set(prev).add(subjectId));
+    try {
+      await mockEngine.runSubjectPipeline(projectId, subjectId);
+      toast.success(`Pipeline started for ${subjectName}`);
+    } catch (error) {
+      toast.error(`Failed to start pipeline for ${subjectName}`);
+      setRunningSubjectIds(prev => {
+        const next = new Set(prev);
+        next.delete(subjectId);
+        return next;
+      });
+      console.error(error);
     }
   };
 
@@ -280,7 +332,10 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-border bg-muted/50">
-                      <th className="sticky left-0 z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                      <th className="sticky left-0 z-10 bg-muted/50 px-2 py-3 text-center text-xs font-medium uppercase tracking-wider w-12">
+                        Run
+                      </th>
+                      <th className="sticky left-12 z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                         Subject
                       </th>
                       {stages.map(stageId => (
@@ -294,46 +349,81 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                     </tr>
                   </thead>
                   <tbody>
-                    {subjects.map(subject => (
-                      <tr
-                        key={subject.id}
-                        className="cursor-pointer border-b border-border transition-colors hover:bg-muted/50"
-                        onClick={() => onSelectSubject(subject.id)}
-                      >
-                        <td className="sticky left-0 z-10 bg-card px-4 py-3 font-normal hover:bg-muted/50">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-sm">{subject.name}</span>
-                            <div className="flex gap-2">
-                              {subject.hasT1 && (
-                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
-                                  T1
-                                </Badge>
-                              )}
-                              {subject.hasDCE && (
-                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
-                                  DCE
-                                </Badge>
-                              )}
-                              {subject.hasDiffusion && (
-                                <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
-                                  DTI
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        {stages.map(stageId => {
-                          const status = subject.stageStatuses[stageId];
-                          return (
-                            <td key={stageId} className="px-3 py-3">
-                              <div className="flex justify-center">
-                                {getStatusIndicator(status)}
+                    <TooltipProvider>
+                      {subjects.map(subject => {
+                        const isSubjectRunning = runningSubjectIds.has(subject.id) || 
+                          Object.values(subject.stageStatuses).some(s => s === 'running');
+                        
+                        return (
+                          <tr
+                            key={subject.id}
+                            className="cursor-pointer border-b border-border transition-colors hover:bg-muted/50"
+                            onClick={() => onSelectSubject(subject.id)}
+                          >
+                            <td className="sticky left-0 z-10 bg-card px-2 py-3 hover:bg-muted/50">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={(e) => handleRunSubjectPipeline(e, subject.id, subject.name)}
+                                    disabled={isSubjectRunning}
+                                    className={`flex h-8 w-8 items-center justify-center rounded-md transition-all ${
+                                      isSubjectRunning 
+                                        ? 'cursor-not-allowed opacity-50' 
+                                        : 'hover:bg-primary hover:text-primary-foreground text-muted-foreground hover:scale-110'
+                                    }`}
+                                  >
+                                    {isSubjectRunning ? (
+                                      <motion.div
+                                        className="h-4 w-4 rounded-full border-2 border-transparent border-t-accent"
+                                        animate={{ rotate: 360 }}
+                                        transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                                      />
+                                    ) : (
+                                      <Play size={16} weight="fill" />
+                                    )}
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="right">
+                                  {isSubjectRunning ? 'Pipeline running...' : 'Run full pipeline for this subject'}
+                                </TooltipContent>
+                              </Tooltip>
+                            </td>
+                            <td className="sticky left-12 z-10 bg-card px-4 py-3 font-normal hover:bg-muted/50">
+                              <div className="flex flex-col gap-1">
+                                <span className="text-sm">{subject.name}</span>
+                                <div className="flex gap-2">
+                                  {subject.hasT1 && (
+                                    <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
+                                      T1
+                                    </Badge>
+                                  )}
+                                  {subject.hasDCE && (
+                                    <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
+                                      DCE
+                                    </Badge>
+                                  )}
+                                  {subject.hasDiffusion && (
+                                    <Badge variant="secondary" className="text-xs font-normal px-1.5 py-0">
+                                      DTI
+                                    </Badge>
+                                  )}
+                                </div>
                               </div>
                             </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                            {stages.map(stageId => {
+                              const status = subject.stageStatuses[stageId];
+                              return (
+                                <td key={stageId} className="px-3 py-3">
+                                  <div className="flex justify-center">
+                                    {getStatusIndicator(status)}
+                                  </div>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </TooltipProvider>
                   </tbody>
                 </table>
               </div>

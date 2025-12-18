@@ -307,10 +307,12 @@ class MockEngineAPI {
 
     const steps = this.getStageSteps(job.stageId);
     const stepDuration = 2000;
+    const totalDuration = steps.length * stepDuration;
 
     for (let i = 0; i < steps.length; i++) {
       job.progress = ((i + 1) / steps.length) * 100;
       job.currentStep = steps[i];
+      job.estimatedTimeRemaining = Math.round(((steps.length - i - 1) * stepDuration) / 1000);
       this.notifyJobUpdate(job);
       this.notifyJobLog(job.id, `[PROGRESS] ${Math.round(job.progress)}% - ${steps[i]}`);
 
@@ -320,6 +322,7 @@ class MockEngineAPI {
         job.status = 'failed';
         job.error = `Simulated error in step: ${steps[i]}`;
         job.endTime = new Date().toISOString();
+        job.estimatedTimeRemaining = undefined;
         subject.stageStatuses[job.stageId] = 'failed';
         this.notifyJobUpdate(job);
         this.notifyStatusUpdate(job.subjectId, job.stageId, 'failed');
@@ -333,6 +336,7 @@ class MockEngineAPI {
     job.progress = 100;
     job.currentStep = 'Complete';
     job.endTime = new Date().toISOString();
+    job.estimatedTimeRemaining = 0;
     subject.stageStatuses[job.stageId] = 'done';
 
     this.notifyJobUpdate(job);
@@ -476,6 +480,29 @@ class MockEngineAPI {
         jobs.push(job);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
+    }
+
+    return jobs;
+  }
+
+  async runSubjectPipeline(projectId: string, subjectId: string): Promise<Job[]> {
+    const stages: StageId[] = [
+      'import',
+      't1_fit',
+      'input_functions',
+      'time_shift',
+      'segmentation',
+      'tissue_ctc',
+      'modelling',
+      'diffusion',
+      'montage_qc',
+    ];
+
+    const jobs: Job[] = [];
+    for (const stageId of stages) {
+      const job = await this.createJob({ projectId, subjectId, stageId });
+      jobs.push(job);
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     return jobs;

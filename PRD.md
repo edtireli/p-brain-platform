@@ -50,34 +50,41 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 - **Success criteria**: Patlak plot shows x-y scatter with fit line; Tofts curves match measured data; Residue and h(t) curves display correctly; Metrics tables show GM/WM/parcel values; CTH computed accurately
 
 ### 6. Real-time Job Monitoring
-- **Functionality**: Background job execution with progress tracking, log streaming, cancel/retry controls, WebSocket-based real-time updates
-- **Purpose**: Provide transparency into long-running computational tasks with live feedback
+- **Functionality**: Background job execution with progress tracking, log streaming, cancel/retry controls, WebSocket-based real-time updates, sound notifications, estimated time remaining
+- **Purpose**: Provide transparency into long-running computational tasks with live feedback and audio cues
 - **Trigger**: Any pipeline stage initiated; Jobs button clicked in project dashboard
-- **Progression**: Job created → Queued → Running → Progress updates via event listeners → Log stream display → Completion/failure → Artifact indexing; User opens job monitor panel → Sees live job list → Filters by status → Expands job details → Views streaming logs → Takes action (cancel/retry)
-- **Success criteria**: Progress percentage updates in real-time; logs stream to UI with color-coded severity; cancel immediately stops job; retry restarts from clean state; multiple jobs queue properly; active job count badge updates on dashboard; connection status indicator shows system health; job cards update without page refresh
+- **Progression**: Job created → Queued → Running → Progress updates via event listeners → Log stream display → Estimated time remaining displayed → Completion/failure → Audio notification plays → Artifact indexing; User opens job monitor panel → Sees live job list → Filters by status → Expands job details → Views streaming logs → Takes action (cancel/retry)
+- **Success criteria**: Progress percentage updates in real-time; estimated time remaining shown for running jobs; logs stream to UI with color-coded severity; success sound plays on job completion; error sound plays on job failure; cancel immediately stops job; retry restarts from clean state; multiple jobs queue properly; active job count badge updates on dashboard; connection status indicator shows system health; job cards update without page refresh
 
-### 7. Input Function Management (AIF/VIF)
+### 7. Per-Subject Pipeline Execution
+- **Functionality**: Run full pipeline for individual subjects directly from the cohort dashboard with a dedicated play button per row
+- **Purpose**: Enable quick pipeline execution for specific subjects without selecting and running for the entire cohort
+- **Trigger**: User clicks play icon in the left-most column of a subject row
+- **Progression**: Click play button → Audio context resumed → All pipeline stages queued for subject → Toast notification shown → Running indicator replaces play button → Jobs execute sequentially → Completion/failure audio feedback
+- **Success criteria**: Play button visible on each subject row; button disabled while subject pipeline is running; spinner shown during execution; clicking row still navigates to subject detail; tooltip provides clear action description
+
+### 8. Input Function Management (AIF/VIF)
 - **Functionality**: Manual ROI drawing on concentration maps to extract arterial/venous curves
 - **Purpose**: Define input functions required for all pharmacokinetic models
 - **Trigger**: Stage 4 execution or manual ROI editor invocation
 - **Progression**: Concentration map displayed → User draws ROI on vessel → Curve extracted → Time-shift analysis → Venous-to-arterial adjustment → Final AIF/VIF saved
 - **Success criteria**: ROI drawing responsive; curves extract correctly; cross-correlation shift computed; adjusted curves stored; used in downstream modeling
 
-### 8. Cohort Status Dashboard
-- **Functionality**: Grid view with subjects as rows, stages as columns, color-coded status indicators
-- **Purpose**: At-a-glance understanding of analysis progress across entire cohort
+### 9. Cohort Status Dashboard
+- **Functionality**: Grid view with subjects as rows, stages as columns, color-coded status indicators, per-subject run button
+- **Purpose**: At-a-glance understanding of analysis progress across entire cohort with quick access to individual subject pipeline execution
 - **Trigger**: User opens project
-- **Progression**: Project loaded → Subject list fetched → Stage status queried → Grid rendered → Status updates via WebSocket → Cell clicked → Stage detail modal
-- **Success criteria**: Grid renders quickly for 50+ subjects; status colors accurate (grey/yellow/green/red); clicking cell shows logs and artifacts; updates in real-time during job execution
+- **Progression**: Project loaded → Subject list fetched → Stage status queried → Grid rendered with run buttons → Status updates via WebSocket → Cell clicked → Stage detail modal
+- **Success criteria**: Grid renders quickly for 50+ subjects; status colors accurate (grey/yellow/green/red); run button accessible on each row; clicking cell shows logs and artifacts; updates in real-time during job execution
 
-### 9. Segmentation & Tissue ROIs
+### 10. Segmentation & Tissue ROIs
 - **Functionality**: FastSurfer integration with fallback to threshold-based masks; registration to DCE space
 - **Purpose**: Define anatomical regions for parcel-level analysis
 - **Trigger**: Stage 6 execution
 - **Progression**: T1 map loaded → FastSurfer invoked (if available) → Segmentation produced → Registration to DCE space via flirt/affine → Masks extracted → Parcel stats initialized
 - **Success criteria**: FastSurfer runs successfully when installed; fallback masks created when not; segmentation aligns with DCE volumes; GM/WM/parcels defined; registration quality acceptable
 
-### 10. Interactive Curve & Plot Visualization
+### 11. Interactive Curve & Plot Visualization
 - **Functionality**: Plotly-based rendering of concentration curves, model fits, residue functions, transit-time distributions
 - **Purpose**: Enable interactive exploration of physiological time-series and model quality
 - **Trigger**: User navigates to Curves/Maps tabs in Subject Detail

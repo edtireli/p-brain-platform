@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
-import { X, ArrowsClockwise, Check, XCircle, Clock, List } from '@phosphor-icons/react';
+import { useState, useEffect, useRef } from 'react';
+import { X, ArrowsClockwise, Check, XCircle, Clock, List, Timer } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { mockEngine } from '@/lib/mock-engine';
+import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Job, JobStatus } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
@@ -24,12 +25,26 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
   const [filter, setFilter] = useState<JobStatus | 'all'>('all');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(true);
+  const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
 
   useEffect(() => {
     if (isOpen) {
       loadJobs();
+      resumeAudioContext();
 
       const unsubscribe = mockEngine.onJobUpdate(updatedJob => {
+        const previousStatus = previousJobStatusesRef.current.get(updatedJob.id);
+        
+        if (previousStatus && previousStatus !== updatedJob.status) {
+          if (updatedJob.status === 'completed' && previousStatus === 'running') {
+            playSuccessSound();
+          } else if (updatedJob.status === 'failed' && previousStatus === 'running') {
+            playErrorSound();
+          }
+        }
+        
+        previousJobStatusesRef.current.set(updatedJob.id, updatedJob.status);
+
         setJobs(prevJobs => {
           const index = prevJobs.findIndex(j => j.id === updatedJob.id);
           if (index >= 0) {
@@ -136,6 +151,14 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
     if (duration < 60) return `${duration}s`;
     if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`;
     return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
+  };
+
+  const formatEstimatedTime = (seconds?: number) => {
+    if (seconds === undefined || seconds === null) return null;
+    if (seconds <= 0) return 'Almost done';
+    if (seconds < 60) return `~${seconds}s remaining`;
+    if (seconds < 3600) return `~${Math.floor(seconds / 60)}m ${seconds % 60}s remaining`;
+    return `~${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m remaining`;
   };
 
   const filteredJobs = filter === 'all' ? jobs : jobs.filter(j => j.status === filter);
@@ -311,6 +334,16 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
                                             transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
                                           />
                                         </div>
+                                        {job.estimatedTimeRemaining !== undefined && (
+                                          <motion.div 
+                                            className="flex items-center gap-1.5 text-xs text-accent"
+                                            initial={{ opacity: 0 }}
+                                            animate={{ opacity: 1 }}
+                                          >
+                                            <Timer size={14} weight="bold" />
+                                            <span className="mono">{formatEstimatedTime(job.estimatedTimeRemaining)}</span>
+                                          </motion.div>
+                                        )}
                                       </div>
                                     )}
                                     
