@@ -5,7 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { mockEngine } from '@/lib/mock-engine';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { mockEngine, engineKind, isBackendEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 
@@ -32,6 +34,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [isLoading, setIsLoading] = useState(true);
 
   const [draftName, setDraftName] = useState('');
+  const [draftStoragePath, setDraftStoragePath] = useState('');
+  const [draftCopyData, setDraftCopyData] = useState(true);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
@@ -61,18 +65,24 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       return;
     }
 
-    const storagePath = defaultStoragePath(name);
+    const storagePath = (draftStoragePath || defaultStoragePath(name)).trim();
+    if (!storagePath) {
+      toast.error('Please enter a project storage path');
+      return;
+    }
 
     try {
       const project = await mockEngine.createProject({
         name,
         storagePath,
-        copyDataIntoProject: true,
+        copyDataIntoProject: !!draftCopyData,
       });
       
       toast.success('Project created successfully');
       setIsCreateDialogOpen(false);
       setDraftName('');
+      setDraftStoragePath('');
+      setDraftCopyData(true);
       loadProjects();
       onSelectProject(project.id);
     } catch (error) {
@@ -94,6 +104,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const openCreateDialog = (prefillName?: string) => {
     setDraftName(prefillName ?? '');
+    const nextName = prefillName ?? draftName;
+    setDraftStoragePath(defaultStoragePath(nextName || 'project'));
+    setDraftCopyData(true);
     setIsCreateDialogOpen(true);
   };
 
@@ -160,6 +173,12 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               Advanced neuroimaging analysis platform
             </p>
           </div>
+
+          <div className="flex items-center gap-2">
+            <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal">
+              Engine: {engineKind}
+            </Badge>
+          </div>
           
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
@@ -189,6 +208,35 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   />
                 </div>
 
+                <div className="space-y-2">
+                  <Label htmlFor="storagePath">Project storage path</Label>
+                  <Input
+                    id="storagePath"
+                    name="storagePath"
+                    placeholder={computedStoragePath}
+                    value={draftStoragePath}
+                    onChange={(e) => setDraftStoragePath(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    For your dataset at <span className="mono">/Volumes/T5_EVO_EDT/data</span>, set this to the parent folder that contains subject folders.
+                  </p>
+                </div>
+
+                <div className="flex items-start gap-3 rounded-lg border border-border bg-card p-4">
+                  <Checkbox
+                    id="copyData"
+                    checked={draftCopyData}
+                    onCheckedChange={(v) => setDraftCopyData(v === true)}
+                  />
+                  <div className="space-y-1">
+                    <Label htmlFor="copyData">Copy data into project</Label>
+                    <p className="text-xs text-muted-foreground">
+                      When enabled, the backend copies subjects into the project folder before processing.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="rounded-lg border border-border bg-card p-4">
                   <p className="text-xs text-muted-foreground leading-relaxed">
                     This web app writes and manipulates data on your machine. You are responsible for maintaining
@@ -196,7 +244,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   </p>
                   <div className="mt-3">
                     <p className="text-xs text-muted-foreground">Project storage location</p>
-                    <p className="mono text-xs text-foreground mt-1">{computedStoragePath}</p>
+                    <p className="mono text-xs text-foreground mt-1">{draftStoragePath || computedStoragePath}</p>
                   </div>
                 </div>
 

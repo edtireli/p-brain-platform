@@ -42,6 +42,8 @@ export class BackendEngineAPI {
   private statusListeners = new Set<(update: { subjectId: string; stageId: any; status: any }) => void>();
   private logListeners = new Map<string, Set<(log: string) => void>>();
 
+  private lastLogLines = new Map<string, string[]>();
+
   private pollTimer: number | null = null;
   private lastJobs = new Map<string, Job>();
   private lastSubjects = new Map<string, Subject>();
@@ -86,9 +88,48 @@ export class BackendEngineAPI {
         for (const [jobId, listeners] of this.logListeners.entries()) {
           if (listeners.size === 0) continue;
           const payload = await api<{ lines: string[] }>(`/jobs/${encodeURIComponent(jobId)}/logs?tail=80`);
-          // naive: emit all lines each time; UI de-dupes by appending, so we only emit the last line.
-          const last = payload.lines[payload.lines.length - 1];
-          if (last) listeners.forEach(l => l(last));
+
+          const nextLines = payload.lines || [];
+          const prevLines = this.lastLogLines.get(jobId) || [];
+
+          // Fast path: log only grew.
+          let startIdx = 0;
+          if (prevLines.length > 0 && nextLines.length >= prevLines.length) {
+            let isPrefix = true;
+            for (let i = 0; i < prevLines.length; i++) {
+              if (prevLines[i] !== nextLines[i]) {
+                isPrefix = false;
+                break;
+              }
+            }
+            if (isPrefix) startIdx = prevLines.length;
+          }
+
+          // Fallback: try to find an overlap (handles tail=80 sliding window).
+          if (startIdx === 0 && prevLines.length > 0 && nextLines.length > 0) {
+            const maxLookback = Math.min(20, prevLines.length);
+            let overlap = 0;
+            for (let k = maxLookback; k >= 1; k--) {
+              const prevTail = prevLines.slice(prevLines.length - k);
+              let matches = true;
+              for (let i = 0; i < k && i < nextLines.length; i++) {
+                if (prevTail[i] !== nextLines[i]) {
+                  matches = false;
+                  break;
+                }
+              }
+              if (matches) {
+                overlap = k;
+                break;
+              }
+            }
+            if (overlap > 0) startIdx = overlap;
+          }
+
+          for (const line of nextLines.slice(startIdx)) {
+            listeners.forEach(l => l(line));
+          }
+          this.lastLogLines.set(jobId, nextLines);
         }
       } catch {
         // ignore transient backend errors
@@ -113,7 +154,10 @@ export class BackendEngineAPI {
       const set = this.logListeners.get(jobId);
       if (!set) return;
       set.delete(listener);
-      if (set.size === 0) this.logListeners.delete(jobId);
+      if (set.size === 0) {
+        this.logListeners.delete(jobId);
+        this.lastLogLines.delete(jobId);
+      }
     };
   }
 

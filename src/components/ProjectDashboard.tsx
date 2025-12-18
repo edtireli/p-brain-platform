@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
 import { FolderStructureConfig as FolderStructureConfigComponent } from './FolderStructureConfig';
 import { motion, AnimatePresence } from 'framer-motion';
+import { engineKind } from '@/lib/mock-engine';
 
 interface DetectedSubject {
   name: string;
@@ -452,6 +453,9 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
             </div>
 
             <div className="flex gap-3 items-center">
+              <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal">
+                Engine: {engineKind}
+              </Badge>
               <AnimatePresence>
                 {selectedSubjectIds.size > 0 && (
                   <motion.div

@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, XCircle } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { mockEngine } from '@/lib/mock-engine';
-import type { Subject } from '@/types';
+import { mockEngine, engineKind, isBackendEngine } from '@/lib/mock-engine';
+import type { Job, StageId, Subject } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { VolumeViewer } from './VolumeViewer';
 import { CurvesView } from './CurvesView';
 import { MapsView } from './MapsView';
 import { TablesView } from './TablesView';
+import { LogStream } from './LogStream';
 import { motion } from 'framer-motion';
 
 interface SubjectDetailProps {
@@ -20,6 +22,11 @@ interface SubjectDetailProps {
 
 export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const [subject, setSubject] = useState<Subject | null>(null);
+
+  const [logOpen, setLogOpen] = useState(false);
+  const [selectedStage, setSelectedStage] = useState<StageId | null>(null);
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [jobLoading, setJobLoading] = useState(false);
 
   useEffect(() => {
     loadSubject();
@@ -42,6 +49,24 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const loadSubject = async () => {
     const data = await mockEngine.getSubject(subjectId);
     if (data) setSubject(data);
+  };
+
+  const openStageLogs = async (stageId: StageId) => {
+    setSelectedStage(stageId);
+    setSelectedJob(null);
+    setLogOpen(true);
+    setJobLoading(true);
+    try {
+      const jobs: Job[] = await mockEngine.getJobs({ subjectId });
+      const forStage = jobs
+        .filter(j => j.subjectId === subjectId && j.stageId === stageId)
+        .sort((a, b) => String(b.startTime || '').localeCompare(String(a.startTime || '')));
+      setSelectedJob(forStage[0] ?? null);
+    } catch {
+      setSelectedJob(null);
+    } finally {
+      setJobLoading(false);
+    }
   };
 
   if (!subject) {
@@ -69,6 +94,9 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-3">
+                <Badge variant={isBackendEngine ? 'default' : 'secondary'} className="text-xs font-normal px-2 py-1">
+                  Engine: {engineKind}
+                </Badge>
                 {subject.hasT1 && (
                   <Badge variant="secondary" className="text-xs font-normal px-2 py-1">
                     T1
@@ -158,9 +186,11 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                 </h2>
                 <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {Object.entries(subject.stageStatuses).map(([stageId, status]) => (
-                    <div
+                    <button
                       key={stageId}
-                      className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3 transition-colors hover:bg-muted/30"
+                      type="button"
+                      onClick={() => openStageLogs(stageId as StageId)}
+                      className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-muted/30"
                     >
                       <span className="text-sm font-normal">
                         {STAGE_NAMES[stageId as keyof typeof STAGE_NAMES]}
@@ -194,11 +224,40 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                           </div>
                         )}
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
             </Card>
+
+            <Dialog open={logOpen} onOpenChange={setLogOpen}>
+              <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                  <DialogTitle>
+                    {selectedStage ? STAGE_NAMES[selectedStage] : 'Stage logs'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {jobLoading
+                      ? 'Loading most recent job…'
+                      : selectedJob
+                        ? `${selectedJob.status}${selectedJob.startTime ? ` • started ${new Date(selectedJob.startTime).toLocaleString()}` : ''}`
+                        : 'No job has run for this stage yet.'}
+                  </DialogDescription>
+                </DialogHeader>
+
+                {selectedJob?.error ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                    {selectedJob.error}
+                  </div>
+                ) : null}
+
+                {selectedJob?.id ? (
+                  <LogStream jobId={selectedJob.id} />
+                ) : (
+                  <div className="text-sm text-muted-foreground">No logs available.</div>
+                )}
+              </DialogContent>
+            </Dialog>
 
             <Card className="border-0 shadow-sm">
               <div className="p-5">
