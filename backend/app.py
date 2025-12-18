@@ -1222,6 +1222,41 @@ def get_subject_maps(subject_id: str) -> Dict[str, Any]:
     return {"maps": maps}
 
 
+@app.get("/subjects/{subject_id}/volumes")
+def get_subject_volumes(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    nifti_dir = _nifti_dir_for_subject(project, subject)
+    volumes: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Prefer listing volumes from the NIfTI folder (3D + 4D) for Viewer selection.
+    if nifti_dir.exists():
+        for p in sorted(nifti_dir.rglob("*.nii*")):
+            if not p.is_file():
+                continue
+            sp = str(p)
+            if sp in seen:
+                continue
+            seen.add(sp)
+            volumes.append({"id": sp, "name": p.name, "path": sp})
+
+    # Always include the default volumes if they exist (covers non-nested layouts).
+    for kind in ("dce", "t1", "diffusion"):
+        try:
+            p = _resolve_default_volume_path(project, subject, kind)
+            sp = str(p)
+            if sp not in seen and p.exists() and p.is_file():
+                seen.add(sp)
+                volumes.append({"id": sp, "name": p.name, "path": sp, "kind": kind})
+        except Exception:
+            pass
+
+    volumes.sort(key=lambda v: str(v.get("name", "")))
+    return {"volumes": volumes}
+
+
 @app.get("/subjects/{subject_id}/montages")
 def get_subject_montages(subject_id: str) -> Dict[str, Any]:
     subject = _find_subject(subject_id)

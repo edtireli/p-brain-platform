@@ -8,6 +8,7 @@ import type {
   Project,
   Subject,
   ToftsData,
+  VolumeFile,
   VolumeInfo,
 } from '@/types';
 
@@ -220,6 +221,11 @@ export class BackendEngineAPI {
   async getMapVolumes(subjectId: string): Promise<MapVolume[]> {
     const res = await api<{ maps: MapVolume[] }>(`/subjects/${encodeURIComponent(subjectId)}/maps`);
     return res.maps;
+  }
+
+  async getVolumes(subjectId: string): Promise<VolumeFile[]> {
+    const res = await api<{ volumes: VolumeFile[] }>(`/subjects/${encodeURIComponent(subjectId)}/volumes`);
+    return res.volumes;
   }
 
   async getMontageImages(subjectId: string): Promise<Array<{ id: string; name: string; path: string }>> {

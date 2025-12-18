@@ -4,16 +4,20 @@ import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { mockEngine } from '@/lib/mock-engine';
+import type { VolumeFile } from '@/types';
 
 interface VolumeViewerProps {
   subjectId: string;
   path?: string;
   kind?: 'dce' | 't1' | 'diffusion';
+  allowSelect?: boolean;
 }
 
-export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProps) {
+export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true }: VolumeViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [volumePath, setVolumePath] = useState<string | null>(null);
+  const [volumes, setVolumes] = useState<VolumeFile[]>([]);
+  const [selectedVolumeId, setSelectedVolumeId] = useState<string>('');
   const [maxZ, setMaxZ] = useState(63);
   const [maxT, setMaxT] = useState(79);
   const [sliceZ, setSliceZ] = useState(32);
@@ -21,17 +25,55 @@ export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProp
   const [windowMin, setWindowMin] = useState(0);
   const [windowMax, setWindowMax] = useState(2000);
   const [colormap, setColormap] = useState('grayscale');
-  const [overlayAlpha, setOverlayAlpha] = useState(0.5);
-  const [showOverlay, setShowOverlay] = useState(false);
-  const [sliceData, setSliceData] = useState<number[][] | null>(null);
+  const [viewMode, setViewMode] = useState<'single' | 'grid'>('single');
+  const [slices, setSlices] = useState<number[][][] | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const resolvedPath = path ?? (await mockEngine.resolveDefaultVolume(subjectId, kind));
-        setVolumePath(resolvedPath);
+        if (path) {
+          setVolumes([]);
+          setSelectedVolumeId(path);
+          setVolumePath(path);
+          return;
+        }
 
-        const info = await mockEngine.getVolumeInfo(resolvedPath, subjectId);
+        if (allowSelect) {
+          const list = await mockEngine.getVolumes(subjectId);
+          setVolumes(list);
+
+          const preferred =
+            list.find(v => (v.kind || '').toString().toLowerCase() === kind)?.path ||
+            list[0]?.path ||
+            null;
+
+          if (preferred) {
+            setSelectedVolumeId(preferred);
+            setVolumePath(preferred);
+          } else {
+            const resolved = await mockEngine.resolveDefaultVolume(subjectId, kind);
+            setSelectedVolumeId(resolved);
+            setVolumePath(resolved);
+          }
+        } else {
+          const resolvedPath = await mockEngine.resolveDefaultVolume(subjectId, kind);
+          setSelectedVolumeId(resolvedPath);
+          setVolumePath(resolvedPath);
+        }
+
+      } catch (error) {
+        console.error('Failed to resolve volume:', error);
+        setVolumePath(null);
+      }
+    };
+    load();
+  }, [subjectId, path, kind, allowSelect]);
+
+  useEffect(() => {
+    const loadInfo = async () => {
+      try {
+        if (!volumePath) return;
+        const info = await mockEngine.getVolumeInfo(volumePath, subjectId);
         const zMax = Math.max(0, (info.dimensions[2] ?? 1) - 1);
         const tMax = Math.max(0, (info.dimensions[3] ?? 1) - 1);
         setMaxZ(zMax);
@@ -42,80 +84,94 @@ export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProp
         setWindowMin(Math.floor(info.min));
         setWindowMax(Math.ceil(info.max) || 1);
       } catch (error) {
-        console.error('Failed to resolve volume:', error);
-        setVolumePath(null);
+        console.error('Failed to load volume info:', error);
       }
     };
-    load();
-  }, [subjectId, path, kind]);
+    loadInfo();
+  }, [subjectId, volumePath]);
 
   useEffect(() => {
     loadSlice();
-  }, [subjectId, volumePath, sliceZ, timeFrame]);
+  }, [subjectId, volumePath, sliceZ, timeFrame, viewMode]);
 
   useEffect(() => {
-    if (sliceData) {
+    if (slices) {
       renderSlice();
     }
-  }, [sliceData, windowMin, windowMax, colormap, overlayAlpha, showOverlay]);
+  }, [slices, windowMin, windowMax, colormap, viewMode]);
 
   const loadSlice = async () => {
     try {
       if (!volumePath) return;
-      const data = await mockEngine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
-      setSliceData(data.data);
+
+      if (viewMode === 'single') {
+        const data = await mockEngine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
+        setSlices([data.data]);
+        return;
+      }
+
+      const start = Math.max(0, sliceZ - 4);
+      const sliceIndices = Array.from({ length: 9 }, (_, i) => Math.min(maxZ, start + i));
+      const frames = await Promise.all(
+        sliceIndices.map(z => mockEngine.getSliceData(volumePath, z, timeFrame, subjectId).then(r => r.data))
+      );
+      setSlices(frames);
     } catch (error) {
       console.error('Failed to load slice:', error);
     }
   };
 
   const renderSlice = () => {
-    if (!canvasRef.current || !sliceData) return;
+    if (!canvasRef.current || !slices || slices.length === 0) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const size = sliceData.length;
-    canvas.width = size;
-    canvas.height = size;
+    const size = slices[0].length;
+    const tilesX = viewMode === 'grid' ? 3 : 1;
+    const tilesY = viewMode === 'grid' ? 3 : 1;
+    canvas.width = size * tilesX;
+    canvas.height = size * tilesY;
 
-    const imageData = ctx.createImageData(size, size);
+    const imageData = ctx.createImageData(canvas.width, canvas.height);
 
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const value = sliceData[y][x];
-        const normalized = Math.max(0, Math.min(1, (value - windowMin) / (windowMax - windowMin)));
-        
-        const idx = (y * size + x) * 4;
-        
-        if (colormap === 'grayscale') {
-          const gray = Math.floor(normalized * 255);
-          imageData.data[idx] = gray;
-          imageData.data[idx + 1] = gray;
-          imageData.data[idx + 2] = gray;
-          imageData.data[idx + 3] = 255;
-        } else if (colormap === 'viridis') {
-          const viridisColor = getViridisColor(normalized);
-          imageData.data[idx] = viridisColor[0];
-          imageData.data[idx + 1] = viridisColor[1];
-          imageData.data[idx + 2] = viridisColor[2];
-          imageData.data[idx + 3] = 255;
+    const denom = windowMax - windowMin;
+    const safeDenom = denom === 0 ? 1 : denom;
+
+    for (let tile = 0; tile < tilesX * tilesY; tile++) {
+      const slice = slices[Math.min(tile, slices.length - 1)];
+      const tileX = tile % tilesX;
+      const tileY = Math.floor(tile / tilesX);
+      const ox = tileX * size;
+      const oy = tileY * size;
+
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const value = slice[y][x];
+          const normalized = Math.max(0, Math.min(1, (value - windowMin) / safeDenom));
+          const px = ox + x;
+          const py = oy + y;
+          const idx = (py * canvas.width + px) * 4;
+
+          if (colormap === 'grayscale') {
+            const gray = Math.floor(normalized * 255);
+            imageData.data[idx] = gray;
+            imageData.data[idx + 1] = gray;
+            imageData.data[idx + 2] = gray;
+            imageData.data[idx + 3] = 255;
+          } else if (colormap === 'viridis') {
+            const viridisColor = getViridisColor(normalized);
+            imageData.data[idx] = viridisColor[0];
+            imageData.data[idx + 1] = viridisColor[1];
+            imageData.data[idx + 2] = viridisColor[2];
+            imageData.data[idx + 3] = 255;
+          }
         }
       }
     }
 
     ctx.putImageData(imageData, 0, 0);
-
-    if (showOverlay) {
-      ctx.fillStyle = `rgba(255, 100, 100, ${overlayAlpha})`;
-      const centerX = size / 2;
-      const centerY = size / 2;
-      const radius = size * 0.2;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
-      ctx.fill();
-    }
   };
 
   const getViridisColor = (t: number): [number, number, number] => {
@@ -155,6 +211,43 @@ export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProp
 
       <Card className="p-6">
         <div className="space-y-6">
+          {allowSelect && !path ? (
+            <div className="space-y-2">
+              <Label>Image</Label>
+              <Select
+                value={selectedVolumeId}
+                onValueChange={(value) => {
+                  setSelectedVolumeId(value);
+                  setVolumePath(value);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a volume" />
+                </SelectTrigger>
+                <SelectContent>
+                  {volumes.map(v => (
+                    <SelectItem key={v.id} value={v.path}>
+                      {v.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <Label>View</Label>
+            <Select value={viewMode} onValueChange={(v) => setViewMode(v as 'single' | 'grid')}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="single">Single slice</SelectItem>
+                <SelectItem value="grid">Multi-slice (3×3)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="space-y-2">
             <Label>Slice (Z): {sliceZ}</Label>
             <Slider
@@ -167,17 +260,19 @@ export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProp
             />
           </div>
 
-          <div className="space-y-2">
-            <Label>Time Frame (t): {timeFrame}</Label>
-            <Slider
-              value={[timeFrame]}
-              onValueChange={([value]) => setTimeFrame(value)}
-              min={0}
-              max={maxT}
-              step={1}
-              className="w-full"
-            />
-          </div>
+          {maxT > 0 ? (
+            <div className="space-y-2">
+              <Label>Time Frame (t): {timeFrame}</Label>
+              <Slider
+                value={[timeFrame]}
+                onValueChange={([value]) => setTimeFrame(value)}
+                min={0}
+                max={maxT}
+                step={1}
+                className="w-full"
+              />
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <Label>Window Min: {windowMin}</Label>
@@ -214,33 +309,6 @@ export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProp
                 <SelectItem value="viridis">Viridis</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Overlay</Label>
-              <button
-                onClick={() => setShowOverlay(!showOverlay)}
-                className={`rounded px-3 py-1 text-sm font-medium transition-colors ${
-                  showOverlay ? 'bg-accent text-accent-foreground' : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {showOverlay ? 'ON' : 'OFF'}
-              </button>
-            </div>
-            {showOverlay && (
-              <div className="space-y-2">
-                <Label>Overlay Alpha: {overlayAlpha.toFixed(2)}</Label>
-                <Slider
-                  value={[overlayAlpha]}
-                  onValueChange={([value]) => setOverlayAlpha(value)}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className="w-full"
-                />
-              </div>
-            )}
           </div>
         </div>
       </Card>

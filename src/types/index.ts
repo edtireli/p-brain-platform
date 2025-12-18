@@ -116,6 +116,13 @@ export interface VolumeInfo {
   max: number;
 }
 
+export interface VolumeFile {
+  id: string;
+  name: string;
+  path: string;
+  kind?: 'dce' | 't1' | 'diffusion' | string;
+}
+
 export interface MapVolume {
   id: string;
   name: string;

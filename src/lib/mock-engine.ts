@@ -7,6 +7,7 @@ import type {
   JobStatus,
   StageStatus,
   Artifact,
+  VolumeFile,
   VolumeInfo,
   Curve,
   PatlakData,
@@ -245,6 +246,14 @@ class MockEngineAPI {
       { id: 'cth_tikh_atlas', name: 'CTH Map (tikhonov, atlas)', unit: 's', path: '/mock/CTH_tikhonov_map_atlas.nii.gz', group: 'modelling' },
       { id: 'fa', name: 'FA Map', unit: 'fraction', path: '/mock/fa_map.nii.gz', group: 'diffusion' },
       { id: 'md', name: 'MD Map', unit: 'mm²/s', path: '/mock/md_map.nii.gz', group: 'diffusion' },
+    ];
+  }
+
+  async getVolumes(_subjectId: string): Promise<VolumeFile[]> {
+    return [
+      { id: 'dce', name: 'DCE (4D)', path: '/mock/dce.nii.gz', kind: 'dce' },
+      { id: 't1', name: 'T1 (3D)', path: '/mock/t1.nii.gz', kind: 't1' },
+      { id: 'diffusion', name: 'Diffusion (3D)', path: '/mock/diffusion.nii.gz', kind: 'diffusion' },
     ];
   }
 
@@ -826,7 +835,23 @@ function readEngineOverride(): 'backend' | 'demo' | null {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const env: any = (import.meta as any).env || {};
-const defaultEngine: 'backend' | 'demo' = env.VITE_ENGINE === 'backend' ? 'backend' : 'demo';
+function isGithubPagesHost(): boolean {
+  try {
+    const host = (window.location.hostname || '').toLowerCase();
+    return host.endsWith('github.io');
+  } catch {
+    return false;
+  }
+}
+
+const defaultEngine: 'backend' | 'demo' =
+  env.VITE_ENGINE === 'backend'
+    ? 'backend'
+    : env.VITE_ENGINE === 'demo'
+      ? 'demo'
+      : isGithubPagesHost()
+        ? 'demo'
+        : 'backend';
 const allowDemo = String(env.VITE_ALLOW_DEMO ?? 'true').toLowerCase() !== 'false';
 const override = readEngineOverride();
 
