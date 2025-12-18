@@ -159,7 +159,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   }, [processDroppedItems]);
 
-  const computedStoragePath = defaultStoragePath(draftName || 'my-study');
+  const computedStoragePath = defaultStoragePath(draftName || 'project');
 
   const handleSaveBackend = () => {
     setBackendError('');
@@ -230,7 +230,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                 <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">Data handling</p>
                   <p>The backend copies subjects into the project folder before processing. Ensure the destination has space and is backed up.</p>
-                  <p className="mono text-xs">Default project location: {computedStoragePath}</p>
+                  {draftName.trim() ? (
+                    <p className="mono text-xs">Default project location: {computedStoragePath}</p>
+                  ) : null}
                 </div>
 
                 <div className="flex justify-end gap-3">
