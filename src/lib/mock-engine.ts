@@ -209,6 +209,19 @@ class MockEngineAPI {
     return project;
   }
 
+  async updateProjectConfig(
+    projectId: string,
+    configUpdate: Partial<PipelineConfig>
+  ): Promise<Project | undefined> {
+    const project = this.db.projects.find(p => p.id === projectId);
+    if (project) {
+      project.config = { ...project.config, ...configUpdate };
+      project.updatedAt = new Date().toISOString();
+      this.saveToStorage();
+    }
+    return project;
+  }
+
   async getSubjects(projectId: string): Promise<Subject[]> {
     return this.db.subjects.filter(s => s.projectId === projectId);
   }

@@ -9,10 +9,11 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { mockEngine } from '@/lib/mock-engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
-import type { Project, Subject, StageId, StageStatus, Job } from '@/types';
+import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
+import { FolderStructureConfig as FolderStructureConfigComponent } from './FolderStructureConfig';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface DetectedSubject {
@@ -126,6 +127,18 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const loadSubjects = async () => {
     const data = await mockEngine.getSubjects(projectId);
     setSubjects(data);
+  };
+
+  const handleSaveFolderConfig = async (config: FolderStructureConfig) => {
+    try {
+      const updated = await mockEngine.updateProjectConfig(projectId, { folderStructure: config });
+      if (updated) {
+        setProject(updated);
+      }
+    } catch (error) {
+      toast.error('Failed to save folder configuration');
+      console.error(error);
+    }
   };
 
   const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
@@ -490,6 +503,11 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                   </motion.span>
                 )}
               </Button>
+
+              <FolderStructureConfigComponent 
+                project={project}
+                onSave={handleSaveFolderConfig}
+              />
 
               <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
                 setIsAddDialogOpen(open);

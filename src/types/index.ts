@@ -36,6 +36,15 @@ export interface Subject {
   stageStatuses: Record<StageId, StageStatus>;
 }
 
+export interface FolderStructureConfig {
+  subjectFolderPattern: string;
+  t1Pattern: string;
+  dcePattern: string;
+  diffusionPattern: string;
+  niftiSubfolder: string;
+  useNestedStructure: boolean;
+}
+
 export interface PipelineConfig {
   physiological: {
     r1: number;
@@ -65,6 +74,7 @@ export interface PipelineConfig {
   aiModels: {
     aifModelPath?: string;
   };
+  folderStructure: FolderStructureConfig;
 }
 
 export interface Job {
@@ -182,6 +192,15 @@ export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
   montage_qc: ['modelling', 'segmentation'],
 };
 
+export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {
+  subjectFolderPattern: '{subject_id}',
+  t1Pattern: '*T1*.nii.gz',
+  dcePattern: '*DCE*.nii.gz',
+  diffusionPattern: '*DTI*.nii.gz',
+  niftiSubfolder: 'nifti',
+  useNestedStructure: true,
+};
+
 export const DEFAULT_CONFIG: PipelineConfig = {
   physiological: {
     r1: 4.39,
@@ -204,4 +223,5 @@ export const DEFAULT_CONFIG: PipelineConfig = {
   },
   externalTools: {},
   aiModels: {},
+  folderStructure: DEFAULT_FOLDER_STRUCTURE,
 };

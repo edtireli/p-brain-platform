@@ -84,14 +84,21 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 - **Progression**: Project loaded → Subject list fetched → Stage status queried → Grid rendered with run buttons and checkboxes → Status updates via WebSocket → Cell clicked → Stage detail modal
 - **Success criteria**: Grid renders quickly for 50+ subjects; status colors accurate (grey/yellow/green/red); run button accessible on each row; checkbox enables batch selection; clicking cell shows logs and artifacts; updates in real-time during job execution
 
-### 11. Segmentation & Tissue ROIs
+### 11. Folder Structure Configuration
+- **Functionality**: Visual UI for configuring how subject folders are arranged and where imaging files are located within them
+- **Purpose**: Enable flexible data organization by defining folder patterns, file naming conventions, and nested structure preferences to match various lab data workflows (BIDS, flat, custom nested)
+- **Trigger**: User clicks "Configure Folder Structure" button in project dashboard header
+- **Progression**: Click configure button → Dialog opens with tabs (Presets/Patterns/Preview) → Select preset or customize patterns → View live folder tree preview → Save configuration → Pattern stored in project config
+- **Success criteria**: Preset selection (BIDS/Flat/Nested/Custom) instantly updates preview; custom pattern input accepts wildcards; folder tree preview dynamically reflects configuration; T1/DCE/Diffusion patterns visually distinguished with color-coded badges; configuration persists across sessions; invalid patterns show clear validation errors
+
+### 12. Segmentation & Tissue ROIs
 - **Functionality**: FastSurfer integration with fallback to threshold-based masks; registration to DCE space
 - **Purpose**: Define anatomical regions for parcel-level analysis
 - **Trigger**: Stage 6 execution
 - **Progression**: T1 map loaded → FastSurfer invoked (if available) → Segmentation produced → Registration to DCE space via flirt/affine → Masks extracted → Parcel stats initialized
 - **Success criteria**: FastSurfer runs successfully when installed; fallback masks created when not; segmentation aligns with DCE volumes; GM/WM/parcels defined; registration quality acceptable
 
-### 12. Interactive Curve & Plot Visualization
+### 13. Interactive Curve & Plot Visualization
 - **Functionality**: Plotly-based rendering of concentration curves, model fits, residue functions, transit-time distributions
 - **Purpose**: Enable interactive exploration of physiological time-series and model quality
 - **Trigger**: User navigates to Curves/Maps tabs in Subject Detail
