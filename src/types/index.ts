@@ -116,6 +116,14 @@ export interface VolumeInfo {
   max: number;
 }
 
+export interface MapVolume {
+  id: string;
+  name: string;
+  unit: string;
+  path: string;
+  group: 'modelling' | 'diffusion';
+}
+
 export interface Curve {
   id: string;
   name: string;

@@ -7,9 +7,11 @@ import { mockEngine } from '@/lib/mock-engine';
 
 interface VolumeViewerProps {
   subjectId: string;
+  path?: string;
+  kind?: 'dce' | 't1' | 'diffusion';
 }
 
-export function VolumeViewer({ subjectId }: VolumeViewerProps) {
+export function VolumeViewer({ subjectId, path, kind = 'dce' }: VolumeViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [volumePath, setVolumePath] = useState<string | null>(null);
   const [maxZ, setMaxZ] = useState(63);
@@ -26,10 +28,10 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
   useEffect(() => {
     const load = async () => {
       try {
-        const p = await mockEngine.resolveDefaultVolume(subjectId, 'dce');
-        setVolumePath(p);
+        const resolvedPath = path ?? (await mockEngine.resolveDefaultVolume(subjectId, kind));
+        setVolumePath(resolvedPath);
 
-        const info = await mockEngine.getVolumeInfo(p, subjectId);
+        const info = await mockEngine.getVolumeInfo(resolvedPath, subjectId);
         const zMax = Math.max(0, (info.dimensions[2] ?? 1) - 1);
         const tMax = Math.max(0, (info.dimensions[3] ?? 1) - 1);
         setMaxZ(zMax);
@@ -45,7 +47,7 @@ export function VolumeViewer({ subjectId }: VolumeViewerProps) {
       }
     };
     load();
-  }, [subjectId]);
+  }, [subjectId, path, kind]);
 
   useEffect(() => {
     loadSlice();

@@ -2,6 +2,7 @@ import type {
   Curve,
   DeconvolutionData,
   Job,
+  MapVolume,
   MetricsTable,
   PatlakData,
   Project,
@@ -185,17 +186,7 @@ export class BackendEngineAPI {
   // ----------------------------
 
   async getVolumeInfo(path: string, subjectId?: string): Promise<VolumeInfo> {
-    if (!subjectId) {
-      // Fallback (keeps older call sites from hard-failing)
-      return {
-        path,
-        dimensions: [256, 256, 64, 80],
-        voxelSize: [1.0, 1.0, 2.5],
-        dataType: 'float32',
-        min: 0,
-        max: 4095,
-      };
-    }
+    if (!subjectId) throw new Error('BackendEngineAPI.getVolumeInfo requires subjectId');
 
     return api<VolumeInfo>(`/volumes/info?subjectId=${encodeURIComponent(subjectId)}`, {
       method: 'POST',
@@ -209,26 +200,7 @@ export class BackendEngineAPI {
     t: number = 0,
     subjectId?: string
   ): Promise<{ data: number[][]; min: number; max: number }> {
-    if (!subjectId) {
-      // Fallback synthetic image
-      const size = 256;
-      const data: number[][] = [];
-      for (let y = 0; y < size; y++) {
-        const row: number[] = [];
-        for (let x = 0; x < size; x++) {
-          const centerX = size / 2;
-          const centerY = size / 2;
-          const dx = x - centerX;
-          const dy = y - centerY;
-          const r = Math.sqrt(dx * dx + dy * dy);
-          const brainRadius = size * 0.35;
-          const value = r < brainRadius ? 1000 + Math.sin(r / 10 + z * 0.1 + t * 0.05) * 500 : 0;
-          row.push(value);
-        }
-        data.push(row);
-      }
-      return { data, min: 0, max: 2000 };
-    }
+    if (!subjectId) throw new Error('BackendEngineAPI.getSliceData requires subjectId');
 
     return api<{ data: number[][]; min: number; max: number }>(
       `/volumes/slice?subjectId=${encodeURIComponent(subjectId)}`,
@@ -239,6 +211,11 @@ export class BackendEngineAPI {
   async getCurves(subjectId: string): Promise<Curve[]> {
     const res = await api<{ curves: Curve[] }>(`/subjects/${encodeURIComponent(subjectId)}/curves`);
     return res.curves;
+  }
+
+  async getMapVolumes(subjectId: string): Promise<MapVolume[]> {
+    const res = await api<{ maps: MapVolume[] }>(`/subjects/${encodeURIComponent(subjectId)}/maps`);
+    return res.maps;
   }
 
   async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {

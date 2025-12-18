@@ -130,6 +130,14 @@ class VolumeSliceRequest(BaseModel):
     t: int = 0
 
 
+class MapVolumeResponse(BaseModel):
+    id: str
+    name: str
+    unit: str
+    path: str
+    group: str
+
+
 class DB:
     def __init__(self) -> None:
         self.projects: List[Project] = []
@@ -469,6 +477,64 @@ def _load_time_points(subject: Subject) -> "np.ndarray":
     return t
 
 
+
+
+def _analysis_map_volumes(subject: Subject) -> List[Dict[str, Any]]:
+    """Return a list of on-disk NIfTI map volumes for the subject.
+
+    This is intentionally conservative: we only expose known p-brain outputs
+    under the subject's Analysis folder.
+    """
+
+    analysis_dir = _analysis_dir_for_subject(subject)
+    maps: List[Dict[str, Any]] = []
+
+    # Voxelwise atlas-mapped outputs (written directly to Analysis/).
+    atlas_maps = [
+        ("ki_atlas", "Ki Map (atlas)", "ml/100g/min", analysis_dir / "Ki_map_atlas.nii.gz"),
+        ("sd_ki_atlas", "SD Ki Map (atlas)", "ml/100g/min", analysis_dir / "SD_Ki_map_atlas.nii.gz"),
+        ("vp_atlas", "vp Map (atlas)", "fraction", analysis_dir / "vp_map_atlas.nii.gz"),
+        (
+            "cbf_tikh_atlas",
+            "CBF Map (tikhonov, atlas)",
+            "ml/100g/min",
+            analysis_dir / "CBF_tikhonov_map_atlas.nii.gz",
+        ),
+        (
+            "mtt_tikh_atlas",
+            "MTT Map (tikhonov, atlas)",
+            "s",
+            analysis_dir / "MTT_tikhonov_map_atlas.nii.gz",
+        ),
+        (
+            "cth_tikh_atlas",
+            "CTH Map (tikhonov, atlas)",
+            "s",
+            analysis_dir / "CTH_tikhonov_map_atlas.nii.gz",
+        ),
+    ]
+    for map_id, name, unit, path in atlas_maps:
+        if path.exists():
+            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "modelling"})
+
+    # Diffusion outputs (Analysis/diffusion/*.nii.gz)
+    diffusion_dir = analysis_dir / "diffusion"
+    diffusion_maps = [
+        ("fa", "FA Map", "fraction", diffusion_dir / "fa_map.nii.gz"),
+        ("md", "MD Map", "mm²/s", diffusion_dir / "md_map.nii.gz"),
+        ("ad", "AD Map", "mm²/s", diffusion_dir / "ad_map.nii.gz"),
+        ("rd", "RD Map", "mm²/s", diffusion_dir / "rd_map.nii.gz"),
+    ]
+    for map_id, name, unit, path in diffusion_maps:
+        if path.exists():
+            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "diffusion"})
+
+    # Legacy diffusion output (written to Analysis/ for backwards compatibility).
+    legacy_fa = analysis_dir / "FA_map.nii.gz"
+    if legacy_fa.exists() and not any(m.get("id") == "fa" for m in maps):
+        maps.append({"id": "fa", "name": "FA Map", "unit": "fraction", "path": str(legacy_fa), "group": "diffusion"})
+
+    return maps
 def _load_aif_curve(subject: Subject) -> "np.ndarray":
     _require_numpy()
     assert np is not None
@@ -1110,6 +1176,13 @@ def get_subject_curves(subject_id: str) -> Dict[str, Any]:
 def get_subject_metrics(subject_id: str) -> Dict[str, Any]:
     subject = _find_subject(subject_id)
     return _analysis_metrics_table(subject)
+
+
+@app.get("/subjects/{subject_id}/maps")
+def get_subject_maps(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    maps = _analysis_map_volumes(subject)
+    return {"maps": maps}
 
 
 @app.get("/subjects/{subject_id}/patlak")

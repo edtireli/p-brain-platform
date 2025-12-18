@@ -235,6 +235,19 @@ class MockEngineAPI {
     return '/mock/dce.nii.gz';
   }
 
+  async getMapVolumes(_subjectId: string) {
+    return [
+      { id: 'ki_atlas', name: 'Ki Map (atlas)', unit: 'ml/100g/min', path: '/mock/Ki_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'sd_ki_atlas', name: 'SD Ki Map (atlas)', unit: 'ml/100g/min', path: '/mock/SD_Ki_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'vp_atlas', name: 'vp Map (atlas)', unit: 'fraction', path: '/mock/vp_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'cbf_tikh_atlas', name: 'CBF Map (tikhonov, atlas)', unit: 'ml/100g/min', path: '/mock/CBF_tikhonov_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'mtt_tikh_atlas', name: 'MTT Map (tikhonov, atlas)', unit: 's', path: '/mock/MTT_tikhonov_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'cth_tikh_atlas', name: 'CTH Map (tikhonov, atlas)', unit: 's', path: '/mock/CTH_tikhonov_map_atlas.nii.gz', group: 'modelling' },
+      { id: 'fa', name: 'FA Map', unit: 'fraction', path: '/mock/fa_map.nii.gz', group: 'diffusion' },
+      { id: 'md', name: 'MD Map', unit: 'mm²/s', path: '/mock/md_map.nii.gz', group: 'diffusion' },
+    ];
+  }
+
   async getVolumeInfo(path: string, _subjectId?: string): Promise<VolumeInfo> {
     return {
       path,
