@@ -30,6 +30,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
   const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
+  const lastSelectedIndexRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadProject();
@@ -165,17 +166,31 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     }
   };
 
-  const handleSelectSubjectToggle = (subjectId: string, e: React.MouseEvent) => {
+  const handleSelectSubjectToggle = (subjectId: string, index: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSelectedSubjectIds(prev => {
-      const next = new Set(prev);
-      if (next.has(subjectId)) {
-        next.delete(subjectId);
-      } else {
-        next.add(subjectId);
-      }
-      return next;
-    });
+    
+    if (e.shiftKey && lastSelectedIndexRef.current !== null) {
+      const start = Math.min(lastSelectedIndexRef.current, index);
+      const end = Math.max(lastSelectedIndexRef.current, index);
+      const rangeIds = subjects.slice(start, end + 1).map(s => s.id);
+      
+      setSelectedSubjectIds(prev => {
+        const next = new Set(prev);
+        rangeIds.forEach(id => next.add(id));
+        return next;
+      });
+    } else {
+      setSelectedSubjectIds(prev => {
+        const next = new Set(prev);
+        if (next.has(subjectId)) {
+          next.delete(subjectId);
+        } else {
+          next.add(subjectId);
+        }
+        return next;
+      });
+      lastSelectedIndexRef.current = index;
+    }
   };
 
   const handleSelectAll = () => {
@@ -450,7 +465,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                       </tr>
                     </thead>
                     <tbody>
-                      {subjects.map(subject => {
+                      {subjects.map((subject, index) => {
                         const isSubjectRunning = runningSubjectIds.has(subject.id) || 
                           Object.values(subject.stageStatuses).some(s => s === 'running');
                         const isSelected = selectedSubjectIds.has(subject.id);
@@ -462,16 +477,24 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                             onClick={() => onSelectSubject(subject.id)}
                           >
                             <td className={`sticky left-0 z-10 px-3 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
-                              <button
-                                onClick={(e) => handleSelectSubjectToggle(subject.id, e)}
-                                className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-muted"
-                              >
-                                {isSelected ? (
-                                  <CheckSquare size={18} weight="fill" className="text-primary" />
-                                ) : (
-                                  <Square size={18} className="text-muted-foreground hover:text-foreground" />
-                                )}
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={(e) => handleSelectSubjectToggle(subject.id, index, e)}
+                                    className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-muted"
+                                  >
+                                    {isSelected ? (
+                                      <CheckSquare size={18} weight="fill" className="text-primary" />
+                                    ) : (
+                                      <Square size={18} className="text-muted-foreground hover:text-foreground" />
+                                    )}
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <span>Click to select</span>
+                                  <span className="block text-xs text-muted-foreground">Shift+click for range</span>
+                                </TooltipContent>
+                              </Tooltip>
                             </td>
                             <td className={`sticky left-10 z-10 px-2 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
                               <Tooltip>
