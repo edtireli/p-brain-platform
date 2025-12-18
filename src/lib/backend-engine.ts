@@ -238,53 +238,21 @@ export class BackendEngineAPI {
   }
 
   async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {
-    const timePoints = Array.from({ length: 80 }, (_, i) => i * 2.5);
-    const Ki = 0.02 + Math.random() * 0.01;
-    const vp = 0.05 + Math.random() * 0.03;
-
-    const x = timePoints.map((_, i) => i * 0.5 + Math.random() * 0.1);
-    const y = x.map(val => Ki * val + vp + (Math.random() - 0.5) * 0.02);
-
-    const fitLineX = [Math.min(...x), Math.max(...x)];
-    const fitLineY = fitLineX.map(val => Ki * val + vp);
-
-    return {
-      x,
-      y,
-      Ki: Ki * 600, // keep UI scale-ish
-      vp,
-      r2: 0.9 + Math.random() * 0.08,
-      fitLineX,
-      fitLineY,
-      windowStart: 0.4,
-    };
+    return api<PatlakData>(
+      `/subjects/${encodeURIComponent(subjectId)}/patlak?region=${encodeURIComponent(region)}`
+    );
   }
 
   async getToftsData(subjectId: string, region: string): Promise<ToftsData> {
-    const timePoints = Array.from({ length: 80 }, (_, i) => i * 2.5);
-    const Ktrans = 0.08 + Math.random() * 0.04;
-    const ve = 0.18 + Math.random() * 0.08;
-    const vp = 0.04 + Math.random() * 0.02;
-
-    const measured = timePoints.map(t => Math.max(0, 0.2 + 1.5 * (1 - Math.exp(-0.05 * t)) + (Math.random() - 0.5) * 0.05));
-    const fitted = measured.map(v => v + (Math.random() - 0.5) * 0.03);
-    const residuals = measured.map((v, i) => v - fitted[i]);
-
-    return { timePoints, measured, fitted, Ktrans, ve, vp, residuals };
+    return api<ToftsData>(
+      `/subjects/${encodeURIComponent(subjectId)}/tofts?region=${encodeURIComponent(region)}`
+    );
   }
 
   async getDeconvolutionData(subjectId: string, region: string): Promise<DeconvolutionData> {
-    const timePoints = Array.from({ length: 80 }, (_, i) => i * 2.5);
-    const residue = timePoints.map(t => Math.exp(-t / 30));
-    const h_t = timePoints.map(t => (t / 15) * Math.exp(-t / 15));
-    return {
-      timePoints,
-      residue,
-      h_t,
-      CBF: 50 + Math.random() * 30,
-      MTT: 4 + Math.random() * 2,
-      CTH: 1.5 + Math.random() * 0.5,
-    };
+    return api<DeconvolutionData>(
+      `/subjects/${encodeURIComponent(subjectId)}/deconvolution?region=${encodeURIComponent(region)}`
+    );
   }
 
   async getMetricsTable(subjectId: string): Promise<MetricsTable> {
