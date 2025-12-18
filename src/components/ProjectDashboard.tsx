@@ -691,8 +691,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 <TooltipProvider>
                   <table className="w-full">
                     <thead>
-                      <tr className="border-b border-border bg-muted/50">
-                        <th className="sticky left-0 z-10 bg-muted/50 px-3 py-3 text-center w-10">
+                      <tr className="border-b border-border">
+                        <th className="sticky left-0 z-10 bg-[oklch(0.92_0.005_250)] px-3 py-3 text-center w-10">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
@@ -713,10 +713,10 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                             </TooltipContent>
                           </Tooltip>
                         </th>
-                        <th className="sticky left-10 z-10 bg-muted/50 px-2 py-3 text-center text-xs font-medium uppercase tracking-wider w-12">
+                        <th className="sticky left-10 z-10 bg-[oklch(0.92_0.005_250)] px-2 py-3 text-center text-xs font-medium uppercase tracking-wider w-12">
                           Run
                         </th>
-                        <th className="sticky left-[5.5rem] z-10 bg-muted/50 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                        <th className="sticky left-[5.5rem] z-10 bg-[oklch(0.92_0.005_250)] px-4 py-3 text-left text-xs font-medium uppercase tracking-wider shadow-[4px_0_6px_-4px_rgba(0,0,0,0.1)]">
                           Subject
                         </th>
                         {stages.map(stageId => (
@@ -738,10 +738,10 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                         return (
                           <tr
                             key={subject.id}
-                            className={`cursor-pointer border-b border-border transition-colors hover:bg-muted/50 ${isSelected ? 'bg-primary/5' : ''}`}
+                            className={`cursor-pointer border-b border-border transition-colors ${isSelected ? 'bg-[oklch(0.94_0.02_250)]' : 'hover:bg-muted/30'}`}
                             onClick={() => onSelectSubject(subject.id)}
                           >
-                            <td className={`sticky left-0 z-10 px-3 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
+                            <td className={`sticky left-0 z-10 px-3 py-3 ${isSelected ? 'bg-[oklch(0.94_0.02_250)]' : 'bg-card'}`}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <button
@@ -761,7 +761,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                 </TooltipContent>
                               </Tooltip>
                             </td>
-                            <td className={`sticky left-10 z-10 px-2 py-3 ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
+                            <td className={`sticky left-10 z-10 px-2 py-3 ${isSelected ? 'bg-[oklch(0.94_0.02_250)]' : 'bg-card'}`}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <button
@@ -789,7 +789,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                 </TooltipContent>
                               </Tooltip>
                             </td>
-                            <td className={`sticky left-[5.5rem] z-10 px-4 py-3 font-normal ${isSelected ? 'bg-primary/5' : 'bg-card'} hover:bg-muted/50`}>
+                            <td className={`sticky left-[5.5rem] z-10 px-4 py-3 font-normal shadow-[4px_0_6px_-4px_rgba(0,0,0,0.1)] ${isSelected ? 'bg-[oklch(0.94_0.02_250)]' : 'bg-card'}`}>
                               <div className="flex flex-col gap-1">
                                 <span className="text-sm">{subject.name}</span>
                                 <div className="flex gap-2">
