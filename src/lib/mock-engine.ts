@@ -749,8 +749,39 @@ class MockEngineAPI {
 
 // Allow switching to a real local backend without touching the UI components.
 // Set `VITE_ENGINE=backend` and `VITE_BACKEND_URL=http://127.0.0.1:8787`.
+//
+// Demo-mode control:
+// - Default engine is `VITE_ENGINE` ("backend" or "demo").
+// - You can force demo with `?demo=1` or `?engine=demo` *only if* `VITE_ALLOW_DEMO` is not "false".
+// - This lets you keep a public demo link, while real deployments can disable demo entirely.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const useBackend = (import.meta as any).env?.VITE_ENGINE === 'backend';
+function readEngineOverride(): 'backend' | 'demo' | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const engine = (params.get('engine') || '').toLowerCase();
+    if (engine === 'backend' || engine === 'demo') return engine;
+    const demo = (params.get('demo') || '').toLowerCase();
+    if (demo === '1' || demo === 'true' || demo === 'yes') return 'demo';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const env: any = (import.meta as any).env || {};
+const defaultEngine: 'backend' | 'demo' = env.VITE_ENGINE === 'backend' ? 'backend' : 'demo';
+const allowDemo = String(env.VITE_ALLOW_DEMO ?? 'true').toLowerCase() !== 'false';
+const override = readEngineOverride();
+
+const effectiveEngine: 'backend' | 'demo' =
+  override === 'backend'
+    ? 'backend'
+    : override === 'demo'
+      ? (allowDemo ? 'demo' : 'backend')
+      : defaultEngine;
+
+const useBackend = effectiveEngine === 'backend';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const mockEngine: any = useBackend ? new BackendEngineAPI() : new MockEngineAPI();

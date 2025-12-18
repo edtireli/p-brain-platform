@@ -33,6 +33,8 @@ jobs:
       - name: Build
         env:
           BASE_URL: /p-brain-web/
+          VITE_ENGINE: demo
+          VITE_ALLOW_DEMO: "true"
         run: npm run build
 
       - name: Setup Pages

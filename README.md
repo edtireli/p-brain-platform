@@ -1,23 +1,55 @@
-# ✨ Welcome to Your Spark Template!
-You've just launched your brand-new Spark Template Codespace — everything’s fired up and ready for you to explore, build, and create with Spark!
+# p-brain-web
 
-This template is your blank canvas. It comes with a minimal setup to help you get started quickly with Spark development.
+React UI + local FastAPI backend for running/inspecting `p-brain` outputs.
 
-🚀 What's Inside?
-- A clean, minimal Spark environment
-- Pre-configured for local development
-- Ready to scale with your ideas
-  
-🧠 What Can You Do?
+## Demo vs Real Mode
 
-Right now, this is just a starting point — the perfect place to begin building and testing your Spark applications.
+The UI supports two modes:
 
-🧹 Just Exploring?
-No problem! If you were just checking things out and don’t need to keep this code:
+- **Demo mode** (no backend): uses the in-browser mock engine.
+- **Backend mode**: talks to the local FastAPI backend (runs/reads real `p-brain` outputs).
 
-- Simply delete your Spark.
-- Everything will be cleaned up — no traces left behind.
+### Which mode is used?
 
-📄 License For Spark Template Resources 
+- Default is controlled by `VITE_ENGINE` (`demo` or `backend`).
+- You can force demo via URL params **only if demo is allowed**:
+	- `?demo=1` or `?engine=demo`
+	- Force backend with `?engine=backend`
+- Demo can be disabled for “real users” with `VITE_ALLOW_DEMO=false`.
 
-The Spark Template files and resources from GitHub are licensed under the terms of the MIT license, Copyright GitHub, Inc.
+This lets you keep a public demo link (e.g. GitHub Pages), while your real deployment can hard-disable demo.
+
+## Run (UI)
+
+```zsh
+cd /Users/edt/p-brain-web
+npm install
+
+# Demo mode
+VITE_ENGINE=demo npm run dev
+
+# Backend mode
+VITE_ENGINE=backend VITE_BACKEND_URL=http://127.0.0.1:8787 npm run dev
+```
+
+### Demo link
+
+- Add `?demo=1` to the UI URL.
+
+### Disable demo for real users
+
+- Build/run with `VITE_ALLOW_DEMO=false`.
+
+## Run (backend)
+
+```zsh
+cd /Users/edt/p-brain-web
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+# Required so the backend can run the real pipeline
+export PBRAIN_MAIN_PY=/Users/edt/Desktop/p-brain/main.py
+
+uvicorn backend.app:app --host 127.0.0.1 --port 8787
+```
