@@ -48,7 +48,29 @@ function readBackendOverride(): string | null {
 
 function readStoredBackend(): string | null {
   try {
-    return sanitizeUrl(window.localStorage.getItem(STORAGE_KEY));
+    const cleaned = sanitizeUrl(window.localStorage.getItem(STORAGE_KEY));
+    if (!cleaned) return null;
+
+    // If the UI is served over HTTPS, never use a stored localhost backend URL.
+    // This prevents confusing ERR_CONNECTION_REFUSED / cert issues on GitHub Pages.
+    try {
+      if (window.location.protocol === 'https:') {
+        const u = new URL(cleaned);
+        const host = (u.hostname || '').toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
+          try {
+            window.localStorage.removeItem(STORAGE_KEY);
+          } catch {
+            /* ignore */
+          }
+          return null;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return cleaned;
   } catch {
     return null;
   }

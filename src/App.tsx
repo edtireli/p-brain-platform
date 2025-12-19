@@ -19,7 +19,10 @@ function App() {
   const [view, setView] = useState<View>({ type: 'projects' });
   const auth = useSupabaseAuth();
 
-  const needsLogin = auth.configured && !auth.loading && !auth.session;
+  // Login is always the entry point.
+  // - If Supabase isn't configured, show the login page with config instructions.
+  // - If it is configured, require an active session.
+  const needsLogin = !auth.configured || (!auth.loading && !auth.session);
 
   const handleSelectProject = (projectId: string) => {
     setView({ type: 'project', projectId });
