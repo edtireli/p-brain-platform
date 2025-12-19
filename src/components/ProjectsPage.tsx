@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FolderPlus, Folder, Calendar, HardDrive, UploadSimple } from '@phosphor-icons/react';
+import { FolderPlus, Folder, Calendar, HardDrive, UploadSimple, DotsThreeVertical, PencilSimple, Trash } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { mockEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
@@ -37,6 +38,7 @@ interface ProjectsPageProps {
 export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   const auth = useSupabaseAuth();
@@ -45,6 +47,42 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
+
+  const [editProject, setEditProject] = useState<Project | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editStoragePath, setEditStoragePath] = useState('');
+
+  const subjectIdRe = /^\d{8}x\d+$/i;
+
+  const autoImportSubjects = async (project: Project, storagePath: string) => {
+    try {
+      const scan = await mockEngine.scanProjectSubjects(project.id);
+      let toImport = (scan?.subjects || []).slice();
+
+      if (toImport.length === 0) {
+        const base = (storagePath || '')
+          .trim()
+          .replace(/\/+$/, '')
+          .split('/')
+          .filter(Boolean)
+          .pop();
+        if (base && subjectIdRe.test(base)) {
+          toImport = [{ name: base, sourcePath: storagePath }];
+        }
+      }
+
+      if (toImport.length === 0) {
+        toast.info('Project created, but no subject folders were found in the storage path.');
+        return;
+      }
+
+      await mockEngine.importSubjects(project.id, toImport);
+      toast.success(`Imported ${toImport.length} subject${toImport.length > 1 ? 's' : ''}`);
+    } catch (error) {
+      toast.error('Project created, but failed to auto-import subjects');
+      console.error(error);
+    }
+  };
 
   useEffect(() => {
     loadProjects();
@@ -82,7 +120,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       const project = await mockEngine.createProject({
         name,
         storagePath,
-        copyDataIntoProject: true,
+        copyDataIntoProject: false,
       });
       
       toast.success('Project created successfully');
@@ -90,9 +128,39 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       setDraftName('');
       setDraftStoragePath('');
       loadProjects();
+
+      await autoImportSubjects(project, storagePath);
       onSelectProject(project.id);
     } catch (error) {
       toast.error('Failed to create project');
+      console.error(error);
+    }
+  };
+
+  const handleUpdateProject = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editProject) return;
+
+    const name = editName.trim();
+    if (!name) {
+      toast.error('Please enter a project name');
+      return;
+    }
+
+    const storagePath = editStoragePath.trim();
+    if (!storagePath) {
+      toast.error('Please enter a project storage path');
+      return;
+    }
+
+    try {
+      await mockEngine.updateProject(editProject.id, { name, storagePath });
+      toast.success('Project updated');
+      setIsEditDialogOpen(false);
+      setEditProject(null);
+      loadProjects();
+    } catch (error) {
+      toast.error('Failed to update project');
       console.error(error);
     }
   };
@@ -101,6 +169,26 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     setDraftName(prefill?.name ?? '');
     setDraftStoragePath(prefill?.storagePath ?? '');
     setIsCreateDialogOpen(true);
+  };
+
+  const openEditDialog = (project: Project) => {
+    setEditProject(project);
+    setEditName(project.name);
+    setEditStoragePath(project.storagePath);
+    setIsEditDialogOpen(true);
+  };
+
+  const handleDeleteProject = async (project: Project) => {
+    const ok = window.confirm(`Delete project "${project.name}"? This removes it from the app, not from disk.`);
+    if (!ok) return;
+    try {
+      await mockEngine.deleteProject(project.id);
+      toast.success('Project deleted');
+      loadProjects();
+    } catch (error) {
+      toast.error('Failed to delete project');
+      console.error(error);
+    }
   };
 
   const processDroppedItems = useCallback((items: DataTransferItemList) => {
@@ -121,9 +209,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     const rootEntry = entries[0];
-    const fullPath = (rootEntry as any).fullPath || '';
-    const inferredPath = fullPath && fullPath.startsWith('/') ? fullPath : `~/${rootEntry.name}`;
-    openCreateDialog({ name: rootEntry.name, storagePath: inferredPath });
+    // Browsers don't provide a trustworthy absolute path for dropped folders.
+    // Prefill name only; user must paste the storage path.
+    openCreateDialog({ name: rootEntry.name });
+    toast.info('Paste the folder path into “Project storage path” to enable backend processing.');
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -227,7 +316,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
                 <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">Data handling</p>
-                  <p>The backend copies subjects into the project folder before processing. Ensure the destination has space and is backed up.</p>
+                  <p>The backend processes subjects directly from the storage path and stores logs/indexes in a <span className="mono">.pbrain-web</span> folder under it.</p>
                   {draftName.trim() ? (
                     <p className="mono text-xs">Default project location: {computedStoragePath}</p>
                   ) : null}
@@ -324,6 +413,29 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                       <Folder size={20} weight="fill" className="text-primary" />
                       {project.name}
                     </span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Project actions"
+                        >
+                          <DotsThreeVertical size={18} />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenuItem onSelect={() => openEditDialog(project)}>
+                          <PencilSimple size={16} />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem variant="destructive" onSelect={() => handleDeleteProject(project)}>
+                          <Trash size={16} />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </CardTitle>
                   <CardDescription className="mono text-xs">
                     {project.storagePath}
@@ -336,7 +448,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <HardDrive size={16} />
-                    <span>{project.copyDataIntoProject ? 'Data copied' : 'References source'}</span>
+                    <span>{project.copyDataIntoProject ? 'Data copied' : 'In-place processing'}</span>
                   </div>
                 </CardContent>
               </Card>
@@ -344,6 +456,50 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={isEditDialogOpen}
+        onOpenChange={(open) => {
+          setIsEditDialogOpen(open);
+          if (!open) setEditProject(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Project</DialogTitle>
+            <DialogDescription>Update the project name and storage path.</DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleUpdateProject} className="space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="editName">Project Name</Label>
+              <Input
+                id="editName"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="editStoragePath">Project storage path</Label>
+              <Input
+                id="editStoragePath"
+                value={editStoragePath}
+                onChange={(e) => setEditStoragePath(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={() => setIsEditDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit">Save</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

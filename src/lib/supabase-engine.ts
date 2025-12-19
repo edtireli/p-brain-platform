@@ -398,6 +398,26 @@ export class SupabaseEngineAPI {
     return created;
   }
 
+  async updateProject(
+    projectId: string,
+    data: { name?: string; storagePath?: string; copyDataIntoProject?: boolean }
+  ): Promise<Project> {
+    const updated = await safe(async () => {
+      const sb = supabase! as any;
+      const payload: any = {};
+      if (typeof data.name === 'string') payload.name = data.name;
+      if (typeof data.storagePath === 'string') payload.storage_path = data.storagePath;
+      if (typeof data.copyDataIntoProject === 'boolean') payload.copy_data_into_project = data.copyDataIntoProject;
+
+      const { data: row, error } = await sb.from('projects').update(payload).eq('id', projectId).select('*').single();
+      if (error) throw error;
+      return mapProjectRow(row);
+    }, null as any);
+
+    if (!updated) throw new Error('SUPABASE_NOT_CONFIGURED');
+    return updated;
+  }
+
   async deleteProject(projectId: string): Promise<void> {
     await safe(async () => {
       const sb = supabase! as any;

@@ -248,6 +248,16 @@ export class BackendEngineAPI {
     return api<Project>('/projects', { method: 'POST', body: JSON.stringify(data) });
   }
 
+  async updateProject(
+    projectId: string,
+    data: { name?: string; storagePath?: string; copyDataIntoProject?: boolean }
+  ): Promise<Project> {
+    return api<Project>(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+
   async deleteProject(projectId: string): Promise<void> {
     await api(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
   }

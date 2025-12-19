@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import fnmatch
 import json
 import os
@@ -104,6 +105,12 @@ class CreateProjectRequest(BaseModel):
     name: str
     storagePath: str
     copyDataIntoProject: bool = False
+
+
+class UpdateProjectRequest(BaseModel):
+    name: Optional[str] = None
+    storagePath: Optional[str] = None
+    copyDataIntoProject: Optional[bool] = None
 
 
 class UpdateProjectConfigRequest(BaseModel):
@@ -1170,12 +1177,22 @@ def scan_subject_folders(project_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Project storage path is not a directory")
 
     subjects: List[Dict[str, str]] = []
+    subj_name_re = re.compile(r"^\d{8}x\d+$", re.IGNORECASE)
     for entry in os.scandir(root):
         if not entry.is_dir():
             continue
         name = entry.name
         if name.startswith("."):
             continue
+
+        sp = Path(entry.path)
+        looks_like_subject = bool(subj_name_re.match(name))
+        if not looks_like_subject:
+            nifti_dir = sp / "NIfTI"
+            looks_like_subject = nifti_dir.exists() and nifti_dir.is_dir()
+        if not looks_like_subject:
+            continue
+
         subjects.append({"name": name, "sourcePath": str(Path(entry.path).resolve())})
 
     subjects.sort(key=lambda x: x["name"].lower())
@@ -1215,6 +1232,20 @@ def create_project(req: CreateProjectRequest) -> Dict[str, Any]:
     db.projects.append(project)
     db.save()
     return asdict(project)
+
+
+@app.patch("/projects/{project_id}")
+def update_project(project_id: str, req: UpdateProjectRequest) -> Dict[str, Any]:
+    p = _find_project(project_id)
+    if req.name is not None:
+        p.name = str(req.name)
+    if req.storagePath is not None:
+        p.storagePath = str(req.storagePath)
+    if req.copyDataIntoProject is not None:
+        p.copyDataIntoProject = bool(req.copyDataIntoProject)
+    p.updatedAt = _now_iso()
+    db.save()
+    return asdict(p)
 
 
 @app.patch("/projects/{project_id}/config")
@@ -1446,8 +1477,11 @@ def import_subjects(project_id: str, req: ImportSubjectsRequest) -> List[Dict[st
 
         # Allow the UI to send relative-ish names; resolve against project storagePath.
         source_path = Path(source)
-        if not source_path.is_absolute() or str(source).startswith("/") and not Path(source).exists():
-            source_path = Path(project.storagePath) / name
+        if not source_path.is_absolute():
+            source_path = Path(project.storagePath) / source
+        elif str(source).startswith("/") and not source_path.exists():
+            # Browsers may send webkit `fullPath` like "/Subject"; treat as relative.
+            source_path = Path(project.storagePath) / str(source).lstrip("/")
 
         sp = source_path.expanduser().resolve()
 
