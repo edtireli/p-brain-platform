@@ -1139,15 +1139,6 @@ def _mount_frontend_if_present() -> None:
 
 
 
-@app.get("/health")
-def health() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "time": _now_iso(),
-        "pbrain_main_py": os.environ.get("PBRAIN_MAIN_PY"),
-    }
-
-
 @app.get("/_spark/loaded")
 def spark_loaded() -> Dict[str, Any]:
     return {"ok": True}

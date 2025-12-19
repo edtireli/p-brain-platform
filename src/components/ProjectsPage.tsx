@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
 import { mockEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
@@ -45,6 +46,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
+  const [storeWithPatientData, setStoreWithPatientData] = useState(true);
+  const [autoFillFromFolder, setAutoFillFromFolder] = useState(true);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
@@ -110,8 +113,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       return;
     }
 
-    const storagePath = (draftStoragePath || defaultStoragePath(name)).trim();
-    if (!storagePath) {
+    const storagePath = (storeWithPatientData ? defaultStoragePath(name) : draftStoragePath).trim();
+    if (!storeWithPatientData && !storagePath) {
       toast.error('Please enter a project storage path');
       return;
     }
@@ -120,16 +123,21 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       const project = await mockEngine.createProject({
         name,
         storagePath,
-        copyDataIntoProject: false,
+        // When not storing alongside patient data, copy data into the project folder.
+        copyDataIntoProject: !storeWithPatientData,
       });
       
       toast.success('Project created successfully');
       setIsCreateDialogOpen(false);
       setDraftName('');
       setDraftStoragePath('');
+      setStoreWithPatientData(true);
+      setAutoFillFromFolder(true);
       loadProjects();
 
-      await autoImportSubjects(project, storagePath);
+      if (autoFillFromFolder) {
+        await autoImportSubjects(project, storagePath);
+      }
       onSelectProject(project.id);
     } catch (error) {
       toast.error('Failed to create project');
@@ -168,6 +176,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const openCreateDialog = (prefill?: { name?: string; storagePath?: string }) => {
     setDraftName(prefill?.name ?? '');
     setDraftStoragePath(prefill?.storagePath ?? '');
+    setStoreWithPatientData(true);
+    setAutoFillFromFolder(true);
     setIsCreateDialogOpen(true);
   };
 
@@ -303,20 +313,51 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="storagePath">Project storage path</Label>
-                  <Input
-                    id="storagePath"
-                    name="storagePath"
-                    placeholder="Drop a folder to auto-fill (optional)"
-                    value={draftStoragePath}
-                    onChange={(e) => setDraftStoragePath(e.target.value)}
-                  />
+                <div className="space-y-3 rounded-lg border border-border p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <Label>Store project with patient data</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Keep project state alongside the patient data folder (recommended).
+                      </p>
+                    </div>
+                    <Switch
+                      checked={storeWithPatientData}
+                      onCheckedChange={(checked) => setStoreWithPatientData(checked)}
+                    />
+                  </div>
+
+                  {!storeWithPatientData && (
+                    <div className="space-y-2">
+                      <Label htmlFor="storagePath">Project storage path</Label>
+                      <Input
+                        id="storagePath"
+                        name="storagePath"
+                        placeholder="Enter or paste a folder path"
+                        value={draftStoragePath}
+                        onChange={(e) => setDraftStoragePath(e.target.value)}
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <Label>Auto-import patient data from folder</Label>
+                      <p className="text-xs text-muted-foreground">Scan the storage path for subject folders after creating the project.</p>
+                    </div>
+                    <Switch
+                      checked={autoFillFromFolder}
+                      onCheckedChange={(checked) => setAutoFillFromFolder(checked)}
+                    />
+                  </div>
                 </div>
 
                 <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">Data handling</p>
                   <p>The backend processes subjects directly from the storage path and stores logs/indexes in a <span className="mono">.pbrain-web</span> folder under it.</p>
+                  <p>{storeWithPatientData ? 'Project state will live beside the patient data (in-place).' : 'Project state will live in the custom path you provide (data copied into project).'}
+                  </p>
                   {draftName.trim() ? (
                     <p className="mono text-xs">Default project location: {computedStoragePath}</p>
                   ) : null}
