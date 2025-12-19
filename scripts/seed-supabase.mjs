@@ -37,7 +37,7 @@ function usage(msg) {
       '',
       '  Mode B (user, no admin):',
       '    SUPABASE_URL',
-      '    SUPABASE_ANON_KEY',
+      '    SUPABASE_ANON_KEY (or SUPABASE_PUBLISHABLE_KEY)',
       '    (script will sign up/sign in with --email/--password and seed rows as that user)',
       '',
       'Notes:',
