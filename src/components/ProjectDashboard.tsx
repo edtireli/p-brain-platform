@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check, Info } from '@phosphor-icons/react';
+import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -446,8 +446,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     return <div className="flex h-screen items-center justify-center">Loading...</div>;
   }
 
-  const isDemoProject = projectId === 'demo_proj_001';
-
   const stages: StageId[] = [
     'import',
     't1_fit',
@@ -876,30 +874,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
         isOpen={isJobMonitorOpen}
         onClose={() => setIsJobMonitorOpen(false)}
       />
-
-      {!isBackendEngine && isDemoProject && showDemoInfo && (
-        <Card className="fixed bottom-6 right-6 z-50 w-96 border-accent bg-card p-0 shadow-xl">
-          <CardContent className="p-4">
-            <div className="flex items-start gap-3">
-              <Info size={22} weight="fill" className="flex-shrink-0 text-accent" />
-              <div className="flex-1">
-                <h3 className="mb-1 text-sm font-medium">Demo Mode</h3>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  This is a UI prototype demonstrating p-Brain web. In production, all computation would run locally
-                  via a Python engine with no external network calls.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowDemoInfo(false)}
-                className="flex-shrink-0 text-muted-foreground hover:text-foreground"
-                aria-label="Dismiss demo mode message"
-              >
-                <X size={18} />
-              </button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

@@ -236,6 +236,10 @@ export class SupabaseEngineAPI {
     }, []);
   }
 
+  async runSubjectPipeline(projectId: string, subjectId: string): Promise<void> {
+    await this.runFullPipeline(projectId, [subjectId]);
+  }
+
   async getJobs(filters: { projectId?: string; subjectId?: string; status?: string }): Promise<Job[]> {
     return safe(async () => {
       const sb = supabase! as any;

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FolderPlus, Folder, Calendar, HardDrive, Trash, UploadSimple } from '@phosphor-icons/react';
+import { FolderPlus, Folder, Calendar, HardDrive, UploadSimple } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -269,22 +269,49 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               </Card>
             ))}
           </div>
-        ) : projects.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Folder size={64} className="mb-4 text-muted-foreground" />
-              <h3 className="mb-2 text-base font-medium">No projects yet</h3>
-              <p className="mb-6 text-center text-sm text-muted-foreground">
-                Create your first neuroimaging analysis project to get started
-              </p>
-              <Button onClick={() => setIsCreateDialogOpen(true)} className="gap-2">
-                <FolderPlus size={20} weight="bold" />
-                Create Project
-              </Button>
-            </CardContent>
-          </Card>
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <Card
+              id={dropZoneId}
+              className={`cursor-pointer border-dashed ${
+                isDraggingCreate ? 'border-accent bg-accent/5' : 'hover:border-muted-foreground/50'
+              }`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => openCreateDialog()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') openCreateDialog();
+              }}
+            >
+              <CardHeader>
+                <CardTitle className="text-base font-medium">
+                  <span className="flex items-center gap-2">
+                    <UploadSimple size={20} className={isDraggingCreate ? 'text-accent' : 'text-muted-foreground'} />
+                    Create from folder
+                  </span>
+                </CardTitle>
+                <CardDescription>
+                  Drop a study folder here (or click) to prefill project details.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button
+                  variant="secondary"
+                  className="gap-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openCreateDialog();
+                  }}
+                >
+                  <FolderPlus size={18} weight="bold" />
+                  Create
+                </Button>
+              </CardContent>
+            </Card>
+
             {projects.map(project => (
               <Card
                 key={project.id}
@@ -305,53 +332,17 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                 <CardContent className="space-y-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar size={16} />
-                    <span>
-                      Created {new Date(project.createdAt).toLocaleDateString()}
-                    </span>
+                    <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <HardDrive size={16} />
-                    <span>
-                      {project.copyDataIntoProject ? 'Data copied' : 'References source'}
-                    </span>
+                    <span>{project.copyDataIntoProject ? 'Data copied' : 'References source'}</span>
                   </div>
                 </CardContent>
               </Card>
             ))}
           </div>
         )}
-
-        <Card
-          id={dropZoneId}
-          className={`mt-8 border-dashed ${
-            isDraggingCreate ? 'border-accent bg-accent/5' : 'hover:border-muted-foreground/50'
-          }`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => openCreateDialog()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') openCreateDialog();
-          }}
-        >
-          <CardContent className="flex items-center justify-between gap-4 py-6">
-            <div className="flex items-center gap-3">
-              <UploadSimple size={24} className={isDraggingCreate ? 'text-accent' : 'text-muted-foreground'} />
-              <div>
-                <p className="text-sm font-medium text-foreground">Drop a study folder to create a project</p>
-                <p className="text-xs text-muted-foreground">
-                  Drag and drop a folder here (or click) to prefill project details.
-                </p>
-              </div>
-            </div>
-            <Button variant="secondary" className="gap-2" onClick={(e) => { e.stopPropagation(); openCreateDialog(); }}>
-              <FolderPlus size={18} weight="bold" />
-              Create
-            </Button>
-          </CardContent>
-        </Card>
       </div>
     </div>
   );
