@@ -62,3 +62,32 @@ npm run dev
 Notes:
 - For now, `project.storagePath` is treated as the **data root** containing subject folders.
 - `Run Full Pipeline` triggers `p-brain/main.py --mode auto` for each subject.
+
+## Supabase worker (real pipeline runner)
+
+If you want the **Supabase/GitHub Pages** UI to queue work and have a **real runner** execute the full p-brain pipeline, run the Supabase worker on a machine that can see the datasets on disk.
+
+Requirements:
+- The worker needs a Supabase **service role key** (so it can update `jobs` + `subjects` regardless of RLS).
+- Each subject row must have `source_path` set to a path that exists on the worker machine (e.g. `/Volumes/T5_EVO_EDT/data/20250217x4`).
+- The worker runs `p-brain/main.py --mode auto` (optionally with `--diffusion`).
+
+Env vars:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `PBRAIN_MAIN_PY` (e.g. `/Users/edt/Desktop/p-brain/main.py`)
+- Optional: `PBRAIN_PYTHON` (python executable that has all p-brain deps, e.g. TensorFlow)
+- Optional: `PBRAIN_RUN_DIFFUSION=1` (default on)
+- Optional: `PBRAIN_TURBO=1` (default on; suppresses plots)
+
+Run:
+
+```zsh
+cd /Users/edt/p-brain-web/backend
+
+export SUPABASE_URL="https://..."
+export SUPABASE_SERVICE_ROLE_KEY="..."
+export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
+
+./scripts/run_supabase_worker.sh
+```

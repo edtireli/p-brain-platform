@@ -16,6 +16,7 @@ import type {
 } from '@/types';
 import { DEFAULT_CONFIG } from '@/types';
 import { supabase } from '@/lib/supabase';
+import { cachedLoadNifti, sliceZ } from '@/lib/nifti-cache';
 
 type Unsubscribe = () => void;
 
@@ -35,6 +36,11 @@ const STAGES: StageId[] = [
 
 const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined;
 const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
+
+// The browser cannot run the real Python pipeline; a worker must run elsewhere.
+// Keep the old simulated in-browser worker opt-in only.
+const _RAW_ENABLE_DEMO_WORKER = (import.meta as any).env?.VITE_ENABLE_DEMO_WORKER as string | undefined;
+const ENABLE_DEMO_WORKER = (_RAW_ENABLE_DEMO_WORKER ?? '').trim().toLowerCase() === 'true' || (_RAW_ENABLE_DEMO_WORKER ?? '').trim() === '1';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -123,11 +129,25 @@ async function downloadJson<T>(path: string): Promise<T | null> {
   const sb = supabase as any;
   if (!sb.storage) return null;
 
-  const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(path);
-  if (error || !data) return null;
+  // Prefer SDK download (adds auth headers when a session exists).
+  // Some Storage policies reject unauthenticated reads; in that case, fall back
+  // to a signed URL fetch if we can create one.
+  try {
+    const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(path);
+    if (!error && data) {
+      const text = await (data as Blob).text();
+      return JSON.parse(text) as T;
+    }
+  } catch {
+    // ignore and try signed URL fallback
+  }
 
-  const text = await (data as Blob).text();
-  return JSON.parse(text) as T;
+  const { data: signed, error: sErr } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
+  if (sErr || !signed?.signedUrl) return null;
+
+  const res = await fetch(signed.signedUrl);
+  if (!res.ok) return null;
+  return (await res.json()) as T;
 }
 
 async function toObjectUrl(path: string): Promise<string> {
@@ -139,6 +159,7 @@ async function toObjectUrl(path: string): Promise<string> {
   const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
   if (!error && data?.signedUrl) return data.signedUrl;
 
+  // Only works if the bucket is public.
   const pub = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
   return pub?.data?.publicUrl ?? '';
 }
@@ -166,6 +187,8 @@ function basename(p: string): string {
 
 type ArtifactIndex = {
   paths?: string[];
+  volumes?: Array<{ id: string; name: string; path: string; kind?: string }>;
+  maps?: Array<{ id: string; name: string; path: string }>;
 };
 
 async function listPngObjectPathsWithIndexFallback(prefix: string, projectId: string, subjectId: string): Promise<string[]> {
@@ -196,19 +219,24 @@ export class SupabaseEngineAPI {
     if (typeof window === 'undefined' || !supabase) return;
     const sb = supabase as any;
 
-    // Start/stop the local worker based on auth state.
-    sb.auth
-      .getSession()
-      .then(({ data }: any) => {
-        if (data?.session?.user) this.startLocalWorker();
-      })
-      .catch(() => {});
+    if (ENABLE_DEMO_WORKER) {
+      // Start/stop the simulated local worker based on auth state.
+      sb.auth
+        .getSession()
+        .then(({ data }: any) => {
+          if (data?.session?.user) this.startLocalWorker();
+        })
+        .catch(() => {});
 
-    const { data } = sb.auth.onAuthStateChange((_event: any, session: any) => {
-      if (session?.user) this.startLocalWorker();
-      else this.stopLocalWorker();
-    });
-    this.authUnsub = data?.subscription;
+      const { data } = sb.auth.onAuthStateChange((_event: any, session: any) => {
+        if (session?.user) this.startLocalWorker();
+        else this.stopLocalWorker();
+      });
+      this.authUnsub = data?.subscription;
+    } else {
+      // No in-browser worker. Jobs must be processed by an external worker.
+      this.stopLocalWorker();
+    }
   }
 
   private broadcastJob(job: Job) {
@@ -621,7 +649,7 @@ export class SupabaseEngineAPI {
           stage_id: stageId,
           status: 'queued',
           progress: 0,
-          current_step: 'Queued',
+          current_step: ENABLE_DEMO_WORKER ? 'Queued' : 'Queued (waiting for worker)',
         }))
       );
       const { data, error } = await sb.from('jobs').insert(rows).select('*');
@@ -681,22 +709,42 @@ export class SupabaseEngineAPI {
   }
 
   async resolveDefaultVolume(_subjectId: string, _kind: 'dce' | 't1' | 'diffusion' = 'dce'): Promise<string> {
-    return '';
+    const vols = await this.getVolumes(_subjectId);
+    const preferred = vols.find(v => String(v.kind || '').toLowerCase() === _kind)?.path;
+    return preferred ?? vols[0]?.path ?? '';
   }
 
   async getVolumeInfo(_path: string, _subjectId?: string): Promise<VolumeInfo> {
-    return {
+    return safe(async () => {
+      const url = await toObjectUrl(_path);
+      if (!url) throw new Error('VOLUME_URL_EMPTY');
+      const vol = await cachedLoadNifti(url);
+      return {
+        path: _path,
+        dimensions: vol.dims,
+        voxelSize: vol.pixDims,
+        dataType: 'float32',
+        min: vol.min,
+        max: vol.max,
+      };
+    }, {
       path: _path,
       dimensions: [0, 0, 0],
       voxelSize: [0, 0, 0],
       dataType: 'unknown',
       min: 0,
       max: 0,
-    };
+    });
   }
 
   async getSliceData(_path: string, _z: number, _t: number = 0, _subjectId?: string): Promise<{ data: number[][]; min: number; max: number }> {
-    return { data: [[0]], min: 0, max: 0 };
+    return safe(async () => {
+      const url = await toObjectUrl(_path);
+      if (!url) throw new Error('VOLUME_URL_EMPTY');
+      const vol = await cachedLoadNifti(url);
+      const data = sliceZ(vol, _z, _t);
+      return { data, min: vol.min, max: vol.max };
+    }, { data: [[0]], min: 0, max: 0 });
   }
 
   async getCurves(_subjectId: string): Promise<Curve[]> {
@@ -715,28 +763,63 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/fit`;
+      // Prefer the artifacts index produced by scripts/sync-artifacts.mjs.
+      const indexPath = `projects/${subj.projectId}/subjects/${subj.id}/artifacts/index.json`;
+      const index = await downloadJson<ArtifactIndex>(indexPath);
 
-      const pngPaths = await listPngObjectPathsWithIndexFallback(prefix, subj.projectId, subj.id);
-      const withUrls = await Promise.all(
-        pngPaths.map(async fullPath => {
-          const file = basename(fullPath);
-          return {
-            id: file,
-            name: file.replace(/\.png$/i, ''),
-            unit: '',
-            path: await toObjectUrl(fullPath),
-            group: 'modelling' as const,
-          };
-        })
-      );
+      const indexMaps = (index?.maps ?? [])
+        .map(m => ({
+          id: basename(m.path),
+          name: basename(m.path).replace(/\.(nii|nii\.gz)$/i, ''),
+          unit: '',
+          path: m.path,
+          group: /\/analysis\/diffusion\//i.test(m.path) || /^fa_|^md_|^ad_|^rd_|^mo_|tensor_residual_/i.test(basename(m.path))
+            ? ('diffusion' as const)
+            : ('modelling' as const),
+        }))
+        .filter(m => /\.(nii|nii\.gz)$/i.test(m.path));
 
-      return withUrls.filter(m => !!m.path);
+      if (indexMaps.length > 0) return indexMaps;
+
+      // Fallback: list any NIfTI outputs under analysis/.
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis`;
+      const objs = await listObjects(prefix);
+      const nifti = objs.filter(o => /\.(nii|nii\.gz)$/i.test(o.name));
+      return nifti.map(o => ({
+        id: o.name,
+        name: o.name.replace(/\.(nii|nii\.gz)$/i, ''),
+        unit: '',
+        path: o.fullPath,
+        group: /\/diffusion\//i.test(o.fullPath) || /^fa_|^md_|^ad_|^rd_|^mo_|tensor_residual_/i.test(o.name)
+          ? ('diffusion' as const)
+          : ('modelling' as const),
+      }));
     }, []);
   }
 
   async getVolumes(_subjectId: string): Promise<VolumeFile[]> {
-    return [];
+    return safe(async () => {
+      const subj = await this.getSubject(_subjectId);
+      if (!subj) return [];
+
+      const indexPath = `projects/${subj.projectId}/subjects/${subj.id}/artifacts/index.json`;
+      const index = await downloadJson<ArtifactIndex>(indexPath);
+      const vols = (index?.volumes ?? [])
+        .filter(v => typeof v?.path === 'string' && /\.(nii|nii\.gz)$/i.test(v.path))
+        .map(v => ({
+          id: v.id || basename(v.path),
+          name: v.name || basename(v.path),
+          path: v.path,
+          kind: v.kind || 'source',
+        }));
+      if (vols.length > 0) return vols;
+
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/volumes/source`;
+      const objs = await listObjects(prefix);
+      return objs
+        .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
+        .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: 'source' }));
+    }, []);
   }
 
   async getMontageImages(_subjectId: string): Promise<Array<{ id: string; name: string; path: string }>> {
@@ -763,7 +846,7 @@ export class SupabaseEngineAPI {
   }
 
   async ensureSubjectArtifacts(_subjectId: string, _kind: 'all' | 'maps' | 'curves' | 'montages' = 'all'): Promise<{ started: boolean; jobs: any[]; reason: string }> {
-    return { started: false, jobs: [], reason: 'No worker configured' };
+    return { started: false, jobs: [], reason: 'External worker required (the browser cannot run p-brain)' };
   }
 
   async getPatlakData(_subjectId: string, _region: string): Promise<PatlakData> {

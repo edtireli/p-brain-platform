@@ -80,6 +80,11 @@ function isJunk(name) {
   return name === '.DS_Store' || name.startsWith('._');
 }
 
+function isNiftiFilename(name) {
+  const lower = name.toLowerCase();
+  return lower.endsWith('.nii') || lower.endsWith('.nii.gz');
+}
+
 async function exists(p) {
   try {
     await fs.stat(p);
@@ -105,6 +110,27 @@ async function listFilesRecursive(root, exts) {
   }
   if (await exists(root)) await walk(root);
   return out;
+}
+
+function parseCommaPatterns(raw) {
+  return String(raw || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function firstMatchingByPatterns(filenames, patterns) {
+  const pats = patterns.map(p => {
+    // Very small glob-to-regexp: treat '*' as '.*' and escape the rest.
+    const re = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+    return new RegExp(re, 'i');
+  });
+
+  for (const pat of pats) {
+    const hit = filenames.find(f => pat.test(f));
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function normalizeRel(rel) {
@@ -175,6 +201,10 @@ async function main() {
   const bucket = args.bucket || process.env.SUPABASE_BUCKET || 'pbrain';
   if (!projectId || !subjectDir) usage('Missing --project or --subject-dir');
 
+  const uploadPngs = args['upload-pngs'] === false ? false : (String(args['upload-pngs'] || 'true').toLowerCase() !== 'false');
+  const uploadNiftis = args['upload-niftis'] === false ? false : (String(args['upload-niftis'] || 'true').toLowerCase() !== 'false');
+  const uploadAllSourceNiftis = String(args['upload-all-source-niftis'] || 'false').toLowerCase() === 'true' || args['upload-all-source-niftis'] === true;
+
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const anon = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
@@ -236,6 +266,8 @@ async function main() {
   const subjectId = match.id;
 
   const uploads = [];
+  const uploadedVolumes = [];
+  const uploadedMaps = [];
 
   async function uploadFile(localPath, destPath, contentType) {
     const buf = await fs.readFile(localPath);
@@ -248,20 +280,70 @@ async function main() {
     uploads.push(destPath);
   }
 
-  const montagesRoot = path.join(subjectDir, 'Images', 'AI', 'Montages');
-  const montagePngs = await listFilesRecursive(montagesRoot, ['.png']);
-  for (const f of montagePngs) {
-    const name = path.basename(f);
-    const dest = `projects/${projectId}/subjects/${subjectId}/images/ai/montages/${name}`;
-    await uploadFile(f, dest, 'image/png');
+  let montagePngs = [];
+  let fitPngs = [];
+  if (uploadPngs) {
+    const montagesRoot = path.join(subjectDir, 'Images', 'AI', 'Montages');
+    montagePngs = await listFilesRecursive(montagesRoot, ['.png']);
+    for (const f of montagePngs) {
+      const name = path.basename(f);
+      const dest = `projects/${projectId}/subjects/${subjectId}/images/ai/montages/${name}`;
+      await uploadFile(f, dest, 'image/png');
+    }
+
+    const fitRoot = path.join(subjectDir, 'Images', 'Fit');
+    fitPngs = await listFilesRecursive(fitRoot, ['.png']);
+    for (const f of fitPngs) {
+      const name = path.basename(f);
+      const dest = `projects/${projectId}/subjects/${subjectId}/images/fit/${name}`;
+      await uploadFile(f, dest, 'image/png');
+    }
   }
 
-  const fitRoot = path.join(subjectDir, 'Images', 'Fit');
-  const fitPngs = await listFilesRecursive(fitRoot, ['.png']);
-  for (const f of fitPngs) {
-    const name = path.basename(f);
-    const dest = `projects/${projectId}/subjects/${subjectId}/images/fit/${name}`;
-    await uploadFile(f, dest, 'image/png');
+  // Source volumes (NIfTI directory): upload selected volumes so the Viewer can load them.
+  if (uploadNiftis) {
+    const niftiRoot = path.join(subjectDir, 'NIfTI');
+    const allNifti = (await exists(niftiRoot)) ? (await fs.readdir(niftiRoot)).filter(f => !isJunk(f) && isNiftiFilename(f)) : [];
+
+    // Patterns aligned with DEFAULT_FOLDER_STRUCTURE in p-brain-web.
+    const t1Patterns = parseCommaPatterns(process.env.PBRAIN_T1_PATTERN || 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*');
+    const dcePatterns = parseCommaPatterns(process.env.PBRAIN_DCE_PATTERN || 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*');
+    const diffusionPatterns = parseCommaPatterns(
+      process.env.PBRAIN_DIFFUSION_PATTERN ||
+        'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*'
+    );
+
+    const t1File = firstMatchingByPatterns(allNifti, t1Patterns);
+    const dceFile = firstMatchingByPatterns(allNifti, dcePatterns);
+    const diffFile = firstMatchingByPatterns(allNifti, diffusionPatterns);
+
+    const wanted = [];
+    if (t1File) wanted.push({ kind: 't1', file: t1File });
+    if (dceFile) wanted.push({ kind: 'dce', file: dceFile });
+    if (diffFile) wanted.push({ kind: 'diffusion', file: diffFile });
+
+    const toUpload = uploadAllSourceNiftis
+      ? allNifti.map(f => ({ kind: 'source', file: f }))
+      : wanted;
+
+    for (const { kind, file } of toUpload) {
+      const local = path.join(niftiRoot, file);
+      const dest = `projects/${projectId}/subjects/${subjectId}/volumes/source/${file}`;
+      await uploadFile(local, dest, 'application/octet-stream');
+      uploadedVolumes.push({ id: file, name: file, path: dest, kind });
+    }
+  }
+
+  // Analysis map volumes (nii/nii.gz) - these are the "real" p-brain computed maps.
+  if (uploadNiftis) {
+    const analysisRoot = path.join(subjectDir, 'Analysis');
+    const niftiLike = await listFilesRecursive(analysisRoot, ['.nii', '.nii.gz']);
+    for (const f of niftiLike) {
+      const rel = normalizeRel(path.relative(analysisRoot, f));
+      const dest = `projects/${projectId}/subjects/${subjectId}/analysis/${rel}`;
+      await uploadFile(f, dest, 'application/octet-stream');
+      uploadedMaps.push({ id: path.basename(f), name: path.basename(f), path: dest });
+    }
   }
 
   // Curves: convert a small, predictable set of .npy curves to JSON.
@@ -315,8 +397,12 @@ async function main() {
       montages: montagePngs.length,
       fitImages: fitPngs.length,
       curves: curves.length,
+      volumes: uploadedVolumes.length,
+      maps: uploadedMaps.length,
     },
     paths: uploads,
+    volumes: uploadedVolumes,
+    maps: uploadedMaps,
   };
 
   const indexDest = `projects/${projectId}/subjects/${subjectId}/artifacts/index.json`;

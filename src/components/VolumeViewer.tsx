@@ -138,11 +138,13 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const size = slices[0].length;
+    const height = slices[0].length;
+    const width = slices[0][0]?.length ?? 0;
+    if (width <= 0 || height <= 0) return;
     const tilesX = viewMode === 'grid' ? 3 : 1;
     const tilesY = viewMode === 'grid' ? 3 : 1;
-    canvas.width = size * tilesX;
-    canvas.height = size * tilesY;
+    canvas.width = width * tilesX;
+    canvas.height = height * tilesY;
 
     const imageData = ctx.createImageData(canvas.width, canvas.height);
 
@@ -153,12 +155,13 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       const slice = slices[Math.min(tile, slices.length - 1)];
       const tileX = tile % tilesX;
       const tileY = Math.floor(tile / tilesX);
-      const ox = tileX * size;
-      const oy = tileY * size;
+      const ox = tileX * width;
+      const oy = tileY * height;
 
-      for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-          const value = slice[y][x];
+      for (let y = 0; y < height; y++) {
+        const row = slice[y];
+        for (let x = 0; x < width; x++) {
+          const value = row?.[x] ?? 0;
           const normalized = Math.max(0, Math.min(1, (value - windowMin) / safeDenom));
           const px = ox + x;
           const py = oy + y;

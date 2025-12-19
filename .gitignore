@@ -39,5 +39,12 @@ __pycache__/
 backend/db.json
 backend/.pbrain-web/
 backend/certs/
+backend/.venv/
+
+# AI models are huge; keep scripts in git, copy models locally.
+backend/AI/**
+!backend/AI/.gitkeep
+!backend/AI/*.py
+!backend/AI/README.md
 
 .spark-workbench-id

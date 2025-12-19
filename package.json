@@ -12,6 +12,7 @@
         "preview": "vite preview"
     },
     "dependencies": {
+            "nifti-reader-js": "^0.6.8",
         "@github/spark": ">=0.43.1 <1",
         "@supabase/supabase-js": "^2.57.4",
         "@heroicons/react": "^2.2.0",
