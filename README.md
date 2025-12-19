@@ -1,37 +1,52 @@
 # p-brain-web
 
-React UI + local FastAPI backend for running/inspecting `p-brain` outputs.
+GitHub Pages UI for browsing p-brain projects/subjects via Supabase.
+
+## Supabase (required)
+
+This UI reads these build-time env vars:
+
+- `VITE_SUPABASE_URL` (e.g. `https://<ref>.supabase.co`)
+- `VITE_SUPABASE_ANON_KEY` (Supabase anon key)
+- (optional) `VITE_SUPABASE_STORAGE_BUCKET` (defaults to `pbrain`)
+
+Important: `VITE_API_BASE_URL` is **not** your Supabase anon key. It is only for an optional separate HTTP backend.
 
 ## Run (UI)
 
 ```zsh
 cd /Users/edt/p-brain-web
 npm install
-
-# Local dev (defaults to http://127.0.0.1:8787)
 npm run dev
 ```
 
-## Backend URL
+## GitHub Pages deploy env
 
-The frontend needs an API base URL:
+The workflow is in `.github/workflows/pages.yml` and expects:
 
-- Set `VITE_API_BASE_URL` (preferred) or `VITE_BACKEND_URL` to a full `http(s)` URL.
-- If you provide a value ending in `/api` (common convention), the UI will strip it.
+- Repo variable or secret: `VITE_SUPABASE_URL`
+- Repo secret: `VITE_SUPABASE_ANON_KEY`
+- (optional) Repo variable/secret: `VITE_SUPABASE_STORAGE_BUCKET`
 
-Important: when the UI is served over **HTTPS** (e.g. GitHub Pages), it will **not** auto-fallback to localhost.
-Use a proper public HTTPS backend URL.
+## Uploading artifacts for the UI (maps/montages/curves)
 
-## Run (backend)
+GitHub Pages cannot read files from `/Volumes/...`. To show real outputs, upload artifacts to Supabase Storage.
+
+Helper script:
 
 ```zsh
 cd /Users/edt/p-brain-web
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
+export SUPABASE_URL="https://<ref>.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
 
-# Required so the backend can run the real pipeline
-export PBRAIN_MAIN_PY=/Users/edt/Desktop/p-brain/main.py
-
-uvicorn backend.app:app --host 127.0.0.1 --port 8787
+node scripts/sync-artifacts.mjs \
+	--project <PROJECT_ID> \
+	--subject-dir "/Volumes/T5_EVO_EDT/data/20230403x3" \
+	--bucket pbrain
 ```
+
+It uploads a small, web-friendly subset:
+
+- `Images/AI/Montages/*.png` (QC montages)
+- `Images/Fit/*.png` (fit plots shown as “maps”)
+- a minimal `curves.json` derived from a few `.npy` curve files
