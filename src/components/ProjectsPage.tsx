@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { mockEngine, backendConfigured, setBackendOverride } from '@/lib/mock-engine';
+import { mockEngine, backendConfigured, getBackendBaseUrl } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 
@@ -30,27 +30,34 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [backendMissing, setBackendMissing] = useState(false);
 
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
-  const [backendUrl, setBackendUrl] = useState<string>(backendConfigured() ? (mockEngine as any).baseUrl ?? '' : '');
-  const [backendError, setBackendError] = useState<string>('');
   const dropZoneId = 'project-drop-zone';
 
   useEffect(() => {
-    if (backendConfigured()) {
-      loadProjects();
-    }
+    loadProjects();
   }, []);
 
   const loadProjects = async () => {
     setIsLoading(true);
+    setBackendMissing(false);
     try {
+      if (!backendConfigured()) {
+        setBackendMissing(true);
+        return;
+      }
       const data = await mockEngine.getProjects();
       setProjects(data);
     } catch (error) {
-      toast.error('Failed to load projects');
+      const msg = (error as any)?.message || '';
+      if (msg.includes('BACKEND_NOT_CONFIGURED')) {
+        setBackendMissing(true);
+      } else {
+        toast.error('Failed to load projects');
+      }
       console.error(error);
     } finally {
       setIsLoading(false);
@@ -87,17 +94,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       onSelectProject(project.id);
     } catch (error) {
       toast.error('Failed to create project');
-      console.error(error);
-    }
-  };
-
-  const handleDeleteDemoProject = async (projectId: string) => {
-    try {
-      await mockEngine.deleteProject(projectId);
-      toast.success('Demo project deleted');
-      loadProjects();
-    } catch (error) {
-      toast.error('Failed to delete project');
       console.error(error);
     }
   };
@@ -160,18 +156,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   }, [processDroppedItems]);
 
   const computedStoragePath = defaultStoragePath(draftName || 'project');
-
-  const handleSaveBackend = () => {
-    setBackendError('');
-    const cleaned = setBackendOverride(backendUrl);
-    if (!cleaned) {
-      setBackendError('Enter a valid http(s) URL, e.g. https://127.0.0.1:8787');
-      return;
-    }
-    setBackendUrl(cleaned);
-    toast.success('Backend URL saved');
-    loadProjects();
-  };
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -299,6 +283,22 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               </Card>
             ))}
           </div>
+        ) : backendMissing ? (
+          <Card className="border-dashed">
+            <CardContent className="flex flex-col items-center justify-center py-16">
+              <Folder size={64} className="mb-4 text-muted-foreground" />
+              <h3 className="mb-2 text-base font-medium">Backend not configured</h3>
+              <p className="mb-4 max-w-xl text-center text-sm text-muted-foreground">
+                This UI needs a running API server. For GitHub Pages, set <span className="mono">VITE_API_BASE_URL</span> at build time
+                to your public HTTPS backend.
+              </p>
+              <p className="max-w-xl text-center text-xs text-muted-foreground">
+                Local dev fallback is <span className="mono">http://127.0.0.1:8787</span>. Current base: <span className="mono">{(() => {
+                  try { return getBackendBaseUrl(); } catch { return 'not set'; }
+                })()}</span>
+              </p>
+            </CardContent>
+          </Card>
         ) : projects.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16">
@@ -327,20 +327,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                       <Folder size={20} weight="fill" className="text-primary" />
                       {project.name}
                     </span>
-
-                    {project.id === 'demo_proj_001' && (
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:text-foreground"
-                        aria-label="Delete demo project"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteDemoProject(project.id);
-                        }}
-                      >
-                        <Trash size={18} />
-                      </button>
-                    )}
                   </CardTitle>
                   <CardDescription className="mono text-xs">
                     {project.storagePath}

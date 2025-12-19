@@ -4,13 +4,22 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
-import { supabase, supabaseConfigured } from '@/lib/supabase';
+import { getRememberMe, setRememberMe, supabase, supabaseConfigured } from '@/lib/supabase';
 
 export function LoginPage() {
   const configured = useMemo(() => supabaseConfigured(), []);
   const [mode, setMode] = useState<'signin' | 'register' | 'reset' | 'updatePassword'>('signin');
   const [error, setError] = useState('');
+
+  const [rememberMe, setRememberMeState] = useState(() => {
+    try {
+      return getRememberMe();
+    } catch {
+      return true;
+    }
+  });
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -296,7 +305,20 @@ export function LoginPage() {
                     ) : null}
 
                     {mode === 'signin' ? (
-                      <div className="flex justify-end">
+                      <div className="flex items-center justify-between gap-3">
+                        <label className="flex items-center gap-2 text-sm text-muted-foreground" htmlFor="rememberMe">
+                          <Checkbox
+                            id="rememberMe"
+                            checked={rememberMe}
+                            onCheckedChange={(v) => {
+                              const next = v === true;
+                              setRememberMeState(next);
+                              setRememberMe(next);
+                            }}
+                            disabled={!configured || isBusy}
+                          />
+                          Remember me
+                        </label>
                         <Button
                           type="button"
                           variant="ghost"

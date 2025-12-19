@@ -21,7 +21,10 @@ function sanitizeUrl(raw: string | null): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   if (!/^https?:\/\//i.test(trimmed)) return null;
-  return trimmed.replace(/\/$/, '');
+  const noTrailingSlash = trimmed.replace(/\/$/, '');
+  // Accept common convention of passing an API base that includes `/api`.
+  // p-brain-web backend routes are mounted at the root.
+  return noTrailingSlash.endsWith('/api') ? noTrailingSlash.slice(0, -4) : noTrailingSlash;
 }
 
 function readBackendOverride(): string | null {
@@ -66,27 +69,22 @@ function backendUrl(): string | null {
   const override = readBackendOverride();
   if (override) return override;
 
-  const envUrl = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
+  const env = (import.meta as any).env as Record<string, string | undefined> | undefined;
+  const envUrl = env?.VITE_API_BASE_URL || env?.VITE_BACKEND_URL;
   if (envUrl) return sanitizeUrl(envUrl);
 
   const stored = readStoredBackend();
   if (stored) return stored;
 
-  // If hosted on GitHub Pages (https), avoid defaulting to localhost which will be blocked/refused.
+  // Never implicitly fall back to localhost from an https-served UI.
+  // That either fails (mixed content) or leads to cert UX issues.
   try {
-    const host = (window.location.hostname || '').toLowerCase();
-    const isGithubPages = host.endsWith('github.io');
-    if (isGithubPages) return null;
+    if (window.location.protocol === 'https:') return null;
   } catch {
     /* ignore */
   }
 
-  // Fallbacks for local dev.
-  try {
-    if (window.location.protocol === 'https:') return 'https://127.0.0.1:8787';
-  } catch {
-    /* ignore */
-  }
+  // Local dev fallback.
   return 'http://127.0.0.1:8787';
 }
 

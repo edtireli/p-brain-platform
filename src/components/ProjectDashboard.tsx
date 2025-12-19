@@ -47,8 +47,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
 
   const [isScanning, setIsScanning] = useState(false);
 
-  const [showDemoInfo, setShowDemoInfo] = useState(true);
-
   useEffect(() => {
     loadProject();
     loadSubjects();

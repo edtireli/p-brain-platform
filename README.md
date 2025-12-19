@@ -2,43 +2,25 @@
 
 React UI + local FastAPI backend for running/inspecting `p-brain` outputs.
 
-## Demo vs Real Mode
-
-The UI supports two modes:
-
-- **Demo mode** (no backend): uses the in-browser mock engine.
-- **Backend mode**: talks to the local FastAPI backend (runs/reads real `p-brain` outputs).
-
-### Which mode is used?
-
-- Default is controlled by `VITE_ENGINE` (`demo` or `backend`).
-- You can force demo via URL params **only if demo is allowed**:
-	- `?demo=1` or `?engine=demo`
-	- Force backend with `?engine=backend`
-- Demo can be disabled for “real users” with `VITE_ALLOW_DEMO=false`.
-
-This lets you keep a public demo link (e.g. GitHub Pages), while your real deployment can hard-disable demo.
-
 ## Run (UI)
 
 ```zsh
 cd /Users/edt/p-brain-web
 npm install
 
-# Demo mode
-VITE_ENGINE=demo npm run dev
-
-# Backend mode
-VITE_ENGINE=backend VITE_BACKEND_URL=http://127.0.0.1:8787 npm run dev
+# Local dev (defaults to http://127.0.0.1:8787)
+npm run dev
 ```
 
-### Demo link
+## Backend URL
 
-- Add `?demo=1` to the UI URL.
+The frontend needs an API base URL:
 
-### Disable demo for real users
+- Set `VITE_API_BASE_URL` (preferred) or `VITE_BACKEND_URL` to a full `http(s)` URL.
+- If you provide a value ending in `/api` (common convention), the UI will strip it.
 
-- Build/run with `VITE_ALLOW_DEMO=false`.
+Important: when the UI is served over **HTTPS** (e.g. GitHub Pages), it will **not** auto-fallback to localhost.
+Use a proper public HTTPS backend URL.
 
 ## Run (backend)
 
