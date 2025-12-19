@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
@@ -1111,6 +1112,26 @@ app.add_middleware(
 )
 
 
+def _mount_frontend_if_present() -> None:
+    """Serve the built React app from this backend if `../dist` exists.
+
+    This is the recommended "neuroscientist" path: one local URL over HTTP,
+    no GitHub Pages, no HTTPS, and no certificate prompts.
+    """
+
+    try:
+        dist_dir = Path(__file__).resolve().parent.parent / "dist"
+        index = dist_dir / "index.html"
+        if not index.exists():
+            return
+        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="ui")
+    except Exception:
+        # If anything goes wrong, keep API running.
+        return
+
+
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {
@@ -1639,3 +1660,8 @@ def get_job_logs(job_id: str, tail: int = 400) -> Dict[str, Any]:
         return {"lines": []}
     lines = p.read_text(errors="replace").splitlines()[-tail:]
     return {"lines": lines}
+
+
+# Optional: serve the built React UI from this backend.
+# IMPORTANT: this must be last so it cannot shadow API routes.
+_mount_frontend_if_present()

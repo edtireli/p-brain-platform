@@ -7,6 +7,21 @@ This is a **local** FastAPI server that the React UI talks to.
 
 ## Run
 
+## Recommended (no HTTPS, no cert prompts)
+
+For day-to-day use (e.g. neuroscientists), do **not** use GitHub Pages.
+Run the full app locally over plain HTTP so there are no TLS/certificate steps.
+
+```zsh
+cd /Users/edt/p-brain-web/backend
+
+# Tell the backend where p-brain lives (points to the CLI entry file)
+export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
+
+# Builds the frontend and starts the backend serving the UI at http://127.0.0.1:8787
+./scripts/run_local_app.sh
+```
+
 ```zsh
 cd /Users/edt/p-brain-web/backend
 python -m venv .venv
