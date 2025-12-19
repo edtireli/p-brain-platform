@@ -50,3 +50,25 @@ It uploads a small, web-friendly subset:
 - `Images/AI/Montages/*.png` (QC montages)
 - `Images/Fit/*.png` (fit plots shown as “maps”)
 - a minimal `curves.json` derived from a few `.npy` curve files
+
+## Seeding a test project (optional)
+
+If you want a fully automated local seed (user + project + subject rows):
+
+```zsh
+cd /Users/edt/p-brain-web
+export SUPABASE_URL="https://<ref>.supabase.co"
+
+# Preferred: use the Supabase Dashboard "Secret key" (service_role equivalent) locally only.
+export SUPABASE_SERVICE_ROLE_KEY="<sb_secret_...>"
+
+node scripts/seed-supabase.mjs \
+	--project-name "Test Project" \
+	--subject-dir "/Volumes/T5_EVO_EDT/data/20230403x3" \
+	--email "you@example.com" \
+	--password "choose-a-password"
+```
+
+Notes:
+- The key shown as `sb_publishable_...` is the browser-safe key (use it for `VITE_SUPABASE_ANON_KEY`).
+- The key shown as `sb_secret_...` is admin-only (never put it in GitHub Pages / VITE_*).
