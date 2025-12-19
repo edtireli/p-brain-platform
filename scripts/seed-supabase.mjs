@@ -1,6 +1,7 @@
 import process from 'node:process';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import readline from 'node:readline';
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -53,6 +54,31 @@ function requireArg(args, name) {
   return v;
 }
 
+async function promptHidden(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const wasRaw = process.stdin.isRaw;
+  try {
+    // Best-effort "hidden" input: suppress echo by intercepting stdout writes.
+    const mutableOut = rl.output;
+    const write = mutableOut.write.bind(mutableOut);
+    mutableOut.write = (str, ...rest) => {
+      if (rl.stdoutMuted) return true;
+      return write(str, ...rest);
+    };
+    rl.stdoutMuted = false;
+
+    const answer = await new Promise(resolve => {
+      rl.question(prompt, a => resolve(a));
+      rl.stdoutMuted = true;
+    });
+    write.call(mutableOut, '\n');
+    return String(answer || '');
+  } finally {
+    rl.close();
+    if (typeof wasRaw === 'boolean') process.stdin.setRawMode?.(wasRaw);
+  }
+}
+
 async function getOrCreateUserAdmin(sbAdmin, email, password) {
   // Try to find existing user (best-effort)
   try {
@@ -98,11 +124,12 @@ async function main() {
   const projectName = requireArg(args, 'project-name');
   const subjectDir = requireArg(args, 'subject-dir');
   const email = requireArg(args, 'email');
-  const password = requireArg(args, 'password');
+  const password = typeof args.password === 'string' ? args.password : await promptHidden('Supabase password (hidden): ');
+  if (!password) usage('Missing --password (or empty prompt)');
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const anonKey = process.env.SUPABASE_ANON_KEY;
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
 
   if (!supabaseUrl) usage('Missing SUPABASE_URL');
 

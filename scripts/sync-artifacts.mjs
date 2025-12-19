@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { createClient } from '@supabase/supabase-js';
+import readline from 'node:readline';
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -33,7 +34,8 @@ function usage(msg) {
       'Env:',
       '  SUPABASE_URL',
       '  SUPABASE_SERVICE_ROLE_KEY   (recommended; needs storage + table access)',
-      '  (optional) SUPABASE_ANON_KEY (only if your RLS/storage permits)',
+      '  (optional) SUPABASE_ANON_KEY or SUPABASE_PUBLISHABLE_KEY (user-mode upload; requires Storage policies)',
+      '  (user-mode) SUPABASE_EMAIL / SUPABASE_PASSWORD (or you will be prompted)',
       '',
       'Notes:',
       '  - Uploads a small set of p-brain outputs so the GitHub Pages UI can render in Supabase-only mode.',
@@ -41,6 +43,37 @@ function usage(msg) {
     ].join('\n')
   );
   process.exit(1);
+}
+
+async function promptHidden(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const mutableOut = rl.output;
+    const write = mutableOut.write.bind(mutableOut);
+    mutableOut.write = (str, ...rest) => {
+      if (rl.stdoutMuted) return true;
+      return write(str, ...rest);
+    };
+    rl.stdoutMuted = false;
+
+    const answer = await new Promise(resolve => {
+      rl.question(prompt, a => resolve(a));
+      rl.stdoutMuted = true;
+    });
+    write.call(mutableOut, '\n');
+    return String(answer || '');
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptVisible(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise(resolve => rl.question(prompt, a => resolve(String(a || ''))));
+  } finally {
+    rl.close();
+  }
 }
 
 function isJunk(name) {
@@ -144,11 +177,21 @@ async function main() {
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const anon = process.env.SUPABASE_ANON_KEY;
+  const anon = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
   const key = serviceRole || anon;
   if (!supabaseUrl || !key) usage('Missing SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY)');
 
   const sb = createClient(supabaseUrl, key, { auth: { persistSession: false } });
+
+  if (!serviceRole) {
+    // User-mode: sign in so Storage policies can apply.
+    const email = process.env.SUPABASE_EMAIL || (await promptVisible('Supabase email: '));
+    const password = process.env.SUPABASE_PASSWORD || (await promptHidden('Supabase password (hidden): '));
+    if (!email || !password) throw new Error('Missing SUPABASE_EMAIL/SUPABASE_PASSWORD');
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    if (!data?.session) throw new Error('Failed to obtain session');
+  }
 
   const subjectName = path.basename(subjectDir);
   const { data: subjects, error: sErr } = await sb
