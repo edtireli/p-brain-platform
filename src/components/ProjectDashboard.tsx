@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig } from '@/types';
 import { STAGE_NAMES } from '@/types';
@@ -52,7 +52,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     loadSubjects();
 
     const refreshActiveJobs = async () => {
-      const jobs = await mockEngine.getJobs({ projectId });
+      const jobs = await engine.getJobs({ projectId });
       const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
       setActiveJobsCount(active);
       jobs.forEach(job => {
@@ -62,7 +62,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
 
     refreshActiveJobs();
 
-    const unsubscribeStatus = mockEngine.onStatusUpdate(update => {
+    const unsubscribeStatus = engine.onStatusUpdate(update => {
       setSubjects(prev =>
         prev.map(s =>
           s.id === update.subjectId
@@ -72,7 +72,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       );
     });
 
-    const unsubscribeJob = mockEngine.onJobUpdate((job: Job) => {
+    const unsubscribeJob = engine.onJobUpdate((job: Job) => {
       const previousStatus = previousJobStatusesRef.current.get(job.id);
       
       if (previousStatus && previousStatus !== job.status) {
@@ -139,18 +139,18 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   }, [subjects, selectedSubjectIds]);
 
   const loadProject = async () => {
-    const data = await mockEngine.getProject(projectId);
+    const data = await engine.getProject(projectId);
     if (data) setProject(data);
   };
 
   const loadSubjects = async () => {
-    const data = await mockEngine.getSubjects(projectId);
+    const data = await engine.getSubjects(projectId);
     setSubjects(data);
   };
 
   const handleSaveFolderConfig = async (config: FolderStructureConfig) => {
     try {
-      const updated = await mockEngine.updateProjectConfig(projectId, { folderStructure: config });
+      const updated = await engine.updateProjectConfig(projectId, { folderStructure: config });
       if (updated) {
         setProject(updated);
       }
@@ -267,7 +267,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     }));
 
     try {
-      await mockEngine.importSubjects(projectId, subjectsToImport);
+      await engine.importSubjects(projectId, subjectsToImport);
       toast.success(`Imported ${subjectsToImport.length} subject${subjectsToImport.length > 1 ? 's' : ''}`);
       setIsAddDialogOpen(false);
       setDetectedSubjects([]);
@@ -288,7 +288,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     if (!project) return;
     setIsScanning(true);
     try {
-      const result = await mockEngine.scanProjectSubjects(projectId);
+      const result = await engine.scanProjectSubjects(projectId);
       const existing = new Set(subjects.map(s => s.name.toLowerCase()));
       const toImport = (result?.subjects || []).filter(s => !existing.has(s.name.toLowerCase()));
 
@@ -297,7 +297,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
         return;
       }
 
-      await mockEngine.importSubjects(projectId, toImport);
+      await engine.importSubjects(projectId, toImport);
       toast.success(`Imported ${toImport.length} subject${toImport.length > 1 ? 's' : ''} from storage`);
       loadSubjects();
     } catch (error) {
@@ -319,7 +319,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     try {
       const subjectIds = subjects.map(s => s.id);
       setRunningSubjectIds(new Set(subjectIds));
-      await mockEngine.runFullPipeline(projectId, subjectIds);
+      await engine.runFullPipeline(projectId, subjectIds);
       toast.success('Pipeline started for all subjects');
     } catch (error) {
       toast.error('Failed to start pipeline');
@@ -340,7 +340,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     try {
       const subjectIds = Array.from(selectedSubjectIds);
       setRunningSubjectIds(prev => new Set([...prev, ...subjectIds]));
-      await mockEngine.runFullPipeline(projectId, subjectIds);
+      await engine.runFullPipeline(projectId, subjectIds);
       toast.success(`Pipeline started for ${subjectIds.length} subject${subjectIds.length > 1 ? 's' : ''}`);
       setSelectedSubjectIds(new Set());
     } catch (error) {
@@ -407,7 +407,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     
     setRunningSubjectIds(prev => new Set(prev).add(subjectId));
     try {
-      await mockEngine.runSubjectPipeline(projectId, subjectId);
+      await engine.runFullPipeline(projectId, [subjectId]);
       toast.success(`Pipeline started for ${subjectName}`);
     } catch (error) {
       toast.error(`Failed to start pipeline for ${subjectName}`);

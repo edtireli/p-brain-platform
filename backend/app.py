@@ -1144,6 +1144,11 @@ def spark_loaded() -> Dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {"ok": True, "time": _now_iso()}
+
+
 @app.post("/_spark/loaded")
 def spark_loaded_post() -> Dict[str, Any]:
     return {"ok": True}

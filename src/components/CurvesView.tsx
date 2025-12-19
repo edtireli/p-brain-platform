@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { mockEngine, isBackendEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
 
 interface CurvesViewProps {
@@ -24,7 +24,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
 
   const loadData = async () => {
     try {
-      const curvesData = await mockEngine.getCurves(subjectId);
+      const curvesData = await engine.getCurves(subjectId);
       setCurves(curvesData);
 
       const patlak = await mockEngine.getPatlakData(subjectId, 'gm');

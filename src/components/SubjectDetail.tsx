@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { Job, StageId, Subject } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { VolumeViewer } from './VolumeViewer';
@@ -31,7 +31,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   useEffect(() => {
     loadSubject();
 
-    const unsubscribe = mockEngine.onStatusUpdate(update => {
+    const unsubscribe = engine.onStatusUpdate(update => {
       if (update.subjectId === subjectId) {
         setSubject(prev =>
           prev
@@ -47,7 +47,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   }, [subjectId]);
 
   const loadSubject = async () => {
-    const data = await mockEngine.getSubject(subjectId);
+    const data = await engine.getSubject(subjectId);
     if (data) setSubject(data);
   };
 
@@ -57,7 +57,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     setLogOpen(true);
     setJobLoading(true);
     try {
-      const jobs: Job[] = await mockEngine.getJobs({ subjectId });
+      const jobs: Job[] = await engine.getJobs({ subjectId });
       const forStage = jobs
         .filter(j => j.subjectId === subjectId && j.stageId === stageId)
         .sort((a, b) => String(b.startTime || '').localeCompare(String(a.startTime || '')));

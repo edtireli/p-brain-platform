@@ -1,10 +1,6 @@
-import { BackendEngineAPI, backendConfigured } from '@/lib/backend-engine';
-import { SupabaseEngineAPI } from '@/lib/supabase-engine';
+// Legacy compatibility shim.
+// Intentionally NO Supabase/Storage fallback: this app runs the real p-brain pipeline
+// via an external backend/worker.
 
-// Prefer the real backend worker API when explicitly configured (via env or
-// `?backend=https://...`), otherwise fall back to Supabase.
-export const mockEngine = backendConfigured() ? new BackendEngineAPI() : new SupabaseEngineAPI();
-
-// Backwards-compatible exports (not currently used elsewhere).
-export const engineKind = backendConfigured() ? ('backend' as const) : ('supabase' as const);
-export const isBackendEngine = backendConfigured();
+export { engine as mockEngine, backendConfigured as isBackendEngine } from '@/lib/engine';
+export const engineKind = 'backend' as const;

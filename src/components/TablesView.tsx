@@ -4,7 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Download } from '@phosphor-icons/react';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import { motion } from 'framer-motion';
 import type { MetricsTable } from '@/types';
 
@@ -46,7 +46,7 @@ export function TablesView({ subjectId }: TablesViewProps) {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await mockEngine.getMetricsTable(subjectId);
+        const data = await engine.getMetricsTable(subjectId);
         setMetricsTable(data);
       } catch (error) {
         console.error('Failed to load metrics table:', error);

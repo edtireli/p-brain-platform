@@ -3,11 +3,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [[ ! -d .venv ]]; then
-  python -m venv .venv
-fi
+python3 -m pip install -r requirements.txt
 
-source .venv/bin/activate
-pip install -r requirements.txt
-
-python supabase_worker.py
+python3 supabase_worker.py

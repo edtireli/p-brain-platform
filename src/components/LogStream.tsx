@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 
 interface LogStreamProps {
   jobId: string;
@@ -15,7 +15,7 @@ export function LogStream({ jobId, className = '' }: LogStreamProps) {
   useEffect(() => {
     setLogs([]);
     
-    const unsubscribe = mockEngine.onJobLogs(jobId, (log) => {
+    const unsubscribe = engine.onJobLogs(jobId, (log) => {
       setLogs((prev) => [...prev, log]);
     });
 

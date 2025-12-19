@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { VolumeFile } from '@/types';
 
 interface VolumeViewerProps {
@@ -47,7 +47,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
         }
 
         if (allowSelect) {
-          const list = await mockEngine.getVolumes(subjectId);
+          const list = await engine.getVolumes(subjectId);
           setVolumes(list);
 
           const preferred =
@@ -59,12 +59,12 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
             setSelectedVolumeId(preferred);
             setVolumePath(preferred);
           } else {
-            const resolved = await mockEngine.resolveDefaultVolume(subjectId, kind);
+            const resolved = await engine.resolveDefaultVolume(subjectId, kind);
             setSelectedVolumeId(resolved);
             setVolumePath(resolved);
           }
         } else {
-          const resolvedPath = await mockEngine.resolveDefaultVolume(subjectId, kind);
+          const resolvedPath = await engine.resolveDefaultVolume(subjectId, kind);
           setSelectedVolumeId(resolvedPath);
           setVolumePath(resolvedPath);
         }
@@ -82,7 +82,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       try {
         if (!volumePath) return;
         if (isImage) return;
-        const info = await mockEngine.getVolumeInfo(volumePath, subjectId);
+        const info = await engine.getVolumeInfo(volumePath, subjectId);
         const zMax = Math.max(0, (info.dimensions[2] ?? 1) - 1);
         const tMax = Math.max(0, (info.dimensions[3] ?? 1) - 1);
         setMaxZ(zMax);
@@ -115,7 +115,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       if (isImage) return;
 
       if (viewMode === 'single') {
-        const data = await mockEngine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
+        const data = await engine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
         setSlices([data.data]);
         return;
       }
@@ -123,7 +123,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       const start = Math.max(0, sliceZ - 4);
       const sliceIndices = Array.from({ length: 9 }, (_, i) => Math.min(maxZ, start + i));
       const frames = await Promise.all(
-        sliceIndices.map(z => mockEngine.getSliceData(volumePath, z, timeFrame, subjectId).then(r => r.data))
+        sliceIndices.map(z => engine.getSliceData(volumePath, z, timeFrame, subjectId).then(r => r.data))
       );
       setSlices(frames);
     } catch (error) {

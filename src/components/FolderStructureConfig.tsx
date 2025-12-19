@@ -223,6 +223,7 @@ const PRESET_STRUCTURES = [
       diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
       niftiSubfolder: 'NIfTI',
       useNestedStructure: true,
+      aiModelsPath: DEFAULT_FOLDER_STRUCTURE.aiModelsPath,
     },
   },
   {
@@ -236,6 +237,7 @@ const PRESET_STRUCTURES = [
       diffusionPattern: 'dwi/*dwi*.nii.gz',
       niftiSubfolder: '',
       useNestedStructure: true,
+      aiModelsPath: DEFAULT_FOLDER_STRUCTURE.aiModelsPath,
     },
   },
   {
@@ -249,6 +251,7 @@ const PRESET_STRUCTURES = [
       diffusionPattern: '*DTI*.nii.gz',
       niftiSubfolder: '',
       useNestedStructure: false,
+      aiModelsPath: DEFAULT_FOLDER_STRUCTURE.aiModelsPath,
     },
   },
   {
@@ -262,6 +265,7 @@ const PRESET_STRUCTURES = [
       diffusionPattern: '*.nii.gz',
       niftiSubfolder: 'nifti',
       useNestedStructure: true,
+      aiModelsPath: DEFAULT_FOLDER_STRUCTURE.aiModelsPath,
     },
   },
   {
@@ -394,7 +398,7 @@ function FolderTreeNode({
 export function FolderStructureConfig({ project, onSave }: FolderStructureConfigProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [config, setConfig] = useState<FolderConfig>(
-    project.config.folderStructure || DEFAULT_FOLDER_STRUCTURE
+    { ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) }
   );
   const [selectedPreset, setSelectedPreset] = useState<string>('custom');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
@@ -417,9 +421,10 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   }, [config]);
 
   useEffect(() => {
+    const comparable = { ...config, aiModelsPath: '' };
     const matchingPreset = PRESET_STRUCTURES.find(
       p => p.id !== 'custom' && 
-        JSON.stringify(p.config) === JSON.stringify(config)
+        JSON.stringify({ ...(p.config as any), aiModelsPath: '' }) === JSON.stringify(comparable)
     );
     setSelectedPreset(matchingPreset?.id || 'custom');
   }, [config]);
@@ -427,7 +432,10 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   const handlePresetChange = (presetId: string) => {
     const preset = PRESET_STRUCTURES.find(p => p.id === presetId);
     if (preset) {
-      setConfig(preset.config);
+      setConfig(prev => ({
+        ...preset.config,
+        aiModelsPath: prev.aiModelsPath || DEFAULT_FOLDER_STRUCTURE.aiModelsPath,
+      }));
       setSelectedPreset(presetId);
     }
   };
@@ -449,7 +457,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   };
 
   const handleReset = () => {
-    setConfig(project.config.folderStructure || DEFAULT_FOLDER_STRUCTURE);
+    setConfig({ ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) });
     toast.info('Configuration reset');
   };
 
@@ -802,6 +810,44 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                           />
                         </motion.div>
                       )}
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <FolderOpen size={16} className="text-accent" />
+                        AI Models Folder
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="aiModelsPath" className="text-xs">
+                          Local folder containing p-brain AI model files
+                        </Label>
+                        <Input
+                          id="aiModelsPath"
+                          value={config.aiModelsPath}
+                          onChange={(e) => setConfig(prev => ({
+                            ...prev,
+                            aiModelsPath: e.target.value,
+                          }))}
+                          placeholder={DEFAULT_FOLDER_STRUCTURE.aiModelsPath}
+                          className="mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">
+                          If you don’t have the model files, download them from{' '}
+                          <a
+                            href="https://zenodo.org/records/15697443"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            https://zenodo.org/records/15697443
+                          </a>
+                          .
+                        </p>
+                      </div>
                     </CardContent>
                   </Card>
 

@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { VolumeViewer } from '@/components/VolumeViewer';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { MapVolume, Subject } from '@/types';
 
 interface MapsViewProps {
@@ -70,11 +70,11 @@ export function MapsView({ subjectId }: MapsViewProps) {
     let cancelled = false;
     const load = async () => {
       try {
-        const s = await mockEngine.getSubject(subjectId);
+        const s = await engine.getSubject(subjectId);
         if (cancelled) return;
         setSubject(s ?? null);
 
-        const list = await mockEngine.getMapVolumes(subjectId);
+        const list = await engine.getMapVolumes(subjectId);
         if (cancelled) return;
         setMaps(list);
         setSelectedId(prev => {
@@ -119,7 +119,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
                   try {
                     setEnsuringMaps(true);
                     setEnsureMsg('Queued full pipeline (waiting for worker)…');
-                    await mockEngine.runFullPipeline(subject.projectId, [subjectId]);
+                    await engine.runFullPipeline(subject.projectId, [subjectId]);
                   } catch (e: any) {
                     setEnsureMsg(String(e?.message || e || 'Failed to queue pipeline'));
                   } finally {

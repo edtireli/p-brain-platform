@@ -43,6 +43,7 @@ export interface FolderStructureConfig {
   diffusionPattern: string;
   niftiSubfolder: string;
   useNestedStructure: boolean;
+  aiModelsPath: string;
 }
 
 export interface PipelineConfig {
@@ -216,6 +217,7 @@ export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {
   diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
   niftiSubfolder: 'NIfTI',
   useNestedStructure: true,
+  aiModelsPath: '/Users/edt/Desktop/p-brain/AI',
 };
 
 export const DEFAULT_CONFIG: PipelineConfig = {

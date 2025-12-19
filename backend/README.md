@@ -24,9 +24,7 @@ export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
 
 ```zsh
 cd /Users/edt/p-brain-web/backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 
 # Tell the backend where p-brain lives (points to the CLI entry file)
 export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
@@ -34,20 +32,10 @@ export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
 # Start API
 ./scripts/run_http.sh
 
-## Run (HTTPS, for GitHub Pages)
+## Troubleshooting
 
-If you load the UI from GitHub Pages (HTTPS), browsers will block calls to an HTTP `localhost` API.
-Run the backend over HTTPS instead:
-
-```zsh
-cd /Users/edt/p-brain-web/backend
-
-# Generates a local self-signed cert (first run only), then starts uvicorn with TLS
-./scripts/run_https.sh
-
-# One-time browser step:
-# open https://127.0.0.1:8787/health and accept the certificate warning
-```
+- `net::ERR_CONNECTION_REFUSED` means the backend is not running (or it's bound to a different port/host).
+- For local HTTPS mode, make sure you have accepted the cert at `https://127.0.0.1:8787/health`.
 ```
 
 ## Frontend
@@ -63,31 +51,53 @@ Notes:
 - For now, `project.storagePath` is treated as the **data root** containing subject folders.
 - `Run Full Pipeline` triggers `p-brain/main.py --mode auto` for each subject.
 
-## Supabase worker (real pipeline runner)
+## Supabase control-plane runner (no tunnels, no exposed ports)
 
-If you want the **Supabase/GitHub Pages** UI to queue work and have a **real runner** execute the full p-brain pipeline, run the Supabase worker on a machine that can see the datasets on disk.
+The UI (hosted or local) writes a job row; a **local runner** sitting next to the datasets polls, claims, runs, uploads logs to Supabase Storage, and writes events/outputs rows. Nothing is exposed publicly.
 
-Requirements:
-- The worker needs a Supabase **service role key** (so it can update `jobs` + `subjects` regardless of RLS).
-- Each subject row must have `source_path` set to a path that exists on the worker machine (e.g. `/Volumes/T5_EVO_EDT/data/20250217x4`).
-- The worker runs `p-brain/main.py --mode auto` (optionally with `--diffusion`).
+Schema additions (apply in Supabase SQL editor):
+- `jobs` gains: `payload jsonb`, `runner_id text`, `claimed_at timestamptz`, `finished_at timestamptz`
+- New tables: `job_events`, `job_outputs`
+- Function: `claim_job(p_worker_id text)` does `SELECT ... FOR UPDATE SKIP LOCKED` to atomically claim a queued job.
 
-Env vars:
+Runner expectations:
+- UI inserts into `jobs` with `status='queued'` and `payload` containing at least `relative_path` (relative to `PBRAIN_STORAGE_ROOT`) and optional `subject_id`.
+- Runner uses Supabase **service role key** only (treat like a password).
+- Runner reads data from the local filesystem and never opens ports or tunnels.
+
+Runner env vars:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `PBRAIN_STORAGE_ROOT` (local root that matches your payload.relative_path values)
 - `PBRAIN_MAIN_PY` (e.g. `/Users/edt/Desktop/p-brain/main.py`)
-- Optional: `PBRAIN_PYTHON` (python executable that has all p-brain deps, e.g. TensorFlow)
+- Optional: `PBRAIN_PYTHON` (python with TF, etc.)
+- Optional: `PBRAIN_STORAGE_BUCKET` (default `pbrain`)
 - Optional: `PBRAIN_RUN_DIFFUSION=1` (default on)
 - Optional: `PBRAIN_TURBO=1` (default on; suppresses plots)
+- Optional: `PBRAIN_AI_DIR` (override model paths)
+- Optional: `PBRAIN_WORKER_POLL_INTERVAL` (seconds, default 2.5)
+- Optional: `PBRAIN_WORKER_ID` (defaults to hostname)
+- Optional: `PBRAIN_WORKER_LOG_DIR` (where local logs are written)
 
-Run:
+How jobs flow:
+1) UI inserts a job row: `status='queued'`, `payload={'relative_path': '20230928x1/subjectA', 'subject_id': 'subjectA'}`.
+2) Runner calls `claim_job()` (FOR UPDATE SKIP LOCKED) and atomically flips to `running` + stamps `runner_id/claimed_at/start_time`.
+3) Runner executes `p-brain/main.py --mode auto --data-dir <PBRAIN_STORAGE_ROOT>/<relative_path>` and captures stdout/stderr to a local log file.
+4) Runner updates the job row (`status` -> `completed` or `failed`, sets `finished_at/end_time`).
+5) Runner uploads the log to Supabase Storage at `jobs/<job_id>/logs/runner.log` and inserts a `job_outputs` row; `job_events` holds claim/start/error messages.
+
+Run the worker:
 
 ```zsh
 cd /Users/edt/p-brain-web/backend
+python3 -m pip install -r requirements.txt
 
 export SUPABASE_URL="https://..."
 export SUPABASE_SERVICE_ROLE_KEY="..."
+export PBRAIN_STORAGE_ROOT="/Volumes/T5_EVO_EDT/data"
 export PBRAIN_MAIN_PY="/Users/edt/Desktop/p-brain/main.py"
 
 ./scripts/run_supabase_worker.sh
 ```
+
+Tip: you can run multiple workers (different machines) pointing at the same Supabase project and the same dataset root; `claim_job` uses `FOR UPDATE SKIP LOCKED` so workers will not double-claim.

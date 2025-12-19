@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
 import type { Job, JobStatus } from '@/types';
 import { STAGE_NAMES } from '@/types';
@@ -32,7 +32,7 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
       loadJobs();
       resumeAudioContext();
 
-      const unsubscribe = mockEngine.onJobUpdate(updatedJob => {
+      const unsubscribe = engine.onJobUpdate(updatedJob => {
         const previousStatus = previousJobStatusesRef.current.get(updatedJob.id);
         
         if (previousStatus && previousStatus !== updatedJob.status) {
@@ -69,13 +69,13 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
   }, [isOpen, projectId]);
 
   const loadJobs = async () => {
-    const data = await mockEngine.getJobs({ projectId });
+    const data = await engine.getJobs({ projectId });
     setJobs(data);
   };
 
   const handleCancel = async (jobId: string) => {
     try {
-      await mockEngine.cancelJob(jobId);
+      await engine.cancelJob(jobId);
       toast.success('Job cancelled');
       loadJobs();
     } catch (error) {
@@ -85,7 +85,7 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
 
   const handleRetry = async (jobId: string) => {
     try {
-      await mockEngine.retryJob(jobId);
+      await engine.retryJob(jobId);
       toast.success('Job restarted');
       loadJobs();
     } catch (error) {

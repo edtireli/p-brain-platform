@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { Job } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
@@ -22,6 +22,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [jobLogs, setJobLogs] = useState<Record<string, Job['logs']>>({});
 
   useEffect(() => {
     loadJobs();
@@ -34,7 +35,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
   }, [jobs, searchQuery, statusFilter]);
 
   const loadJobs = async () => {
-    const allJobs = await mockEngine.getJobs({});
+    const allJobs = await engine.getJobs({});
     setJobs(allJobs);
   };
 
@@ -60,7 +61,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
 
   const handleCancelJob = async (jobId: string) => {
     try {
-      await mockEngine.cancelJob(jobId);
+      await engine.cancelJob(jobId);
       toast.success('Job cancelled');
       loadJobs();
     } catch (error) {
@@ -70,7 +71,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
 
   const handleRetryJob = async (jobId: string) => {
     try {
-      await mockEngine.retryJob(jobId);
+      await engine.retryJob(jobId);
       toast.success('Job restarted');
       loadJobs();
     } catch (error) {
@@ -93,6 +94,17 @@ export function JobsPage({ onBack }: JobsPageProps) {
       <div className="h-1.5 w-1.5 rounded-full bg-accent" />
     </div>
   );
+
+  const loadJobLogs = async (jobId: string) => {
+    try {
+      const events = await (engine as any).getJobEvents?.(jobId);
+      if (Array.isArray(events)) {
+        setJobLogs(prev => ({ ...prev, [jobId]: events }));
+      }
+    } catch {
+      /* ignore log fetch errors */
+    }
+  };
 
   const getStatusIcon = (status: Job['status']) => {
     switch (status) {
@@ -240,7 +252,11 @@ export function JobsPage({ onBack }: JobsPageProps) {
                   <Card className={`overflow-hidden transition-all hover:shadow-sm ${job.status === 'running' ? 'border-accent/40 shadow-accent/5 shadow-lg' : ''}`}>
                     <div
                       className="flex cursor-pointer items-center justify-between p-4"
-                      onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+                      onClick={() => {
+                        const next = expandedJobId === job.id ? null : job.id;
+                        setExpandedJobId(next);
+                        if (next) loadJobLogs(job.id);
+                      }}
                     >
                       <div className="flex flex-1 items-center gap-4">
                         <motion.div 
@@ -353,7 +369,7 @@ export function JobsPage({ onBack }: JobsPageProps) {
                     </div>
 
                     <AnimatePresence>
-                      {expandedJobId === job.id && job.logs && (
+                      {expandedJobId === job.id && (
                         <motion.div
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: 'auto', opacity: 1 }}
@@ -367,28 +383,32 @@ export function JobsPage({ onBack }: JobsPageProps) {
                             </div>
                             <ScrollArea className="h-64 rounded-md border border-border bg-card">
                               <pre className="mono p-4 text-xs leading-relaxed">
-                                {job.logs.map((log, i) => (
-                                  <motion.div 
-                                    key={i} 
-                                    className="py-0.5"
-                                    initial={{ opacity: 0, x: -10 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ delay: i * 0.02 }}
-                                  >
-                                    <span className="text-muted-foreground">[{log.timestamp.toLocaleTimeString()}]</span>{' '}
-                                    <span
-                                      className={
-                                        log.level === 'error'
-                                          ? 'text-destructive'
-                                          : log.level === 'warning'
-                                          ? 'text-warning'
-                                          : ''
-                                      }
+                                {(jobLogs[job.id] ?? []).length === 0 ? (
+                                  <div className="text-muted-foreground">Waiting for logs…</div>
+                                ) : (
+                                  jobLogs[job.id]!.map((log, i) => (
+                                    <motion.div
+                                      key={i}
+                                      className="py-0.5"
+                                      initial={{ opacity: 0, x: -10 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      transition={{ delay: i * 0.02 }}
                                     >
-                                      {log.message}
-                                    </span>
-                                  </motion.div>
-                                ))}
+                                      <span className="text-muted-foreground">[{log.timestamp.toLocaleTimeString()}]</span>{' '}
+                                      <span
+                                        className={
+                                          log.level === 'error'
+                                            ? 'text-destructive'
+                                            : log.level === 'warning'
+                                            ? 'text-warning'
+                                            : ''
+                                        }
+                                      >
+                                        {log.message}
+                                      </span>
+                                    </motion.div>
+                                  ))
+                                )}
                               </pre>
                             </ScrollArea>
                           </div>

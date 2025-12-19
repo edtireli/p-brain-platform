@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
-import { mockEngine } from '@/lib/mock-engine';
+import { engine } from '@/lib/engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
@@ -59,7 +59,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const autoImportSubjects = async (project: Project, storagePath: string) => {
     try {
-      const scan = await mockEngine.scanProjectSubjects(project.id);
+      const scan = await engine.scanProjectSubjects(project.id);
       let toImport = (scan?.subjects || []).slice();
 
       if (toImport.length === 0) {
@@ -79,7 +79,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
         return;
       }
 
-      await mockEngine.importSubjects(project.id, toImport);
+      await engine.importSubjects(project.id, toImport);
       toast.success(`Imported ${toImport.length} subject${toImport.length > 1 ? 's' : ''}`);
     } catch (error) {
       toast.error('Project created, but failed to auto-import subjects');
@@ -94,7 +94,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const loadProjects = async () => {
     setIsLoading(true);
     try {
-      const data = await mockEngine.getProjects();
+      const data = await engine.getProjects();
       setProjects(data);
     } catch (error) {
       toast.error('Failed to load projects');
@@ -120,7 +120,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     try {
-      const project = await mockEngine.createProject({
+      const project = await engine.createProject({
         name,
         storagePath,
         // When not storing alongside patient data, copy data into the project folder.
@@ -162,7 +162,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     try {
-      await mockEngine.updateProject(editProject.id, { name, storagePath });
+      await engine.updateProject(editProject.id, { name, storagePath });
       toast.success('Project updated');
       setIsEditDialogOpen(false);
       setEditProject(null);
@@ -192,7 +192,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     const ok = window.confirm(`Delete project "${project.name}"? This removes it from the app, not from disk.`);
     if (!ok) return;
     try {
-      await mockEngine.deleteProject(project.id);
+      await engine.deleteProject(project.id);
       toast.success('Project deleted');
       loadProjects();
     } catch (error) {

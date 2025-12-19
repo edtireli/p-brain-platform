@@ -321,43 +321,39 @@ export class SupabaseEngineAPI {
   }
 
   onJobLogs(jobId: string, listener: (log: string) => void): Unsubscribe {
-    // Minimal: synthesize logs by polling the job row.
-    // This avoids a blank "Waiting for logs…" experience without requiring new tables.
+    // Poll job_events for log lines; emits only new lines per listener.
     if (!supabase) return () => {};
     const sb = supabase as any;
 
     let cancelled = false;
-    let last = '';
+    let lastCount = 0;
 
     const tick = async () => {
       try {
-        const { data, error } = await sb.from('jobs').select('*').eq('id', jobId).maybeSingle();
+        const { data, error } = await sb
+          .from('job_events')
+          .select('ts, level, message')
+          .eq('job_id', jobId)
+          .order('ts', { ascending: true })
+          .limit(200);
         if (cancelled) return;
         if (error || !data) return;
 
-        const job = mapJobRow(data);
-        const lines = [
-          `status: ${job.status}`,
-          `stage: ${job.stageId}`,
-          `progress: ${Math.round((job.progress ?? 0) * 100)}%`,
-          `step: ${job.currentStep || ''}`,
-          job.startTime ? `start: ${job.startTime}` : '',
-          job.endTime ? `end: ${job.endTime}` : '',
-          job.error ? `error: ${job.error}` : '',
-        ].filter(Boolean);
-        const next = lines.join('\n');
-
-        if (next !== last) {
-          last = next;
-          listener(next);
+        if (data.length > lastCount) {
+          const fresh = data.slice(lastCount);
+          fresh.forEach((row: any) => {
+            const ts = row.ts ? new Date(row.ts).toISOString() : '';
+            listener(`${ts} [${row.level ?? 'info'}] ${row.message ?? ''}`);
+          });
+          lastCount = data.length;
         }
       } catch {
-        // ignore
+        /* ignore */
       }
     };
 
     void tick();
-    const t = window.setInterval(tick, 1000);
+    const t = window.setInterval(tick, 1200);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -639,19 +635,27 @@ export class SupabaseEngineAPI {
   }
 
   async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
-    // Create queued jobs for all stages; an external worker can pick them up.
+    // Queue one job per subject with a payload the local runner can resolve.
     return safe(async () => {
       const sb = supabase! as any;
-      const rows = subjectIds.flatMap(subjectId =>
-        STAGES.map(stageId => ({
-          project_id: projectId,
-          subject_id: subjectId,
-          stage_id: stageId,
-          status: 'queued',
-          progress: 0,
-          current_step: ENABLE_DEMO_WORKER ? 'Queued' : 'Queued (waiting for worker)',
-        }))
-      );
+      const { data: subjects, error: sErr } = await sb
+        .from('subjects')
+        .select('id, source_path')
+        .in('id', subjectIds);
+      if (sErr) throw sErr;
+      const rows = (subjects || []).map((s: any) => ({
+        project_id: projectId,
+        subject_id: s.id,
+        stage_id: 'import',
+        status: 'queued',
+        progress: 0,
+        current_step: 'Queued (waiting for runner)',
+        payload: {
+          relative_path: s.source_path ?? '',
+          subject_id: s.id,
+        },
+      }));
+      if (rows.length === 0) return [];
       const { data, error } = await sb.from('jobs').insert(rows).select('*');
       if (error) throw error;
       return (data || []).map(mapJobRow);
@@ -660,6 +664,24 @@ export class SupabaseEngineAPI {
 
   async runSubjectPipeline(projectId: string, subjectId: string): Promise<void> {
     await this.runFullPipeline(projectId, [subjectId]);
+  }
+
+  async getJobEvents(jobId: string): Promise<Array<{ timestamp: Date; level: 'info' | 'warning' | 'error'; message: string }>> {
+    return safe(async () => {
+      const sb = supabase! as any;
+      const { data, error } = await sb
+        .from('job_events')
+        .select('ts, level, message')
+        .eq('job_id', jobId)
+        .order('ts', { ascending: true })
+        .limit(200);
+      if (error || !data) return [];
+      return data.map((row: any) => ({
+        timestamp: row.ts ? new Date(row.ts) : new Date(),
+        level: (row.level ?? 'info') as any,
+        message: row.message ?? '',
+      }));
+    }, []);
   }
 
   async getJobs(filters: { projectId?: string; subjectId?: string; status?: string }): Promise<Job[]> {
@@ -729,7 +751,7 @@ export class SupabaseEngineAPI {
       };
     }, {
       path: _path,
-      dimensions: [0, 0, 0],
+      dimensions: [0, 0, 0, 0],
       voxelSize: [0, 0, 0],
       dataType: 'unknown',
       min: 0,
