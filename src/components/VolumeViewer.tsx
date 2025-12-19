@@ -28,6 +28,14 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   const [viewMode, setViewMode] = useState<'single' | 'grid'>('single');
   const [slices, setSlices] = useState<number[][][] | null>(null);
 
+  const isImagePath = (p: string | null): boolean => {
+    if (!p) return false;
+    const base = p.split('?')[0];
+    return /\.(png|jpe?g|webp|gif)$/i.test(base);
+  };
+
+  const isImage = isImagePath(volumePath);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -73,6 +81,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
     const loadInfo = async () => {
       try {
         if (!volumePath) return;
+        if (isImage) return;
         const info = await mockEngine.getVolumeInfo(volumePath, subjectId);
         const zMax = Math.max(0, (info.dimensions[2] ?? 1) - 1);
         const tMax = Math.max(0, (info.dimensions[3] ?? 1) - 1);
@@ -88,10 +97,10 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       }
     };
     loadInfo();
-  }, [subjectId, volumePath]);
+  }, [subjectId, volumePath, isImage]);
 
   useEffect(() => {
-    loadSlice();
+    if (!isImage) loadSlice();
   }, [subjectId, volumePath, sliceZ, timeFrame, viewMode]);
 
   useEffect(() => {
@@ -103,6 +112,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   const loadSlice = async () => {
     try {
       if (!volumePath) return;
+      if (isImage) return;
 
       if (viewMode === 'single') {
         const data = await mockEngine.getSliceData(volumePath, sliceZ, timeFrame, subjectId);
@@ -202,11 +212,19 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
       <Card className="flex items-center justify-center bg-muted/30 p-8">
-        <canvas
-          ref={canvasRef}
-          className="max-h-[600px] max-w-full rounded-lg border border-border shadow-lg"
-          style={{ imageRendering: 'pixelated' }}
-        />
+        {isImage && volumePath ? (
+          <img
+            alt="Volume preview"
+            src={volumePath}
+            className="max-h-[600px] w-full max-w-full rounded-lg border border-border bg-background object-contain"
+          />
+        ) : (
+          <canvas
+            ref={canvasRef}
+            className="max-h-[600px] max-w-full rounded-lg border border-border shadow-lg"
+            style={{ imageRendering: 'pixelated' }}
+          />
+        )}
       </Card>
 
       <Card className="p-6">
@@ -235,81 +253,85 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
             </div>
           ) : null}
 
-          <div className="space-y-2">
-            <Label>View</Label>
-            <Select value={viewMode} onValueChange={(v) => setViewMode(v as 'single' | 'grid')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="single">Single slice</SelectItem>
-                <SelectItem value="grid">Multi-slice (3×3)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {isImage ? null : (
+            <>
+              <div className="space-y-2">
+                <Label>View</Label>
+                <Select value={viewMode} onValueChange={(v) => setViewMode(v as 'single' | 'grid')}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="single">Single slice</SelectItem>
+                    <SelectItem value="grid">Multi-slice (3×3)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-          <div className="space-y-2">
-            <Label>Slice (Z): {sliceZ}</Label>
-            <Slider
-              value={[sliceZ]}
-              onValueChange={([value]) => setSliceZ(value)}
-              min={0}
-              max={maxZ}
-              step={1}
-              className="w-full"
-            />
-          </div>
+              <div className="space-y-2">
+                <Label>Slice (Z): {sliceZ}</Label>
+                <Slider
+                  value={[sliceZ]}
+                  onValueChange={([value]) => setSliceZ(value)}
+                  min={0}
+                  max={maxZ}
+                  step={1}
+                  className="w-full"
+                />
+              </div>
 
-          {maxT > 0 ? (
-            <div className="space-y-2">
-              <Label>Time Frame (t): {timeFrame}</Label>
-              <Slider
-                value={[timeFrame]}
-                onValueChange={([value]) => setTimeFrame(value)}
-                min={0}
-                max={maxT}
-                step={1}
-                className="w-full"
-              />
-            </div>
-          ) : null}
+              {maxT > 0 ? (
+                <div className="space-y-2">
+                  <Label>Time Frame (t): {timeFrame}</Label>
+                  <Slider
+                    value={[timeFrame]}
+                    onValueChange={([value]) => setTimeFrame(value)}
+                    min={0}
+                    max={maxT}
+                    step={1}
+                    className="w-full"
+                  />
+                </div>
+              ) : null}
 
-          <div className="space-y-2">
-            <Label>Window Min: {windowMin}</Label>
-            <Slider
-              value={[windowMin]}
-              onValueChange={([value]) => setWindowMin(value)}
-              min={Math.min(windowMin, windowMax)}
-              max={windowMax}
-              step={10}
-              className="w-full"
-            />
-          </div>
+              <div className="space-y-2">
+                <Label>Window Min: {windowMin}</Label>
+                <Slider
+                  value={[windowMin]}
+                  onValueChange={([value]) => setWindowMin(value)}
+                  min={Math.min(windowMin, windowMax)}
+                  max={windowMax}
+                  step={10}
+                  className="w-full"
+                />
+              </div>
 
-          <div className="space-y-2">
-            <Label>Window Max: {windowMax}</Label>
-            <Slider
-              value={[windowMax]}
-              onValueChange={([value]) => setWindowMax(value)}
-              min={Math.min(windowMin, windowMax)}
-              max={Math.max(windowMax, windowMin + 1)}
-              step={10}
-              className="w-full"
-            />
-          </div>
+              <div className="space-y-2">
+                <Label>Window Max: {windowMax}</Label>
+                <Slider
+                  value={[windowMax]}
+                  onValueChange={([value]) => setWindowMax(value)}
+                  min={Math.min(windowMin, windowMax)}
+                  max={Math.max(windowMax, windowMin + 1)}
+                  step={10}
+                  className="w-full"
+                />
+              </div>
 
-          <div className="space-y-2">
-            <Label>Colormap</Label>
-            <Select value={colormap} onValueChange={setColormap}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="grayscale">Grayscale</SelectItem>
-                <SelectItem value="viridis">Viridis</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+              <div className="space-y-2">
+                <Label>Colormap</Label>
+                <Select value={colormap} onValueChange={setColormap}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="grayscale">Grayscale</SelectItem>
+                    <SelectItem value="viridis">Viridis</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
         </div>
       </Card>
     </div>

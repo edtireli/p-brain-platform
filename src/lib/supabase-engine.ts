@@ -21,6 +21,20 @@ type Unsubscribe = () => void;
 
 type StatusUpdate = { subjectId: string; stageId: StageId; status: StageStatus };
 
+const STAGES: StageId[] = [
+  'import',
+  't1_fit',
+  'input_functions',
+  'time_shift',
+  'segmentation',
+  'tissue_ctc',
+  'modelling',
+  'diffusion',
+  'montage_qc',
+];
+
+const STORAGE_BUCKET: string = ((import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined) ?? 'pbrain';
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -97,6 +111,51 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
     console.warn('[SupabaseEngineAPI] op failed', e);
     return fallback;
   }
+}
+
+function isLikelyMacOsJunkFile(name: string): boolean {
+  return name === '.DS_Store' || name.startsWith('._');
+}
+
+async function downloadJson<T>(path: string): Promise<T | null> {
+  if (!supabase) return null;
+  const sb = supabase as any;
+  if (!sb.storage) return null;
+
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(path);
+  if (error || !data) return null;
+
+  const text = await (data as Blob).text();
+  return JSON.parse(text) as T;
+}
+
+async function toObjectUrl(path: string): Promise<string> {
+  if (!supabase) return '';
+  const sb = supabase as any;
+  if (!sb.storage) return '';
+
+  // Prefer signed URLs (works for private buckets while user is authed).
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
+  if (!error && data?.signedUrl) return data.signedUrl;
+
+  const pub = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+  return pub?.data?.publicUrl ?? '';
+}
+
+async function listObjects(prefix: string): Promise<Array<{ name: string; fullPath: string }>> {
+  if (!supabase) return [];
+  const sb = supabase as any;
+  if (!sb.storage) return [];
+
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET).list(prefix, {
+    limit: 200,
+    sortBy: { column: 'name', order: 'asc' },
+  });
+  if (error) return [];
+
+  return (data || [])
+    .filter((o: any) => o?.name && !isLikelyMacOsJunkFile(o.name))
+    .map((o: any) => ({ name: o.name as string, fullPath: `${prefix}/${o.name}` }));
 }
 
 export class SupabaseEngineAPI {
@@ -209,9 +268,48 @@ export class SupabaseEngineAPI {
       .subscribe();
   }
 
-  onJobLogs(_jobId: string, _listener: (log: string) => void): Unsubscribe {
-    // No server-side log streaming in Supabase-only mode.
-    return () => {};
+  onJobLogs(jobId: string, listener: (log: string) => void): Unsubscribe {
+    // Minimal: synthesize logs by polling the job row.
+    // This avoids a blank "Waiting for logs…" experience without requiring new tables.
+    if (!supabase) return () => {};
+    const sb = supabase as any;
+
+    let cancelled = false;
+    let last = '';
+
+    const tick = async () => {
+      try {
+        const { data, error } = await sb.from('jobs').select('*').eq('id', jobId).maybeSingle();
+        if (cancelled) return;
+        if (error || !data) return;
+
+        const job = mapJobRow(data);
+        const lines = [
+          `status: ${job.status}`,
+          `stage: ${job.stageId}`,
+          `progress: ${Math.round((job.progress ?? 0) * 100)}%`,
+          `step: ${job.currentStep || ''}`,
+          job.startTime ? `start: ${job.startTime}` : '',
+          job.endTime ? `end: ${job.endTime}` : '',
+          job.error ? `error: ${job.error}` : '',
+        ].filter(Boolean);
+        const next = lines.join('\n');
+
+        if (next !== last) {
+          last = next;
+          listener(next);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    void tick();
+    const t = window.setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
   }
 
   private startLocalWorker() {
@@ -489,17 +587,19 @@ export class SupabaseEngineAPI {
   }
 
   async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
-    // Create queued jobs; a separate worker can pick them up.
+    // Create queued jobs for all stages; an external worker can pick them up.
     return safe(async () => {
       const sb = supabase! as any;
-      const rows = subjectIds.map(subjectId => ({
-        project_id: projectId,
-        subject_id: subjectId,
-        stage_id: 'import',
-        status: 'queued',
-        progress: 0,
-        current_step: 'Queued',
-      }));
+      const rows = subjectIds.flatMap(subjectId =>
+        STAGES.map(stageId => ({
+          project_id: projectId,
+          subject_id: subjectId,
+          stage_id: stageId,
+          status: 'queued',
+          progress: 0,
+          current_step: 'Queued',
+        }))
+      );
       const { data, error } = await sb.from('jobs').insert(rows).select('*');
       if (error) throw error;
       return (data || []).map(mapJobRow);
@@ -576,11 +676,37 @@ export class SupabaseEngineAPI {
   }
 
   async getCurves(_subjectId: string): Promise<Curve[]> {
-    return [];
+    return safe(async () => {
+      const subj = await this.getSubject(_subjectId);
+      if (!subj) return [];
+
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/curves`;
+      const curves = await downloadJson<{ curves: Curve[] }>(`${prefix}/curves.json`);
+      return curves?.curves ?? [];
+    }, []);
   }
 
   async getMapVolumes(_subjectId: string): Promise<MapVolume[]> {
-    return [];
+    return safe(async () => {
+      const subj = await this.getSubject(_subjectId);
+      if (!subj) return [];
+
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/fit`;
+      const objs = await listObjects(prefix);
+      const pngs = objs.filter(o => /\.png$/i.test(o.name));
+
+      const withUrls = await Promise.all(
+        pngs.map(async o => ({
+          id: o.name,
+          name: o.name.replace(/\.png$/i, ''),
+          unit: '',
+          path: await toObjectUrl(o.fullPath),
+          group: 'modelling' as const,
+        }))
+      );
+
+      return withUrls.filter(m => !!m.path);
+    }, []);
   }
 
   async getVolumes(_subjectId: string): Promise<VolumeFile[]> {
@@ -588,7 +714,24 @@ export class SupabaseEngineAPI {
   }
 
   async getMontageImages(_subjectId: string): Promise<Array<{ id: string; name: string; path: string }>> {
-    return [];
+    return safe(async () => {
+      const subj = await this.getSubject(_subjectId);
+      if (!subj) return [];
+
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/ai/montages`;
+      const objs = await listObjects(prefix);
+      const pngs = objs.filter(o => /\.png$/i.test(o.name));
+
+      const withUrls = await Promise.all(
+        pngs.map(async o => ({
+          id: o.name,
+          name: o.name,
+          path: await toObjectUrl(o.fullPath),
+        }))
+      );
+
+      return withUrls.filter(m => !!m.path);
+    }, []);
   }
 
   async ensureSubjectArtifacts(_subjectId: string, _kind: 'all' | 'maps' | 'curves' | 'montages' = 'all'): Promise<{ started: boolean; jobs: any[]; reason: string }> {

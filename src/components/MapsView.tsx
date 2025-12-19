@@ -245,9 +245,13 @@ export function MapsView({ subjectId }: MapsViewProps) {
                 <div className="flex items-center justify-center p-4">
                   <img
                     alt={selectedMontage.name}
-                    src={`${getBackendBaseUrl()}/subjects/${encodeURIComponent(subjectId)}/montages/image?path=${encodeURIComponent(
-                      selectedMontage.path
-                    )}`}
+                    src={
+                      isBackendEngine
+                        ? `${getBackendBaseUrl()}/subjects/${encodeURIComponent(subjectId)}/montages/image?path=${encodeURIComponent(
+                            selectedMontage.path
+                          )}`
+                        : selectedMontage.path
+                    }
                     className="max-h-[720px] w-full max-w-full rounded-md border bg-background object-contain"
                   />
                 </div>
