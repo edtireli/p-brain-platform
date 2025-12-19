@@ -8,6 +8,17 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { getRememberMe, setRememberMe, supabase, supabaseConfigured } from '@/lib/supabase';
 
+function getAppReturnUrl(): string {
+  const base = ((import.meta as any).env?.BASE_URL as string | undefined) || '/';
+  const normalizedBase = base.startsWith('/') ? base : `/${base}`;
+  const path = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`;
+  try {
+    return `${window.location.origin}${path}`;
+  } catch {
+    return path;
+  }
+}
+
 export function LoginPage() {
   const configured = useMemo(() => supabaseConfigured(), []);
   const [mode, setMode] = useState<'signin' | 'register' | 'reset' | 'updatePassword'>('signin');
@@ -74,7 +85,7 @@ export function LoginPage() {
         email: email.trim(),
         password,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: getAppReturnUrl(),
           data: {
             full_name: fullName.trim() || undefined,
             institution: institution.trim() || undefined,
@@ -101,7 +112,7 @@ export function LoginPage() {
     setError('');
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin,
+        redirectTo: getAppReturnUrl(),
       });
       if (error) throw error;
       toast.success('Check your email for the reset link');
@@ -143,7 +154,7 @@ export function LoginPage() {
       const { error } = await supabase.auth.signInWithOtp({
         email: email.trim(),
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: getAppReturnUrl(),
         },
       });
       if (error) throw error;

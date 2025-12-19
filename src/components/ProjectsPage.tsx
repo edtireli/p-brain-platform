@@ -5,9 +5,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { mockEngine, backendConfigured, getBackendBaseUrl } from '@/lib/mock-engine';
+import { mockEngine, backendConfigured, getBackendBaseUrl, setBackendOverride } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
+import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
+
+function greetingForLocalTime(): string {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'Good morning';
+  if (h >= 12 && h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
 
 function slugify(input: string): string {
   return (input || '')
@@ -32,13 +40,26 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [backendMissing, setBackendMissing] = useState(false);
 
+  const auth = useSupabaseAuth();
+
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
+  const [backendUrl, setBackendUrl] = useState('');
+  const [backendSaveError, setBackendSaveError] = useState('');
+
   useEffect(() => {
     loadProjects();
+  }, []);
+
+  useEffect(() => {
+    try {
+      setBackendUrl(getBackendBaseUrl());
+    } catch {
+      setBackendUrl('');
+    }
   }, []);
 
   const loadProjects = async () => {
@@ -157,16 +178,36 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const computedStoragePath = defaultStoragePath(draftName || 'project');
 
+  const displayName = (() => {
+    const u: any = auth.user;
+    const full = (u?.user_metadata?.full_name || u?.user_metadata?.name || '').toString().trim();
+    if (full) return full;
+    const email = (u?.email || '').toString().trim();
+    return email;
+  })();
+
+  const greeting = `${greetingForLocalTime()}${displayName ? `, ${displayName}` : ''}`;
+
+  const saveBackendUrl = () => {
+    setBackendSaveError('');
+    const cleaned = setBackendOverride(backendUrl);
+    if (!cleaned) {
+      setBackendSaveError('Enter a valid http(s) URL, e.g. https://api.example.com');
+      return;
+    }
+    setBackendUrl(cleaned);
+    toast.success('Backend URL saved');
+    loadProjects();
+  };
+
   return (
     <div className="min-h-screen bg-background p-6">
       <div className="mx-auto max-w-7xl">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-medium tracking-tight text-foreground">
-              <span className="italic">p</span>-Brain web
-            </h1>
+            <h1 className="text-3xl font-medium tracking-tight text-foreground">{greeting}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Advanced neuroimaging analysis platform
+              <span className="italic">p</span>-Brain web
             </p>
           </div>
 
@@ -234,38 +275,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
           </Dialog>
         </div>
 
-        <Card
-          id={dropZoneId}
-          className={`mb-8 border-dashed ${
-            isDraggingCreate ? 'border-accent bg-accent/5' : 'hover:border-muted-foreground/50'
-          }`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => openCreateDialog()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') openCreateDialog();
-          }}
-        >
-          <CardContent className="flex items-center justify-between gap-4 py-6">
-            <div className="flex items-center gap-3">
-              <UploadSimple size={24} className={isDraggingCreate ? 'text-accent' : 'text-muted-foreground'} />
-              <div>
-                <p className="text-sm font-medium text-foreground">Drop a study folder to create a project</p>
-                <p className="text-xs text-muted-foreground">
-                  Drag and drop a folder here (or click) to prefill project details.
-                </p>
-              </div>
-            </div>
-            <Button variant="secondary" className="gap-2" onClick={(e) => { e.stopPropagation(); openCreateDialog(); }}>
-              <FolderPlus size={18} weight="bold" />
-              Create
-            </Button>
-          </CardContent>
-        </Card>
-
         {isLoading ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {[1, 2, 3].map(i => (
@@ -289,14 +298,30 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               <Folder size={64} className="mb-4 text-muted-foreground" />
               <h3 className="mb-2 text-base font-medium">Backend not configured</h3>
               <p className="mb-4 max-w-xl text-center text-sm text-muted-foreground">
-                This UI needs a running API server. For GitHub Pages, set <span className="mono">VITE_API_BASE_URL</span> at build time
-                to your public HTTPS backend.
+                This UI needs a running API server. Set a public HTTPS backend URL below.
               </p>
-              <p className="max-w-xl text-center text-xs text-muted-foreground">
-                Local dev fallback is <span className="mono">http://127.0.0.1:8787</span>. Current base: <span className="mono">{(() => {
-                  try { return getBackendBaseUrl(); } catch { return 'not set'; }
-                })()}</span>
-              </p>
+
+              <div className="w-full max-w-xl space-y-2">
+                <Label htmlFor="backendUrl">Backend URL</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="backendUrl"
+                    value={backendUrl}
+                    onChange={(e) => setBackendUrl(e.target.value)}
+                    placeholder="https://api.example.com"
+                  />
+                  <Button type="button" onClick={saveBackendUrl}>Save</Button>
+                </div>
+                {backendSaveError ? (
+                  <div className="text-xs text-destructive">{backendSaveError}</div>
+                ) : null}
+                <div className="text-xs text-muted-foreground">
+                  Local dev fallback is <span className="mono">http://127.0.0.1:8787</span>. Current base:{' '}
+                  <span className="mono">{(() => {
+                    try { return getBackendBaseUrl(); } catch { return 'not set'; }
+                  })()}</span>
+                </div>
+              </div>
             </CardContent>
           </Card>
         ) : projects.length === 0 ? (
@@ -350,6 +375,38 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             ))}
           </div>
         )}
+
+        <Card
+          id={dropZoneId}
+          className={`mt-8 border-dashed ${
+            isDraggingCreate ? 'border-accent bg-accent/5' : 'hover:border-muted-foreground/50'
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => openCreateDialog()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') openCreateDialog();
+          }}
+        >
+          <CardContent className="flex items-center justify-between gap-4 py-6">
+            <div className="flex items-center gap-3">
+              <UploadSimple size={24} className={isDraggingCreate ? 'text-accent' : 'text-muted-foreground'} />
+              <div>
+                <p className="text-sm font-medium text-foreground">Drop a study folder to create a project</p>
+                <p className="text-xs text-muted-foreground">
+                  Drag and drop a folder here (or click) to prefill project details.
+                </p>
+              </div>
+            </div>
+            <Button variant="secondary" className="gap-2" onClick={(e) => { e.stopPropagation(); openCreateDialog(); }}>
+              <FolderPlus size={18} weight="bold" />
+              Create
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
