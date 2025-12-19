@@ -32,6 +32,8 @@ The workflow is in `.github/workflows/pages.yml` and expects:
 
 GitHub Pages cannot read files from `/Volumes/...`. To show real outputs, upload artifacts to Supabase Storage.
 
+Make sure the Storage bucket exists first (Supabase Dashboard → Storage). The UI reads from `VITE_SUPABASE_STORAGE_BUCKET` (defaults to `pbrain`), so upload into the same bucket name.
+
 Helper script:
 
 ```zsh

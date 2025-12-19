@@ -183,11 +183,37 @@ async function main() {
 
   const sb = createClient(supabaseUrl, key, { auth: { persistSession: false } });
 
+  // Preflight bucket existence. (In admin mode we can auto-create it.)
+  {
+    const { error } = await sb.storage.from(bucket).list('', { limit: 1 });
+    const msg = String((error && (error.message || error.error)) || '');
+    const looksMissing = !!error && /bucket not found/i.test(msg);
+    if (looksMissing) {
+      if (!serviceRole) {
+        throw new Error(
+          [
+            `Storage bucket "${bucket}" does not exist in this Supabase project.`,
+            'Create it in Supabase Dashboard → Storage, or pass an existing bucket via --bucket / SUPABASE_BUCKET.',
+            'Tip: your UI uses VITE_SUPABASE_STORAGE_BUCKET (defaults to "pbrain").',
+          ].join(' ')
+        );
+      }
+
+      const { error: cErr } = await sb.storage.createBucket(bucket, { public: false });
+      if (cErr && !/already exists/i.test(String(cErr.message || ''))) throw cErr;
+
+      const { error: lErr } = await sb.storage.from(bucket).list('', { limit: 1 });
+      if (lErr) throw lErr;
+    }
+  }
+
   if (!serviceRole) {
     // User-mode: sign in so Storage policies can apply.
     const email = process.env.SUPABASE_EMAIL || (await promptVisible('Supabase email: '));
     const password = process.env.SUPABASE_PASSWORD || (await promptHidden('Supabase password (hidden): '));
-    if (!email || !password) throw new Error('Missing SUPABASE_EMAIL/SUPABASE_PASSWORD');
+    if (!email || !password) {
+      throw new Error('Missing SUPABASE_EMAIL/SUPABASE_PASSWORD (set env vars for non-interactive runs)');
+    }
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (error) throw error;
     if (!data?.session) throw new Error('Failed to obtain session');

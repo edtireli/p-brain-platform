@@ -33,7 +33,8 @@ const STAGES: StageId[] = [
   'montage_qc',
 ];
 
-const STORAGE_BUCKET: string = ((import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined) ?? 'pbrain';
+const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined;
+const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -156,6 +157,29 @@ async function listObjects(prefix: string): Promise<Array<{ name: string; fullPa
   return (data || [])
     .filter((o: any) => o?.name && !isLikelyMacOsJunkFile(o.name))
     .map((o: any) => ({ name: o.name as string, fullPath: `${prefix}/${o.name}` }));
+}
+
+function basename(p: string): string {
+  const parts = p.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? p;
+}
+
+type ArtifactIndex = {
+  paths?: string[];
+};
+
+async function listPngObjectPathsWithIndexFallback(prefix: string, projectId: string, subjectId: string): Promise<string[]> {
+  // First try Storage list() (fast path).
+  const objs = await listObjects(prefix);
+  const listed = objs.filter(o => /\.png$/i.test(o.name)).map(o => o.fullPath);
+  if (listed.length > 0) return listed;
+
+  // Fallback: read the uploaded artifacts index (doesn't require listing folders).
+  const indexPath = `projects/${projectId}/subjects/${subjectId}/artifacts/index.json`;
+  const index = await downloadJson<ArtifactIndex>(indexPath);
+  const paths = (index?.paths ?? []).filter(p => typeof p === 'string');
+  const withPrefix = `${prefix}/`;
+  return paths.filter(p => p.startsWith(withPrefix) && /\.png$/i.test(p));
 }
 
 export class SupabaseEngineAPI {
@@ -692,17 +716,19 @@ export class SupabaseEngineAPI {
       if (!subj) return [];
 
       const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/fit`;
-      const objs = await listObjects(prefix);
-      const pngs = objs.filter(o => /\.png$/i.test(o.name));
 
+      const pngPaths = await listPngObjectPathsWithIndexFallback(prefix, subj.projectId, subj.id);
       const withUrls = await Promise.all(
-        pngs.map(async o => ({
-          id: o.name,
-          name: o.name.replace(/\.png$/i, ''),
-          unit: '',
-          path: await toObjectUrl(o.fullPath),
-          group: 'modelling' as const,
-        }))
+        pngPaths.map(async fullPath => {
+          const file = basename(fullPath);
+          return {
+            id: file,
+            name: file.replace(/\.png$/i, ''),
+            unit: '',
+            path: await toObjectUrl(fullPath),
+            group: 'modelling' as const,
+          };
+        })
       );
 
       return withUrls.filter(m => !!m.path);
@@ -719,15 +745,17 @@ export class SupabaseEngineAPI {
       if (!subj) return [];
 
       const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/ai/montages`;
-      const objs = await listObjects(prefix);
-      const pngs = objs.filter(o => /\.png$/i.test(o.name));
 
+      const pngPaths = await listPngObjectPathsWithIndexFallback(prefix, subj.projectId, subj.id);
       const withUrls = await Promise.all(
-        pngs.map(async o => ({
-          id: o.name,
-          name: o.name,
-          path: await toObjectUrl(o.fullPath),
-        }))
+        pngPaths.map(async fullPath => {
+          const file = basename(fullPath);
+          return {
+            id: file,
+            name: file,
+            path: await toObjectUrl(fullPath),
+          };
+        })
       );
 
       return withUrls.filter(m => !!m.path);

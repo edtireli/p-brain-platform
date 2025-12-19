@@ -28,7 +28,8 @@ function usage(msg) {
   console.error(
     [
       'Usage:',
-      '  node scripts/seed-supabase.mjs --project-name <name> --subject-dir <path> --email <email> --password <password>',
+      '  node scripts/seed-supabase.mjs --project-name <name> --subject-dir <path> [--email <email>] [--password <password>]',
+      '  (if --password is omitted, you will be prompted)',
       '',
       'Env (choose one mode):',
       '  Mode A (preferred, admin):',
@@ -79,6 +80,15 @@ async function promptHidden(prompt) {
   }
 }
 
+async function promptVisible(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise(resolve => rl.question(prompt, a => resolve(String(a || ''))));
+  } finally {
+    rl.close();
+  }
+}
+
 async function getOrCreateUserAdmin(sbAdmin, email, password) {
   // Try to find existing user (best-effort)
   try {
@@ -87,6 +97,10 @@ async function getOrCreateUserAdmin(sbAdmin, email, password) {
     if (existing) return existing;
   } catch {
     // ignore (API shape may vary)
+  }
+
+  if (!password) {
+    throw new Error('User not found; missing password to create user (provide --password or SUPABASE_PASSWORD)');
   }
 
   const { data, error } = await sbAdmin.auth.admin.createUser({
@@ -123,9 +137,6 @@ async function main() {
 
   const projectName = requireArg(args, 'project-name');
   const subjectDir = requireArg(args, 'subject-dir');
-  const email = requireArg(args, 'email');
-  const password = typeof args.password === 'string' ? args.password : await promptHidden('Supabase password (hidden): ');
-  if (!password) usage('Missing --password (or empty prompt)');
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -135,13 +146,35 @@ async function main() {
 
   const subjectName = path.basename(subjectDir);
 
+  const email =
+    (typeof args.email === 'string' ? args.email : process.env.SUPABASE_EMAIL) ||
+    (await promptVisible('Supabase email: '));
+  if (!email) usage('Missing --email (or SUPABASE_EMAIL)');
+
   if (serviceRoleKey) {
     // Admin mode: create user and seed rows for that user.
+    const password =
+      (typeof args.password === 'string' ? args.password : process.env.SUPABASE_PASSWORD) ||
+      '';
+
     const sbAdmin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const user = await getOrCreateUserAdmin(sbAdmin, email, password);
+    let user;
+    try {
+      user = await getOrCreateUserAdmin(sbAdmin, email, password);
+    } catch (e) {
+      // If the user doesn't exist, we need a password to create them.
+      const msg = String(e?.message || e);
+      if (/missing password/i.test(msg)) {
+        const prompted = await promptHidden('Supabase password for new user (hidden): ');
+        if (!prompted) throw e;
+        user = await getOrCreateUserAdmin(sbAdmin, email, prompted);
+      } else {
+        throw e;
+      }
+    }
     const userId = user.id;
 
     const { data: projectRow, error: pErr } = await sbAdmin
@@ -175,6 +208,11 @@ async function main() {
   }
 
   if (!anonKey) usage('Missing SUPABASE_SERVICE_ROLE_KEY and SUPABASE_ANON_KEY');
+
+  const password =
+    (typeof args.password === 'string' ? args.password : process.env.SUPABASE_PASSWORD) ||
+    (await promptHidden('Supabase password (hidden): '));
+  if (!password) usage('Missing --password (or empty prompt)');
 
   // User mode: sign in/sign up, then seed rows under RLS.
   const sbUser = createClient(supabaseUrl, anonKey);
