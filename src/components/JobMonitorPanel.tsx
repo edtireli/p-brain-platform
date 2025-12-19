@@ -56,7 +56,10 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
         });
       });
 
-      const interval = setInterval(loadJobs, 5000);
+      const interval = setInterval(() => {
+        if (document.visibilityState !== 'visible') return;
+        loadJobs();
+      }, 30000);
 
       return () => {
         unsubscribe();

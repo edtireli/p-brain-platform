@@ -51,6 +51,17 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     loadProject();
     loadSubjects();
 
+    const refreshActiveJobs = async () => {
+      const jobs = await mockEngine.getJobs({ projectId });
+      const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
+      setActiveJobsCount(active);
+      jobs.forEach(job => {
+        previousJobStatusesRef.current.set(job.id, job.status);
+      });
+    };
+
+    refreshActiveJobs();
+
     const unsubscribeStatus = mockEngine.onStatusUpdate(update => {
       setSubjects(prev =>
         prev.map(s =>
@@ -74,6 +85,17 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       
       previousJobStatusesRef.current.set(job.id, job.status);
 
+      // Keep active job count in sync without aggressive polling.
+      setActiveJobsCount(() => {
+        const m = previousJobStatusesRef.current;
+        m.set(job.id, job.status);
+        let active = 0;
+        m.forEach(s => {
+          if (s === 'running' || s === 'queued') active += 1;
+        });
+        return active;
+      });
+
       if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         setRunningSubjectIds(prev => {
           const next = new Set(prev);
@@ -83,15 +105,10 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       }
     });
 
-    const interval = setInterval(async () => {
-      const jobs = await mockEngine.getJobs({ projectId });
-      const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
-      setActiveJobsCount(active);
-      
-      jobs.forEach(job => {
-        previousJobStatusesRef.current.set(job.id, job.status);
-      });
-    }, 2000);
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      refreshActiveJobs();
+    }, 20000);
 
     return () => {
       unsubscribeStatus();

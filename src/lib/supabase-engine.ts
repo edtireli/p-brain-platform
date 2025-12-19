@@ -19,6 +19,8 @@ import { supabase } from '@/lib/supabase';
 
 type Unsubscribe = () => void;
 
+type StatusUpdate = { subjectId: string; stageId: StageId; status: StageStatus };
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -65,12 +67,17 @@ function mapSubjectRow(row: any): Subject {
 }
 
 function mapJobRow(row: any): Job {
+  let status = (row.status ?? 'queued') as string;
+  // Back-compat with older values that leaked into the DB.
+  if (status === 'done') status = 'completed';
+  if (status === 'canceled') status = 'cancelled';
+
   return {
     id: row.id,
     projectId: row.project_id,
     subjectId: row.subject_id,
     stageId: (row.stage_id ?? 'import') as StageId,
-    status: (row.status ?? 'queued') as JobStatus,
+    status: status as JobStatus,
     progress: Number(row.progress ?? 0),
     currentStep: row.current_step ?? '',
     startTime: row.start_time ?? undefined,
@@ -93,19 +100,262 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 export class SupabaseEngineAPI {
-  onJobUpdate(_listener: (job: Job) => void): Unsubscribe {
-    // Optional: implement realtime later. For now, polling pages will refresh jobs.
-    return () => {};
+  private jobListeners = new Set<(job: Job) => void>();
+  private statusListeners = new Set<(update: StatusUpdate) => void>();
+  private jobsChannel: any | undefined;
+  private subjectsChannel: any | undefined;
+
+  private workerAbort = false;
+  private workerPromise: Promise<void> | undefined;
+  private authUnsub: any | undefined;
+
+  constructor() {
+    if (typeof window === 'undefined' || !supabase) return;
+    const sb = supabase as any;
+
+    // Start/stop the local worker based on auth state.
+    sb.auth
+      .getSession()
+      .then(({ data }: any) => {
+        if (data?.session?.user) this.startLocalWorker();
+      })
+      .catch(() => {});
+
+    const { data } = sb.auth.onAuthStateChange((_event: any, session: any) => {
+      if (session?.user) this.startLocalWorker();
+      else this.stopLocalWorker();
+    });
+    this.authUnsub = data?.subscription;
   }
 
-  onStatusUpdate(_listener: (update: { subjectId: string; stageId: any; status: any }) => void): Unsubscribe {
-    // Optional: implement realtime later.
-    return () => {};
+  private broadcastJob(job: Job) {
+    this.jobListeners.forEach(l => l(job));
+  }
+
+  private broadcastStatus(update: StatusUpdate) {
+    this.statusListeners.forEach(l => l(update));
+  }
+
+  onJobUpdate(listener: (job: Job) => void): Unsubscribe {
+    this.jobListeners.add(listener);
+    this.ensureJobsRealtime();
+    return () => {
+      this.jobListeners.delete(listener);
+      if (this.jobListeners.size === 0) {
+        this.jobsChannel?.unsubscribe?.();
+        this.jobsChannel = undefined;
+      }
+    };
+  }
+
+  onStatusUpdate(listener: (update: StatusUpdate) => void): Unsubscribe {
+    this.statusListeners.add(listener);
+    this.ensureSubjectsRealtime();
+    return () => {
+      this.statusListeners.delete(listener);
+      if (this.statusListeners.size === 0) {
+        this.subjectsChannel?.unsubscribe?.();
+        this.subjectsChannel = undefined;
+      }
+    };
+  }
+
+  private ensureJobsRealtime() {
+    if (!supabase || this.jobsChannel) return;
+    const sb = supabase as any;
+    if (!sb.channel) return;
+
+    this.jobsChannel = sb
+      .channel('jobs-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'jobs' },
+        (payload: any) => {
+          const row = payload?.new ?? payload?.old;
+          if (!row) return;
+          this.broadcastJob(mapJobRow(row));
+        }
+      )
+      .subscribe();
+  }
+
+  private ensureSubjectsRealtime() {
+    if (!supabase || this.subjectsChannel) return;
+    const sb = supabase as any;
+    if (!sb.channel) return;
+
+    this.subjectsChannel = sb
+      .channel('subjects-changes')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'subjects' },
+        (payload: any) => {
+          const next = payload?.new;
+          const prev = payload?.old;
+          if (!next?.id) return;
+          const nextStages = (next.stage_statuses ?? {}) as Record<string, StageStatus>;
+          const prevStages = (prev?.stage_statuses ?? {}) as Record<string, StageStatus>;
+
+          const stageIds = new Set<string>([...Object.keys(nextStages), ...Object.keys(prevStages)]);
+          stageIds.forEach(stageId => {
+            const a = prevStages[stageId];
+            const b = nextStages[stageId];
+            if (a !== b && b) {
+              this.broadcastStatus({ subjectId: next.id, stageId: stageId as StageId, status: b });
+            }
+          });
+        }
+      )
+      .subscribe();
   }
 
   onJobLogs(_jobId: string, _listener: (log: string) => void): Unsubscribe {
     // No server-side log streaming in Supabase-only mode.
     return () => {};
+  }
+
+  private startLocalWorker() {
+    if (this.workerPromise || !supabase) return;
+    this.workerAbort = false;
+    this.workerPromise = this.localWorkerLoop().finally(() => {
+      this.workerPromise = undefined;
+    });
+  }
+
+  private stopLocalWorker() {
+    this.workerAbort = true;
+    this.workerPromise = undefined;
+  }
+
+  private async sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private async localWorkerLoop() {
+    while (!this.workerAbort) {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        await this.sleep(3000);
+        continue;
+      }
+
+      try {
+        const didWork = await this.processNextQueuedJob();
+        await this.sleep(didWork ? 250 : 1500);
+      } catch {
+        await this.sleep(2000);
+      }
+    }
+  }
+
+  private async processNextQueuedJob(): Promise<boolean> {
+    if (!supabase) return false;
+    const sb = supabase as any;
+
+    // Pick one queued job (RLS scopes to current user).
+    const { data: queued, error: qErr } = await sb
+      .from('jobs')
+      .select('*')
+      .eq('status', 'queued')
+      .order('created_at', { ascending: true })
+      .limit(1);
+    if (qErr) throw qErr;
+    const jobRow = (queued || [])[0];
+    if (!jobRow) return false;
+
+    // Claim it atomically.
+    const { data: claimed, error: cErr } = await sb
+      .from('jobs')
+      .update({
+        status: 'running',
+        progress: 0,
+        current_step: 'Starting',
+        start_time: nowIso(),
+        end_time: null,
+        error: null,
+      })
+      .eq('id', jobRow.id)
+      .eq('status', 'queued')
+      .select('*')
+      .maybeSingle();
+    if (cErr) throw cErr;
+    if (!claimed) return true; // Someone else claimed it.
+
+    const job = mapJobRow(claimed);
+    this.broadcastJob(job);
+
+    // Mark subject stage as running.
+    await this.updateSubjectStage(job.subjectId, job.stageId, 'running');
+
+    const steps = [
+      { p: 0.15, label: 'Preparing data', eta: 12 },
+      { p: 0.45, label: 'Running pipeline', eta: 8 },
+      { p: 0.75, label: 'Generating outputs', eta: 4 },
+      { p: 0.95, label: 'Finalizing', eta: 1 },
+    ];
+
+    for (const s of steps) {
+      if (this.workerAbort) return true;
+
+      const { data: updated, error: uErr } = await sb
+        .from('jobs')
+        .update({
+          progress: s.p,
+          current_step: s.label,
+          estimated_time_remaining: s.eta,
+        })
+        .eq('id', job.id)
+        .eq('status', 'running')
+        .select('*')
+        .maybeSingle();
+      if (uErr) throw uErr;
+      if (!updated) {
+        // cancelled/failed elsewhere
+        return true;
+      }
+      this.broadcastJob(mapJobRow(updated));
+      await this.sleep(900);
+    }
+
+    const { data: completed, error: fErr } = await sb
+      .from('jobs')
+      .update({
+        status: 'completed',
+        progress: 1,
+        current_step: 'Completed',
+        estimated_time_remaining: 0,
+        end_time: nowIso(),
+      })
+      .eq('id', job.id)
+      .eq('status', 'running')
+      .select('*')
+      .maybeSingle();
+    if (fErr) throw fErr;
+    if (completed) {
+      this.broadcastJob(mapJobRow(completed));
+      await this.updateSubjectStage(job.subjectId, job.stageId, 'done');
+    }
+
+    return true;
+  }
+
+  private async updateSubjectStage(subjectId: string, stageId: StageId, status: StageStatus) {
+    if (!supabase) return;
+    const sb = supabase as any;
+
+    // Fetch current stage_statuses, then update JSON.
+    const { data: subj, error: sErr } = await sb
+      .from('subjects')
+      .select('id, stage_statuses')
+      .eq('id', subjectId)
+      .maybeSingle();
+    if (sErr) throw sErr;
+    if (!subj) return;
+
+    const next = { ...(subj.stage_statuses ?? emptyStageStatuses()), [stageId]: status };
+    const { error: uErr } = await sb.from('subjects').update({ stage_statuses: next }).eq('id', subjectId);
+    if (uErr) throw uErr;
+
+    this.broadcastStatus({ subjectId, stageId, status });
   }
 
   async getProjects(): Promise<Project[]> {
