@@ -51,25 +51,6 @@ function readStoredBackend(): string | null {
     const cleaned = sanitizeUrl(window.localStorage.getItem(STORAGE_KEY));
     if (!cleaned) return null;
 
-    // If the UI is served over HTTPS, never use a stored localhost backend URL.
-    // This prevents confusing ERR_CONNECTION_REFUSED / cert issues on GitHub Pages.
-    try {
-      if (window.location.protocol === 'https:') {
-        const u = new URL(cleaned);
-        const host = (u.hostname || '').toLowerCase();
-        if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
-          try {
-            window.localStorage.removeItem(STORAGE_KEY);
-          } catch {
-            /* ignore */
-          }
-          return null;
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
     return cleaned;
   } catch {
     return null;
@@ -98,16 +79,8 @@ function backendUrl(): string | null {
   const stored = readStoredBackend();
   if (stored) return stored;
 
-  // Never implicitly fall back to localhost from an https-served UI.
-  // That either fails (mixed content) or leads to cert UX issues.
-  try {
-    if (window.location.protocol === 'https:') return null;
-  } catch {
-    /* ignore */
-  }
-
-  // Local dev fallback.
-  return 'http://127.0.0.1:8787';
+  // No implicit fallback; this app should be configured explicitly.
+  return null;
 }
 
 export function backendConfigured(): boolean {
@@ -118,33 +91,6 @@ export function getBackendBaseUrl(): string {
   const url = backendUrl();
   if (!url) throw new Error('BACKEND_NOT_CONFIGURED');
   return url;
-}
-
-type HealthResponse = { ok: boolean };
-
-let lastHealthCheckAt = 0;
-let lastHealthOk: boolean | null = null;
-let backoffMs = 0;
-
-async function isBackendHealthy(): Promise<boolean> {
-  const now = Date.now();
-  const wait = Math.max(1200, backoffMs || 0);
-  if (lastHealthOk !== null && now - lastHealthCheckAt < wait) return lastHealthOk;
-
-  lastHealthCheckAt = now;
-  try {
-    const res = await fetch(`${backendUrl()}/health`, {
-      headers: { 'Content-Type': 'application/json' },
-      cache: 'no-store',
-    });
-    lastHealthOk = res.ok;
-    backoffMs = 0;
-    return lastHealthOk;
-  } catch {
-    lastHealthOk = false;
-    backoffMs = Math.min(Math.max(backoffMs || 1200, 1200) * 2, 15000);
-    return false;
-  }
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -186,10 +132,6 @@ export class BackendEngineAPI {
     this.pollTimer = window.setInterval(async () => {
       try {
         if (!backendConfigured()) return;
-        // Avoid spamming the network (and console) when the local backend is not reachable.
-        const ok = await isBackendHealthy();
-        if (!ok) return;
-
         const jobs = await this.getJobs({});
         for (const job of jobs) {
           const prev = this.lastJobs.get(job.id);

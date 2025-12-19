@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { mockEngine, backendConfigured, getBackendBaseUrl, setBackendOverride } from '@/lib/mock-engine';
+import { mockEngine } from '@/lib/mock-engine';
 import type { Project } from '@/types';
 import { toast } from 'sonner';
 import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
@@ -38,7 +38,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [backendMissing, setBackendMissing] = useState(false);
 
   const auth = useSupabaseAuth();
 
@@ -47,38 +46,17 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
-  const [backendUrl, setBackendUrl] = useState('');
-  const [backendSaveError, setBackendSaveError] = useState('');
-
   useEffect(() => {
     loadProjects();
   }, []);
 
-  useEffect(() => {
-    try {
-      setBackendUrl(getBackendBaseUrl());
-    } catch {
-      setBackendUrl('');
-    }
-  }, []);
-
   const loadProjects = async () => {
     setIsLoading(true);
-    setBackendMissing(false);
     try {
-      if (!backendConfigured()) {
-        setBackendMissing(true);
-        return;
-      }
       const data = await mockEngine.getProjects();
       setProjects(data);
     } catch (error) {
-      const msg = (error as any)?.message || '';
-      if (msg.includes('BACKEND_NOT_CONFIGURED')) {
-        setBackendMissing(true);
-      } else {
-        toast.error('Failed to load projects');
-      }
+      toast.error('Failed to load projects');
       console.error(error);
     } finally {
       setIsLoading(false);
@@ -181,24 +159,19 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const displayName = (() => {
     const u: any = auth.user;
     const full = (u?.user_metadata?.full_name || u?.user_metadata?.name || '').toString().trim();
-    if (full) return full;
+    if (full) {
+      const comma = full.indexOf(',');
+      const normalized = comma >= 0 ? full.slice(comma + 1).trim() : full;
+      return normalized.split(/\s+/)[0] || '';
+    }
+
     const email = (u?.email || '').toString().trim();
-    return email;
+    if (!email) return '';
+    const localPart = email.split('@')[0] || '';
+    return localPart.split(/[._-]+/)[0] || localPart;
   })();
 
   const greeting = `${greetingForLocalTime()}${displayName ? `, ${displayName}` : ''}`;
-
-  const saveBackendUrl = () => {
-    setBackendSaveError('');
-    const cleaned = setBackendOverride(backendUrl);
-    if (!cleaned) {
-      setBackendSaveError('Enter a valid http(s) URL, e.g. https://api.example.com');
-      return;
-    }
-    setBackendUrl(cleaned);
-    toast.success('Backend URL saved');
-    loadProjects();
-  };
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -276,7 +249,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
         </div>
 
         <div className="mb-8 text-center">
-          <div className="text-xl font-medium tracking-tight text-foreground">{greeting}</div>
+          <div className="text-2xl font-medium tracking-tight text-foreground">{greeting}</div>
         </div>
 
         {isLoading ? (
@@ -296,38 +269,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
               </Card>
             ))}
           </div>
-        ) : backendMissing ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Folder size={64} className="mb-4 text-muted-foreground" />
-              <h3 className="mb-2 text-base font-medium">Backend not configured</h3>
-              <p className="mb-4 max-w-xl text-center text-sm text-muted-foreground">
-                This UI needs a running API server. Set a public HTTPS backend URL below.
-              </p>
-
-              <div className="w-full max-w-xl space-y-2">
-                <Label htmlFor="backendUrl">Backend URL</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="backendUrl"
-                    value={backendUrl}
-                    onChange={(e) => setBackendUrl(e.target.value)}
-                    placeholder="https://api.example.com"
-                  />
-                  <Button type="button" onClick={saveBackendUrl}>Save</Button>
-                </div>
-                {backendSaveError ? (
-                  <div className="text-xs text-destructive">{backendSaveError}</div>
-                ) : null}
-                <div className="text-xs text-muted-foreground">
-                  Local dev fallback is <span className="mono">http://127.0.0.1:8787</span>. Current base:{' '}
-                  <span className="mono">{(() => {
-                    try { return getBackendBaseUrl(); } catch { return 'not set'; }
-                  })()}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
         ) : projects.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16">
