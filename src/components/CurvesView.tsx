@@ -78,6 +78,10 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   const hasTofts = !!toftsData && (toftsData.timePoints?.length ?? 0) > 0 && (toftsData.measured?.length ?? 0) > 0;
   const hasDeconv = !!deconvData && (deconvData.timePoints?.length ?? 0) > 0 && (deconvData.residue?.length ?? 0) > 0;
 
+  const hasInputCurves = curves.some(c => /^aif_/i.test(c.id) || /^vif_/i.test(c.id));
+  const hasTissueCurves = curves.some(c => /^tissue_/i.test(c.id));
+  const useSplitAxis = hasInputCurves && hasTissueCurves;
+
   return (
     <div className="space-y-6">
       <Tabs defaultValue="concentration" className="w-full">
@@ -100,6 +104,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   type: 'scatter',
                   mode: 'lines',
                   line: { width: 2 },
+                  yaxis: useSplitAxis && /^tissue_/i.test(curve.id) ? 'y2' : 'y',
                 }))}
                 layout={{
                   autosize: true,
@@ -109,9 +114,17 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                     gridcolor: '#e0e0e0',
                   },
                   yaxis: {
-                    title: 'Concentration (mM)',
+                    title: useSplitAxis ? 'Input (mM)' : 'Concentration (mM)',
                     gridcolor: '#e0e0e0',
                   },
+                  yaxis2: useSplitAxis
+                    ? {
+                        title: 'Tissue (mM)',
+                        overlaying: 'y',
+                        side: 'right',
+                        showgrid: false,
+                      }
+                    : undefined,
                   paper_bgcolor: 'rgba(0,0,0,0)',
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: { family: 'IBM Plex Sans, sans-serif' },

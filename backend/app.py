@@ -520,18 +520,20 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
                 curves.append({"id": f"vif_{subtype_dir.name}", "name": f"VIF ({subtype_dir.name})", "timePoints": time_points, "values": vals, "unit": "mM"})
                 break
 
-    # Tissue curves: include up to 3.
+    # Tissue curves: include all available tissue subtypes.
     tissue_dir = analysis_dir / "CTC Data" / "Tissue"
     if tissue_dir.exists():
-        count = 0
         for subtype_dir in sorted([d for d in tissue_dir.iterdir() if d.is_dir()]):
-            pth = pick_curve(subtype_dir / "CTC_slice_*.npy")
+            pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
                 vals = np.load(str(pth)).astype(float).tolist()
-                curves.append({"id": f"tissue_{subtype_dir.name}", "name": f"Tissue ({subtype_dir.name})", "timePoints": time_points, "values": vals, "unit": "mM"})
-                count += 1
-                if count >= 3:
-                    break
+                curves.append({
+                    "id": f"tissue_{subtype_dir.name}",
+                    "name": f"Tissue ({subtype_dir.name})",
+                    "timePoints": time_points,
+                    "values": vals,
+                    "unit": "mM",
+                })
 
     return curves
 
@@ -583,9 +585,8 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
 
     tissue_dir = analysis_dir / "CTC Data" / "Tissue"
     if tissue_dir.exists():
-        count = 0
         for subtype_dir in sorted([d for d in tissue_dir.iterdir() if d.is_dir()]):
-            pth = pick_curve(subtype_dir / "CTC_slice_*.npy")
+            pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
                 vals = np.load(str(pth)).astype(float).tolist()
                 curves.append({
@@ -595,9 +596,6 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
                     "values": vals,
                     "unit": "mM",
                 })
-                count += 1
-                if count >= 3:
-                    break
 
     return curves
 

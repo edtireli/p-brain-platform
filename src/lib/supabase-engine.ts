@@ -64,6 +64,15 @@ function _stripFileScheme(p: string): string {
   return p.startsWith('file://') ? p.slice('file://'.length) : p;
 }
 
+function _trimSlashes(s: string): string {
+  return String(s || '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function _pathTail(s: string): string {
+  const parts = String(s || '').split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? '';
+}
+
 async function _localListFiles(dirAbs: string, glob: string): Promise<Array<{ name: string; path: string }>> {
   const base = _localBackendBaseUrl();
   if (!base) return [];
@@ -566,6 +575,35 @@ export class SupabaseEngineAPI {
   private workerAbort = false;
   private workerPromise: Promise<void> | undefined;
   private authUnsub: any | undefined;
+
+  private async resolveLocalSubjectDir(subj: Subject): Promise<string | null> {
+    const raw = String(subj.sourcePath || '').trim();
+    if (!raw) return null;
+
+    const source = _stripFileScheme(raw);
+    if (_isAbsoluteLocalPath(source)) return source;
+
+    const project = await this.getProject(subj.projectId);
+    const base = String(project?.storagePath || '').trim();
+    if (!base) return source;
+
+    const baseNo = base.replace(/\/+$/, '');
+    let rel = _trimSlashes(source);
+
+    // Common drag-and-drop case: user drops a folder named the same as the storagePath tail.
+    // Example: storagePath=/Volumes/.../data and sourcePath=data/20250217x4 -> avoid double 'data/'.
+    const tail = _pathTail(baseNo);
+    if (tail && rel.toLowerCase().startsWith((tail + '/').toLowerCase())) {
+      rel = rel.slice(tail.length + 1);
+    }
+
+    // If the relative path already includes the absolute base prefix somehow, keep it.
+    if (rel.toLowerCase().startsWith(_trimSlashes(baseNo).toLowerCase())) {
+      return rel;
+    }
+
+    return `${baseNo}/${rel}`;
+  }
 
   constructor() {
     if (typeof window === 'undefined' || !supabase) return;
@@ -1256,8 +1294,10 @@ export class SupabaseEngineAPI {
 
       const localBase = _localBackendBaseUrl();
       if (localBase && subj.sourcePath) {
+        const subjectDir = await this.resolveLocalSubjectDir(subj);
+        if (!subjectDir) return [];
         const u = new URL('/local/analysis/curves', localBase);
-        u.searchParams.set('subjectDir', subj.sourcePath);
+        u.searchParams.set('subjectDir', subjectDir);
         const resp = await fetch(u.toString());
         if (!resp.ok) return [];
         const json = (await resp.json()) as { curves?: Curve[] };
@@ -1276,8 +1316,10 @@ export class SupabaseEngineAPI {
 
       const localBase = _localBackendBaseUrl();
       if (localBase && subj.sourcePath) {
+        const subjectDir = await this.resolveLocalSubjectDir(subj);
+        if (!subjectDir) return [];
         const u = new URL('/local/analysis/maps', localBase);
-        u.searchParams.set('subjectDir', subj.sourcePath);
+        u.searchParams.set('subjectDir', subjectDir);
         const resp = await fetch(u.toString());
         if (!resp.ok) return [];
         const json = (await resp.json()) as { maps?: any[] };
@@ -1288,6 +1330,7 @@ export class SupabaseEngineAPI {
             if (!path) return null;
             const id = typeof m?.id === 'string' ? m.id : basename(path);
             const name = typeof m?.name === 'string' ? m.name : basename(path).replace(/\.(nii|nii\.gz)$/i, '');
+            if (/^sd[_-]/i.test(name)) return null;
             const unit = typeof m?.unit === 'string' ? m.unit : '';
             const group = m?.group === 'diffusion' || m?.group === 'modelling' ? m.group : undefined;
             return { id, name, unit, path, group } as MapVolume;
@@ -1308,13 +1351,21 @@ export class SupabaseEngineAPI {
             ? ('diffusion' as const)
             : ('modelling' as const),
         }))
-        .filter(m => /\.(nii|nii\.gz)$/i.test(m.path));
+        .filter(m => /\.(nii|nii\.gz)$/i.test(m.path) && !/^sd[_-]/i.test(basename(m.path)));
 
       if (indexMaps.length > 0) return indexMaps;
 
       // Fallback: list any NIfTI outputs under analysis/ (recursively; Storage list() is non-recursive).
-      const objs = await _listObjectsForSubjectRecursive(subj, 'analysis', { maxDepth: 6, maxItems: 4000 });
-      const nifti = objs.filter(o => /\.(nii|nii\.gz)$/i.test(o.fullPath) || /\.(nii|nii\.gz)$/i.test(o.name));
+      let objs = await _listObjectsForSubjectRecursive(subj, 'analysis', { maxDepth: 6, maxItems: 4000 });
+      if (objs.length === 0) {
+        // Some pipelines write 'Analysis/' with a capital A.
+        objs = await _listObjectsForSubjectRecursive(subj, 'Analysis', { maxDepth: 6, maxItems: 4000 });
+      }
+      const nifti = objs.filter(o => {
+        const p = o.fullPath || o.name;
+        if (!/\.(nii|nii\.gz)$/i.test(p)) return false;
+        return !/^sd[_-]/i.test(basename(p));
+      });
       return nifti.map(o => ({
         id: o.fullPath,
         name: basename(o.fullPath).replace(/\.(nii|nii\.gz)$/i, ''),
@@ -1338,7 +1389,8 @@ export class SupabaseEngineAPI {
       if (localBase && subj.sourcePath) {
         const folderStructure = await this.getFolderStructureForProject(subj.projectId);
         const niftiSubfolder = String(folderStructure?.niftiSubfolder || 'NIfTI');
-        const root = String(subj.sourcePath).replace(/\/+$/, '');
+        const root = (await this.resolveLocalSubjectDir(subj))?.replace(/\/+$/, '');
+        if (!root) return [];
         const niftiDir = `${root}/${niftiSubfolder}`;
         const files = await _localListFiles(niftiDir, '*.nii*');
         const vols = files

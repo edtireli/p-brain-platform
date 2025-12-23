@@ -31,6 +31,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 	const [viewMode, setViewMode] = useState<'single' | 'grid'>(() => (kind === 'map' ? 'grid' : 'single'));
   const [slices, setSlices] = useState<number[][][] | null>(null);
   const [hotkeysActive, setHotkeysActive] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     setActiveKind(kind);
@@ -67,33 +68,70 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   const isImage = isImagePath(volumePath);
 
   useEffect(() => {
+    const onFs = () => {
+      const el = hotkeyRef.current as any;
+      const fsEl = (document as any).fullscreenElement as Element | null;
+      setIsFullscreen(!!fsEl && !!el && (fsEl === el || (el instanceof Element && el.contains(fsEl))));
+    };
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    const el = hotkeyRef.current as any;
+    if (!el) return;
+
+    try {
+      if ((document as any).fullscreenElement) {
+        await (document as any).exitFullscreen?.();
+      } else {
+        await el.requestFullscreen?.();
+      }
+    } catch {
+      // ignore (fullscreen can be blocked by browser policies)
+    }
+  };
+
+  const handleHotkey = (key: string, preventDefault: () => void) => {
+    if (!volumePath || isImage) return;
+
+    if (key === 'ArrowUp') {
+      preventDefault();
+      setSliceZ(prev => Math.max(0, Math.min(maxZ, prev - 1)));
+      return;
+    }
+    if (key === 'ArrowDown') {
+      preventDefault();
+      setSliceZ(prev => Math.max(0, Math.min(maxZ, prev + 1)));
+      return;
+    }
+
+    const isDce = String(activeKind).toLowerCase() === 'dce';
+    if (isDce && maxT > 0) {
+      if (key === 'ArrowLeft') {
+        preventDefault();
+        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev - 1)));
+        return;
+      }
+      if (key === 'ArrowRight') {
+        preventDefault();
+        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev + 1)));
+        return;
+      }
+    }
+
+    if (key === 'f' || key === 'F') {
+      preventDefault();
+      void toggleFullscreen();
+    }
+  };
+
+  useEffect(() => {
     if (!hotkeysActive) return;
     if (!volumePath || isImage) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSliceZ(prev => Math.max(0, Math.min(maxZ, prev - 1)));
-        return;
-      }
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSliceZ(prev => Math.max(0, Math.min(maxZ, prev + 1)));
-        return;
-      }
-
-      const isDce = String(activeKind).toLowerCase() === 'dce';
-      if (!isDce || maxT <= 0) return;
-
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev - 1)));
-        return;
-      }
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev + 1)));
-      }
+      handleHotkey(e.key, () => e.preventDefault());
     };
 
     window.addEventListener('keydown', onKeyDown, { passive: false });
@@ -323,12 +361,20 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
     <div className="flex flex-col gap-4">
       <Card
         ref={hotkeyRef as any}
-        className="flex min-h-[65vh] flex-1 items-center justify-center bg-muted/30 p-3"
+        className="flex h-[70vh] items-center justify-center bg-muted/30 p-3"
         tabIndex={0}
         onFocus={() => setHotkeysActive(true)}
         onBlur={() => setHotkeysActive(false)}
         onMouseEnter={() => setHotkeysActive(true)}
         onMouseLeave={() => setHotkeysActive(false)}
+        onPointerDown={() => {
+          setHotkeysActive(true);
+          (hotkeyRef.current as any)?.focus?.();
+        }}
+        onKeyDown={(e: any) => {
+          setHotkeysActive(true);
+          handleHotkey(String(e?.key || ''), () => e.preventDefault());
+        }}
       >
         {!volumePath ? (
           <div className="text-center text-sm text-muted-foreground">
@@ -351,6 +397,15 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 
       <Card className="p-4">
         <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-muted-foreground">
+              {hotkeysActive ? 'Hotkeys active' : 'Hover/click viewer for hotkeys'}
+            </div>
+            <Button type="button" size="sm" variant={isFullscreen ? 'default' : 'outline'} onClick={() => void toggleFullscreen()}>
+              {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            </Button>
+          </div>
+
           {allowSelect && !path && activeKind !== 'map' ? (
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1">
@@ -527,6 +582,13 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
                   step={10}
                   className="w-full"
                 />
+              </div>
+
+              <div className="rounded-md border border-border bg-background/50 p-3 text-xs text-muted-foreground">
+                <div className="mb-2 font-medium text-foreground">Keybindings</div>
+                <div className="mono">↑ / ↓: slice</div>
+                <div className="mono">← / →: time (DCE only)</div>
+                <div className="mono">F: fullscreen</div>
               </div>
 
             </>
