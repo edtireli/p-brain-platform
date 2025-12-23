@@ -22,6 +22,13 @@ type ExpectedMap = {
 
 type MapVariantKey = 'voxel' | 'segmentation' | 'tissue';
 
+type TissueInfo = {
+  tissueKey: string;
+  tissueLabel: string;
+  methodKey: string;
+  methodLabel: string;
+};
+
 type MapVariantDef = {
   key: MapVariantKey;
   label: string;
@@ -282,6 +289,36 @@ function basenameFromPath(p: string): string {
   return parts[parts.length - 1] || s;
 }
 
+function parseTissueInfoFromName(name: string): TissueInfo {
+  const n = String(name || '').toLowerCase();
+
+  const methodKey = /_patlak\b/.test(n) ? 'patlak' : /_two_compartment\b/.test(n) ? 'two_compartment' : /_tikhonov\b/.test(n) ? 'tikhonov' : 'default';
+  const methodLabel = methodKey === 'patlak' ? 'Patlak' : methodKey === 'two_compartment' ? '2-comp' : methodKey === 'tikhonov' ? 'Tikhonov' : 'Default';
+
+  // Tissue regions seen in real outputs (plus a few common ones).
+  const regionMatchers: Array<{ key: string; label: string; re: RegExp }> = [
+    { key: 'wm', label: 'WM', re: /(^|_)wm(_|\b)/ },
+    { key: 'cortical_gm', label: 'Cortical GM', re: /(^|_)cortical_gm(_|\b)/ },
+    { key: 'subcortical_gm', label: 'Subcortical GM', re: /(^|_)subcortical_gm(_|\b)/ },
+    { key: 'gm_brainstem', label: 'Brainstem GM', re: /(^|_)gm_brainstem(_|\b)/ },
+    { key: 'gm_cerebellum', label: 'Cerebellum GM', re: /(^|_)gm_cerebellum(_|\b)/ },
+    { key: 'wm_cerebellum', label: 'Cerebellum WM', re: /(^|_)wm_cerebellum(_|\b)/ },
+    { key: 'wm_cc', label: 'Corpus Callosum', re: /(^|_)wm_cc(_|\b)/ },
+    { key: 'boundary', label: 'Boundary', re: /(^|_)boundary(_|\b)/ },
+  ];
+
+  for (const r of regionMatchers) {
+    if (r.re.test(n)) return { tissueKey: r.key, tissueLabel: r.label, methodKey, methodLabel };
+  }
+
+  // Some diffusion WM files use fa_wm_map etc.
+  if (/_wm_map\b/.test(n) || /_wm_/.test(n)) return { tissueKey: 'wm', tissueLabel: 'WM', methodKey, methodLabel };
+
+  return { tissueKey: 'other', tissueLabel: 'Other', methodKey, methodLabel };
+}
+
+const TISSUE_ORDER = ['wm', 'cortical_gm', 'subcortical_gm', 'gm_brainstem', 'gm_cerebellum', 'wm_cerebellum', 'wm_cc', 'boundary', 'other'];
+
 function labelForMontage(filename: string): string {
   const base = baseNoExt(filename).toLowerCase();
   if (base === 'cbf_montage') return 'CBF';
@@ -349,6 +386,8 @@ export function MapsView({ subjectId }: MapsViewProps) {
   const openGroup = useMemo(() => grouped.find(g => g.id === openGroupId) ?? null, [grouped, openGroupId]);
 
   const [activeFileId, setActiveFileId] = useState<string>('');
+  const [activeTissueKey, setActiveTissueKey] = useState<string>('wm');
+  const [activeTissueMethod, setActiveTissueMethod] = useState<string>('tikhonov');
 
   useEffect(() => {
     if (!openGroup) return;
@@ -367,6 +406,11 @@ export function MapsView({ subjectId }: MapsViewProps) {
     const v = openGroup.variants.find(x => x.key === activeVariant) ?? openGroup.variants[0];
     const first = v?.hits?.[0];
     setActiveFileId(first?.id ?? '');
+		if (activeVariant === 'tissue' && first) {
+			const info = parseTissueInfoFromName(first.name);
+			setActiveTissueKey(info.tissueKey);
+			setActiveTissueMethod(info.methodKey);
+		}
   }, [openGroupId, activeVariant, openGroup]);
 
   const [ensuringMaps, setEnsuringMaps] = useState(false);
@@ -550,7 +594,87 @@ export function MapsView({ subjectId }: MapsViewProps) {
 
                 return (
                   <div className="space-y-3">
-                    {options.length > 1 ? (
+                    {activeVariant === 'tissue' ? (
+                      (() => {
+                        const enriched = options
+                          .map(o => ({ o, info: parseTissueInfoFromName(o.name) }))
+                          .sort((a, b) => {
+                            const ai = TISSUE_ORDER.indexOf(a.info.tissueKey);
+                            const bi = TISSUE_ORDER.indexOf(b.info.tissueKey);
+                            if (ai !== bi) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                            return a.o.name.localeCompare(b.o.name);
+                          });
+
+                        const tissueKeys = Array.from(new Set(enriched.map(x => x.info.tissueKey)));
+                        tissueKeys.sort((a, b) => {
+                          const ai = TISSUE_ORDER.indexOf(a);
+                          const bi = TISSUE_ORDER.indexOf(b);
+                          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                        });
+
+                        const key = tissueKeys.includes(activeTissueKey) ? activeTissueKey : tissueKeys[0] || 'other';
+                        const tissueOptions = enriched.filter(x => x.info.tissueKey === key);
+                        const methods = Array.from(new Set(tissueOptions.map(x => x.info.methodKey)));
+                        const methodKey = methods.includes(activeTissueMethod) ? activeTissueMethod : methods[0] || 'default';
+                        const selected = tissueOptions.find(x => x.info.methodKey === methodKey)?.o ?? tissueOptions[0]?.o;
+                        const methodLabelFor = (mk: string) => (mk === 'patlak' ? 'Patlak' : mk === 'two_compartment' ? '2-comp' : mk === 'tikhonov' ? 'Tikhonov' : 'Default');
+
+                        return (
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="flex flex-wrap gap-2">
+                                {tissueKeys.map(tk => {
+                                  const label = enriched.find(x => x.info.tissueKey === tk)?.info.tissueLabel || tk;
+                                  return (
+                                    <Button
+                                      key={tk}
+                                      type="button"
+                                      size="sm"
+                                      variant={tk === key ? 'default' : 'outline'}
+                                      onClick={() => {
+                                        setActiveTissueKey(tk);
+                                        // reset method if current not present
+                                        const ms = Array.from(new Set(enriched.filter(x => x.info.tissueKey === tk).map(x => x.info.methodKey)));
+                                        setActiveTissueMethod(ms.includes(activeTissueMethod) ? activeTissueMethod : (ms[0] || 'default'));
+                                      }}
+                                    >
+                                      {label}
+                                    </Button>
+                                  );
+                                })}
+                              </div>
+
+                              {methods.length > 1 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {methods.map(mk => (
+                                    <Button
+                                      key={mk}
+                                      type="button"
+                                      size="sm"
+                                      variant={mk === methodKey ? 'secondary' : 'outline'}
+                                      onClick={() => setActiveTissueMethod(mk)}
+                                    >
+                                      {methodLabelFor(mk)}
+                                    </Button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {selected ? (
+                              <>
+                                <div className="text-xs text-muted-foreground">{selected.name}</div>
+                                <VolumeViewer subjectId={subjectId} path={selected.path} kind="map" />
+                              </>
+                            ) : (
+                              <div className="rounded-lg border border-border bg-muted/20 p-6 text-sm text-muted-foreground">
+                                No tissue maps found.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()
+                    ) : options.length > 1 ? (
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-xs text-muted-foreground">Showing:</div>
                         <div className="w-[360px]">
@@ -570,7 +694,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
                       </div>
                     ) : null}
 
-                    <VolumeViewer subjectId={subjectId} path={active.path} kind="map" />
+                    {activeVariant !== 'tissue' ? <VolumeViewer subjectId={subjectId} path={active.path} kind="map" /> : null}
                   </div>
                 );
               })()}
