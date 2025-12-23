@@ -278,6 +278,8 @@ def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path
 	env = os.environ.copy()
 	if cfg.pbrain_turbo:
 		env["PBRAIN_TURBO"] = "1"
+		# Ensure headless matplotlib backend for batch runs.
+		env.setdefault("MPLBACKEND", "Agg")
 
 	ai_dir_raw = cfg.pbrain_ai_dir
 	if ai_dir_raw:
