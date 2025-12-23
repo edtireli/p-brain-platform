@@ -27,6 +27,6 @@ if [[ ! -x "$PY" ]]; then
 	PY="python3"
 fi
 
-"$PY" -m pip install -r requirements.txt
+"$PY" -m pip install -r worker-requirements.txt
 
 "$PY" supabase_worker.py

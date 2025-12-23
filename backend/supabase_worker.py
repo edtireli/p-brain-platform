@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import requests
+
 
 def _utc_now_iso() -> str:
 	return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -62,7 +64,24 @@ def load_config() -> WorkerConfig:
 	worker_id = os.getenv("PBRAIN_WORKER_ID") or socket.gethostname()
 
 	pbrain_main_py = _env("PBRAIN_MAIN_PY")
-	pbrain_python = os.getenv("PBRAIN_PYTHON") or os.sys.executable
+	pbrain_python = os.getenv("PBRAIN_PYTHON")
+	if not pbrain_python:
+		try:
+			pbrain_dir = Path(pbrain_main_py).expanduser().resolve().parent
+			candidates = [
+				pbrain_dir / ".venv" / "bin" / "python",
+				pbrain_dir / "venv" / "bin" / "python",
+				pbrain_dir / ".venv" / "Scripts" / "python.exe",
+				pbrain_dir / "venv" / "Scripts" / "python.exe",
+			]
+			for c in candidates:
+				if c.exists():
+					pbrain_python = str(c)
+					break
+		except Exception:
+			pbrain_python = None
+	if not pbrain_python:
+		pbrain_python = os.sys.executable
 	pbrain_run_diffusion = _env_bool("PBRAIN_RUN_DIFFUSION", default=True)
 	pbrain_turbo = _env_bool("PBRAIN_TURBO", default=True)
 	pbrain_ai_dir = os.getenv("PBRAIN_AI_DIR") or None
@@ -85,67 +104,134 @@ def load_config() -> WorkerConfig:
 
 
 def _import_supabase():
-	try:
-		from supabase import create_client  # type: ignore
-
-		return create_client
-	except Exception as exc:
-		raise RuntimeError("Missing Python dependency 'supabase'. Install backend requirements.") from exc
+	raise RuntimeError("supabase SDK is no longer used; worker uses HTTP via requests")
 
 
-def _sb(cfg: WorkerConfig):
-	create_client = _import_supabase()
-	return create_client(cfg.supabase_url, cfg.supabase_service_role_key)
+class SupabaseHttp:
+	def __init__(self, url: str, service_role_key: str):
+		self.url = url.rstrip("/")
+		self.key = service_role_key
+		self.s = requests.Session()
+		self.s.headers.update(
+			{
+				"apikey": self.key,
+				"authorization": f"Bearer {self.key}",
+				"content-type": "application/json",
+			}
+		)
+
+	def rpc(self, fn: str, payload: Dict[str, Any]) -> Any:
+		r = self.s.post(f"{self.url}/rest/v1/rpc/{fn}", json=payload, timeout=30)
+		if r.status_code >= 400:
+			raise RuntimeError(f"rpc {fn} failed: {r.status_code} {r.text[:300]}")
+		# Can be object, list, or null
+		return r.json() if r.text.strip() else None
+
+	def select_one(self, table: str, columns: str, eq: Dict[str, str]) -> Optional[Dict[str, Any]]:
+		params = {"select": columns, **{k: f"eq.{v}" for k, v in eq.items()}}
+		r = self.s.get(f"{self.url}/rest/v1/{table}", params=params, timeout=30)
+		if r.status_code >= 400:
+			raise RuntimeError(f"select {table} failed: {r.status_code} {r.text[:300]}")
+		data = r.json()
+		if isinstance(data, list):
+			return data[0] if data else None
+		return data if isinstance(data, dict) else None
+
+	def update(self, table: str, eq: Dict[str, str], patch: Dict[str, Any]) -> None:
+		headers = {"prefer": "return=minimal"}
+		params = {k: f"eq.{v}" for k, v in eq.items()}
+		r = self.s.patch(f"{self.url}/rest/v1/{table}", params=params, json=patch, headers=headers, timeout=30)
+		if r.status_code >= 400:
+			raise RuntimeError(f"update {table} failed: {r.status_code} {r.text[:300]}")
+
+	def insert(self, table: str, row: Dict[str, Any]) -> None:
+		headers = {"prefer": "return=minimal"}
+		r = self.s.post(f"{self.url}/rest/v1/{table}", json=row, headers=headers, timeout=30)
+		if r.status_code >= 400:
+			raise RuntimeError(f"insert {table} failed: {r.status_code} {r.text[:300]}")
+
+	def upsert(self, table: str, row: Dict[str, Any], on_conflict: str) -> None:
+		headers = {"prefer": "resolution=merge-duplicates,return=minimal"}
+		r = self.s.post(
+			f"{self.url}/rest/v1/{table}",
+			params={"on_conflict": on_conflict},
+			json=row,
+			headers=headers,
+			timeout=30,
+		)
+		if r.status_code >= 400:
+			raise RuntimeError(f"upsert {table} failed: {r.status_code} {r.text[:300]}")
+
+	def upload(self, bucket: str, path: str, content: bytes, upsert: bool = True) -> None:
+		# Storage API accepts raw bytes. Keep best-effort; ignore failures.
+		headers = {
+			"apikey": self.key,
+			"authorization": f"Bearer {self.key}",
+			"content-type": "application/octet-stream",
+			"x-upsert": "true" if upsert else "false",
+		}
+		r = requests.post(f"{self.url}/storage/v1/object/{bucket}/{path}", data=content, headers=headers, timeout=60)
+		if r.status_code >= 400:
+			raise RuntimeError(f"upload failed: {r.status_code} {r.text[:200]}")
 
 
-def _claim_job(sb: Any, worker_id: str) -> Optional[Dict[str, Any]]:
-	resp = sb.rpc("claim_job", {"p_worker_id": worker_id}).execute()
-	data = resp.data
+def _sb(cfg: WorkerConfig) -> SupabaseHttp:
+	return SupabaseHttp(cfg.supabase_url, cfg.supabase_service_role_key)
+
+
+def _claim_job(sb: SupabaseHttp, worker_id: str) -> Optional[Dict[str, Any]]:
+	data = sb.rpc("claim_job", {"p_worker_id": worker_id})
 	if not data:
 		return None
 	if isinstance(data, list):
-		return data[0] if data else None
+		j = data[0] if data else None
+		return j if isinstance(j, dict) and j.get("id") else None
 	if isinstance(data, dict):
-		return data
+		return data if data.get("id") else None
 	return None
 
 
-def _update_job(sb: Any, job_id: str, patch: Dict[str, Any]) -> None:
+def _update_job(sb: SupabaseHttp, job_id: str, patch: Dict[str, Any]) -> None:
 	payload = {**patch, "updated_at": _utc_now_iso()}
-	sb.table("jobs").update(payload).eq("id", job_id).execute()
+	sb.update("jobs", {"id": job_id}, payload)
 
 
-def _log_event(sb: Any, job_id: str, level: str, message: str) -> None:
+
+def _log_event(sb: SupabaseHttp, job_id: str, level: str, message: str) -> None:
 	try:
-		sb.table("job_events").insert({"job_id": job_id, "level": level, "message": message}).execute()
+		sb.insert("job_events", {"job_id": job_id, "level": level, "message": message})
 	except Exception:
 		# Keep runner alive even if logging fails.
 		pass
 
 
-def _insert_output(sb: Any, job_id: str, kind: str, storage_path: str, meta: Dict[str, Any]) -> None:
+def _insert_output(sb: SupabaseHttp, job_id: str, kind: str, storage_path: str, meta: Dict[str, Any]) -> None:
 	try:
-		sb.table("job_outputs").insert({
-			"job_id": job_id,
-			"kind": kind,
-			"storage_path": storage_path,
-			"meta": meta,
-		}).execute()
+		sb.insert(
+			"job_outputs",
+			{
+				"job_id": job_id,
+				"kind": kind,
+				"storage_path": storage_path,
+				"meta": meta,
+			},
+		)
 	except Exception:
 		pass
 
 
-def _upload_log(sb: Any, bucket: str, storage_path: str, log_path: Path) -> None:
+def _upload_log(sb: SupabaseHttp, bucket: str, storage_path: str, log_path: Path) -> None:
 	try:
-		with log_path.open("rb") as f:
-			sb.storage.from_(bucket).upload(storage_path, f, {"upsert": True})
+		content = log_path.read_bytes()
+		sb.upload(bucket, storage_path, content, upsert=True)
 	except Exception:
 		pass
 
 
-def _heartbeat(sb: Any, cfg: WorkerConfig) -> None:
+def _heartbeat(sb: SupabaseHttp, cfg: WorkerConfig) -> None:
 	try:
-		sb.table("worker_heartbeats").upsert(
+		sb.upsert(
+			"worker_heartbeats",
 			{
 				"worker_id": cfg.worker_id,
 				"last_seen": _utc_now_iso(),
@@ -158,7 +244,7 @@ def _heartbeat(sb: Any, cfg: WorkerConfig) -> None:
 				},
 			},
 			on_conflict="worker_id",
-		).execute()
+		)
 	except Exception:
 		# Never crash the worker due to observability.
 		pass
@@ -215,7 +301,7 @@ def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path
 		raise RuntimeError(f"p-brain exited with code {rc}; see log")
 
 
-def _process_job(cfg: WorkerConfig, sb: Any, job: Dict[str, Any]) -> None:
+def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> None:
 	job_id = str(job.get("id"))
 	payload: Dict[str, Any] = job.get("payload") or {}
 	_log_event(sb, job_id, "info", f"claiming on {cfg.worker_id}")
@@ -229,6 +315,8 @@ def _process_job(cfg: WorkerConfig, sb: Any, job: Dict[str, Any]) -> None:
 		return
 
 	log_path = cfg.logs_dir / f"{job_id}.log"
+	storage_path = f"jobs/{job_id}/logs/runner.log"
+	final_status: str = "failed"
 	_update_job(
 		sb,
 		job_id,
@@ -247,6 +335,7 @@ def _process_job(cfg: WorkerConfig, sb: Any, job: Dict[str, Any]) -> None:
 
 	try:
 		_run_pbrain(cfg, subject_id, subject_path, log_path)
+		final_status = "completed"
 		_update_job(
 			sb,
 			job_id,
@@ -261,6 +350,7 @@ def _process_job(cfg: WorkerConfig, sb: Any, job: Dict[str, Any]) -> None:
 		_log_event(sb, job_id, "info", "completed")
 	except Exception as exc:
 		err = str(exc)
+		final_status = "failed"
 		_update_job(
 			sb,
 			job_id,
@@ -273,18 +363,10 @@ def _process_job(cfg: WorkerConfig, sb: Any, job: Dict[str, Any]) -> None:
 			},
 		)
 		_log_event(sb, job_id, "error", err)
-		return
 
-	# Upload log to Storage + register as output (best-effort)
-	storage_path = f"jobs/{job_id}/logs/runner.log"
+	# Upload log to Storage + register as output (best-effort), even on failures.
 	_upload_log(sb, cfg.bucket, storage_path, log_path)
-	_insert_output(
-		sb,
-		job_id,
-		kind="log",
-		storage_path=storage_path,
-		meta={"runner_id": cfg.worker_id},
-	)
+	_insert_output(sb, job_id, kind="log", storage_path=storage_path, meta={"runner_id": cfg.worker_id, "status": final_status})
 
 
 def main() -> None:

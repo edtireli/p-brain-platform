@@ -766,6 +766,18 @@ export class SupabaseEngineAPI {
       if (e1) throw e1;
       if (!existing) throw new Error('JOB_NOT_FOUND');
 
+		let nextPayload: any = existing.payload && typeof existing.payload === 'object' ? { ...existing.payload } : {};
+		if (!nextPayload.subject_id && existing.subject_id) nextPayload.subject_id = existing.subject_id;
+		if (!nextPayload.relative_path && existing.subject_id) {
+			const { data: subj, error: sErr } = await sb
+				.from('subjects')
+				.select('source_path')
+				.eq('id', existing.subject_id)
+				.maybeSingle();
+			if (sErr) throw sErr;
+			if (subj?.source_path) nextPayload.relative_path = subj.source_path;
+		}
+
       const payload = {
         project_id: existing.project_id,
         subject_id: existing.subject_id,
@@ -773,6 +785,7 @@ export class SupabaseEngineAPI {
         status: 'queued',
         progress: 0,
         current_step: 'Queued (retry)',
+			payload: nextPayload,
       };
       const { data: row, error: e2 } = await sb.from('jobs').insert(payload).select('*').single();
       if (e2) throw e2;
