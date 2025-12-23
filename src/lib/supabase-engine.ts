@@ -39,17 +39,39 @@ const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCK
 const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
 
 const _missingObjectCache = new Map<string, number>();
-// When artifacts are missing (common while jobs are still running), avoid repeatedly
-// hammering Storage with signed-url attempts.
-const _MISSING_TTL_MS = 5 * 60_000;
+
+function _missingTtlForPathMs(path: string): number {
+  const p = String(path || '').toLowerCase();
+  // Pipeline runs often upload the index/metrics late; keep TTL short so UI refreshes quickly.
+  if (p.endsWith('/artifacts/index.json')) return 10_000;
+  if (p.endsWith('/curves/curves.json')) return 10_000;
+  if (p.includes('/analysis/metrics/')) return 10_000;
+  if (p.endsWith('.png')) return 15_000;
+  if (p.endsWith('.nii') || p.endsWith('.nii.gz')) return 45_000;
+  return 20_000;
+}
 
 function _isRecentlyMissing(path: string): boolean {
-  const ts = _missingObjectCache.get(path);
-  return typeof ts === 'number' && Date.now() - ts < _MISSING_TTL_MS;
+  const until = _missingObjectCache.get(path);
+  return typeof until === 'number' && Date.now() < until;
 }
 
 function _markMissing(path: string) {
-  _missingObjectCache.set(path, Date.now());
+  _missingObjectCache.set(path, Date.now() + _missingTtlForPathMs(path));
+}
+
+function _clearMissing(path: string) {
+  _missingObjectCache.delete(path);
+}
+
+function _isNotFoundStorageError(err: any): boolean {
+  const status = Number(err?.statusCode ?? err?.status ?? 0);
+  const msg = String(err?.message ?? err?.error ?? '').toLowerCase();
+  // Supabase Storage sometimes returns 400 for missing objects.
+  // Treat as not-found only when the message clearly indicates missing.
+  if (status === 404) return true;
+  if (status === 400 && (msg.includes('not found') || msg.includes('object not found'))) return true;
+  return false;
 }
 
 // The browser cannot run the real Python pipeline; a worker must run elsewhere.
@@ -169,16 +191,20 @@ async function downloadJson<T>(path: string): Promise<T | null> {
   try {
     const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(path);
     if (error) {
-      // Supabase Storage returns 400 for missing objects in some configurations.
-      // Avoid spamming the network with follow-up signed-url attempts.
-      const status = Number((error as any)?.statusCode ?? (error as any)?.status ?? 0);
-      if (status === 400 || status === 404) {
+      // Avoid spamming follow-up attempts for true missing objects.
+      if (_isNotFoundStorageError(error)) {
         _markMissing(path);
         return null;
       }
+      console.warn('[SupabaseEngineAPI] storage.download failed', {
+        path,
+        status: Number((error as any)?.statusCode ?? (error as any)?.status ?? 0),
+        message: String((error as any)?.message ?? (error as any)?.error ?? ''),
+      });
     }
 
     if (!error && data) {
+      _clearMissing(path);
       const text = await (data as Blob).text();
       return parseLoose(text);
     }
@@ -188,13 +214,21 @@ async function downloadJson<T>(path: string): Promise<T | null> {
 
   const { data: signed, error: sErr } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
   if (sErr) {
-    const status = Number((sErr as any)?.statusCode ?? (sErr as any)?.status ?? 0);
-    if (status === 400 || status === 404) _markMissing(path);
+    if (_isNotFoundStorageError(sErr)) {
+      _markMissing(path);
+    } else {
+      console.warn('[SupabaseEngineAPI] storage.createSignedUrl failed', {
+        path,
+        status: Number((sErr as any)?.statusCode ?? (sErr as any)?.status ?? 0),
+        message: String((sErr as any)?.message ?? (sErr as any)?.error ?? ''),
+      });
+    }
   }
   if (sErr || !signed?.signedUrl) return null;
 
   const res = await fetch(signed.signedUrl);
   if (!res.ok) return null;
+  _clearMissing(path);
   const text = await res.text();
   return parseLoose(text);
 }
@@ -213,17 +247,54 @@ async function toObjectUrl(path: string): Promise<string> {
   // Prefer signed URLs (works for private buckets while user is authed).
   const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
   if (error) {
-    const status = Number((error as any)?.statusCode ?? (error as any)?.status ?? 0);
-    if (status === 400 || status === 404) {
+    if (_isNotFoundStorageError(error)) {
       _markMissing(path);
       return '';
     }
+    console.warn('[SupabaseEngineAPI] storage.createSignedUrl failed', {
+      path,
+      status: Number((error as any)?.statusCode ?? (error as any)?.status ?? 0),
+      message: String((error as any)?.message ?? (error as any)?.error ?? ''),
+    });
   }
   if (!error && data?.signedUrl) return data.signedUrl;
 
   // Only works if the bucket is public.
   const pub = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
   return pub?.data?.publicUrl ?? '';
+}
+
+function _subjectKeyCandidates(subj: Subject): string[] {
+  const out = new Set<string>();
+  if (subj?.id) out.add(String(subj.id));
+  if (subj?.name) out.add(String(subj.name));
+  const base = subj?.sourcePath ? basename(String(subj.sourcePath)) : '';
+  if (base) out.add(base);
+  return Array.from(out).filter(Boolean);
+}
+
+function _subjectScopedPath(projectId: string, subjectKey: string, rel: string): string {
+  return `projects/${projectId}/subjects/${subjectKey}/${rel.replace(/^\/+/, '')}`;
+}
+
+async function _downloadJsonForSubject<T>(subj: Subject, rel: string): Promise<T | null> {
+  const keys = _subjectKeyCandidates(subj);
+  for (const key of keys) {
+    const p = _subjectScopedPath(subj.projectId, key, rel);
+    const v = await downloadJson<T>(p);
+    if (v) return v;
+  }
+  return null;
+}
+
+async function _listObjectsForSubject(subj: Subject, relPrefix: string): Promise<Array<{ name: string; fullPath: string }>> {
+  const keys = _subjectKeyCandidates(subj);
+  for (const key of keys) {
+    const pfx = _subjectScopedPath(subj.projectId, key, relPrefix);
+    const objs = await listObjects(pfx);
+    if (objs.length > 0) return objs;
+  }
+  return [];
 }
 
 async function listObjects(prefix: string): Promise<Array<{ name: string; fullPath: string }>> {
@@ -374,18 +445,22 @@ type ArtifactIndex = {
   maps?: Array<{ id: string; name: string; path: string }>;
 };
 
-async function listPngObjectPathsWithIndexFallback(prefix: string, projectId: string, subjectId: string): Promise<string[]> {
+async function listPngObjectPathsWithIndexFallback(
+  subj: Subject,
+  relPrefix: string
+): Promise<string[]> {
   // First try Storage list() (fast path).
-  const objs = await listObjects(prefix);
+  const objs = await _listObjectsForSubject(subj, relPrefix);
   const listed = objs.filter(o => /\.png$/i.test(o.name)).map(o => o.fullPath);
   if (listed.length > 0) return listed;
 
   // Fallback: read the uploaded artifacts index (doesn't require listing folders).
-  const indexPath = `projects/${projectId}/subjects/${subjectId}/artifacts/index.json`;
-  const index = await downloadJson<ArtifactIndex>(indexPath);
+  const index = await _downloadJsonForSubject<ArtifactIndex>(subj, 'artifacts/index.json');
   const paths = (index?.paths ?? []).filter(p => typeof p === 'string');
-  const withPrefix = `${prefix}/`;
-  return paths.filter(p => p.startsWith(withPrefix) && /\.png$/i.test(p));
+
+  // Match any of the candidate prefixes.
+  const prefixes = _subjectKeyCandidates(subj).map(k => _subjectScopedPath(subj.projectId, k, relPrefix) + '/');
+  return paths.filter(p => prefixes.some(pre => p.startsWith(pre)) && /\.png$/i.test(p));
 }
 
 export class SupabaseEngineAPI {
@@ -1087,8 +1162,7 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/curves`;
-      const curves = await downloadJson<{ curves: Curve[] }>(`${prefix}/curves.json`);
+      const curves = await _downloadJsonForSubject<{ curves: Curve[] }>(subj, 'curves/curves.json');
       return curves?.curves ?? [];
     }, []);
   }
@@ -1099,8 +1173,7 @@ export class SupabaseEngineAPI {
       if (!subj) return [];
 
       // Prefer the artifacts index produced by scripts/sync-artifacts.mjs.
-      const indexPath = `projects/${subj.projectId}/subjects/${subj.id}/artifacts/index.json`;
-      const index = await downloadJson<ArtifactIndex>(indexPath);
+      const index = await _downloadJsonForSubject<ArtifactIndex>(subj, 'artifacts/index.json');
 
       const indexMaps = (index?.maps ?? [])
         .map(m => ({
@@ -1117,8 +1190,7 @@ export class SupabaseEngineAPI {
       if (indexMaps.length > 0) return indexMaps;
 
       // Fallback: list any NIfTI outputs under analysis/.
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis`;
-      const objs = await listObjects(prefix);
+      const objs = await _listObjectsForSubject(subj, 'analysis');
       const nifti = objs.filter(o => /\.(nii|nii\.gz)$/i.test(o.name));
       return nifti.map(o => ({
         id: o.name,
@@ -1139,20 +1211,18 @@ export class SupabaseEngineAPI {
 
       const folderStructure = await this.getFolderStructureForProject(subj.projectId);
 
-      const indexPath = `projects/${subj.projectId}/subjects/${subj.id}/artifacts/index.json`;
-      const index = await downloadJson<ArtifactIndex>(indexPath);
+      const index = await _downloadJsonForSubject<ArtifactIndex>(subj, 'artifacts/index.json');
       const vols = (index?.volumes ?? [])
         .filter(v => typeof v?.path === 'string' && /\.(nii|nii\.gz)$/i.test(v.path))
         .map(v => ({
           id: v.id || basename(v.path),
           name: v.name || basename(v.path),
           path: v.path,
-				kind: v.kind || inferVolumeKindFromFolderStructure(v.name || v.path, folderStructure) || inferVolumeKindFromFilename(v.name || v.path) || 'source',
+			kind: v.kind || inferVolumeKindFromFolderStructure(v.name || v.path, folderStructure) || inferVolumeKindFromFilename(v.name || v.path) || 'source',
         }));
       if (vols.length > 0) return vols;
 
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/volumes/source`;
-      const objs = await listObjects(prefix);
+      const objs = await _listObjectsForSubject(subj, 'volumes/source');
       const source = objs
         .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
         .map(o => ({
@@ -1175,8 +1245,7 @@ export class SupabaseEngineAPI {
         }));
       }
 
-      const analysisPrefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis`;
-      const analysisObjs = await listObjects(analysisPrefix);
+      const analysisObjs = await _listObjectsForSubject(subj, 'analysis');
       return analysisObjs
         .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
         .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: 'analysis' }));
@@ -1188,9 +1257,7 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/images/ai/montages`;
-
-      const pngPaths = await listPngObjectPathsWithIndexFallback(prefix, subj.projectId, subj.id);
+      const pngPaths = await listPngObjectPathsWithIndexFallback(subj, 'images/ai/montages');
       const withUrls = await Promise.all(
         pngPaths.map(async fullPath => {
           const file = basename(fullPath);
@@ -1230,7 +1297,7 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return { rows: [] };
 
-      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis/metrics`;
+      const prefixRel = 'analysis/metrics';
 
       if (view === 'atlas') {
         type AtlasEntry = {
@@ -1242,8 +1309,8 @@ export class SupabaseEngineAPI {
         };
 
         const atlas =
-          (await downloadJson<Record<string, AtlasEntry>>(`${prefix}/Ki_values_atlas_patlak.json`)) ||
-          (await downloadJson<Record<string, AtlasEntry>>(`${prefix}/Ki_values_atlas_tikhonov.json`));
+          (await _downloadJsonForSubject<Record<string, AtlasEntry>>(subj, `${prefixRel}/Ki_values_atlas_patlak.json`)) ||
+          (await _downloadJsonForSubject<Record<string, AtlasEntry>>(subj, `${prefixRel}/Ki_values_atlas_tikhonov.json`));
         if (!atlas) return { rows: [] };
 
         const rows = Object.entries(atlas)
@@ -1275,8 +1342,8 @@ export class SupabaseEngineAPI {
       };
 
       const tissueSlices =
-        (await downloadJson<TissueSlice[]>(`${prefix}/AI_values_median_tikhonov.json`)) ||
-        (await downloadJson<TissueSlice[]>(`${prefix}/AI_values_median_patlak.json`));
+        (await _downloadJsonForSubject<TissueSlice[]>(subj, `${prefixRel}/AI_values_median_tikhonov.json`)) ||
+        (await _downloadJsonForSubject<TissueSlice[]>(subj, `${prefixRel}/AI_values_median_patlak.json`));
       if (!tissueSlices || !Array.isArray(tissueSlices)) return { rows: [] };
 
       const defs: Array<{ key: keyof TissueSlice; region: string }> = [

@@ -78,22 +78,28 @@ function mergeStageStatusesFromJobs(
     perStage.set(stageId, arr);
   }
 
-  // Precedence: running > failed > completed. Do NOT treat queued jobs as running;
-  // queued work should not overwrite persisted stage_statuses.
+  // Precedence: running > failed > completed.
+  // Do NOT treat queued jobs as running; queued work should not overwrite persisted stage_statuses.
+  // Important: never let historical failures override a persisted `done` state (common after retries).
   for (const stageId of STAGES) {
     const arr = perStage.get(stageId) || [];
     if (arr.some(j => j.status === 'running')) {
       next[stageId] = 'running';
       continue;
     }
-    if (arr.some(j => j.status === 'failed')) {
-      next[stageId] = 'failed';
-      continue;
+
+    const isPersistedDone = next[stageId] === 'done';
+    if (!isPersistedDone) {
+      if (arr.some(j => j.status === 'failed')) {
+        next[stageId] = 'failed';
+        continue;
+      }
+      if (arr.some(j => j.status === 'cancelled')) {
+        next[stageId] = 'failed';
+        continue;
+      }
     }
-    if (arr.some(j => j.status === 'cancelled')) {
-      next[stageId] = 'failed';
-      continue;
-    }
+
     if (arr.some(j => j.status === 'completed')) {
       next[stageId] = 'done';
       continue;
