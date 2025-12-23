@@ -1,6 +1,5 @@
 // Legacy compatibility shim.
-// Intentionally NO Supabase/Storage fallback: this app runs the real p-brain pipeline
-// via an external backend/worker.
+// Keep minimal exports so older components can still compile.
 
-export { engine as mockEngine, backendConfigured as isBackendEngine } from '@/lib/engine';
-export const engineKind = 'backend' as const;
+export { engine as mockEngine, isBackendEngine } from '@/lib/engine';
+export const engineKind = 'supabase' as const;

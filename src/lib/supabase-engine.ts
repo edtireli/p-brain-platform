@@ -37,6 +37,18 @@ const STAGES: StageId[] = [
 const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined;
 const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
 
+const _missingObjectCache = new Map<string, number>();
+const _MISSING_TTL_MS = 30_000;
+
+function _isRecentlyMissing(path: string): boolean {
+  const ts = _missingObjectCache.get(path);
+  return typeof ts === 'number' && Date.now() - ts < _MISSING_TTL_MS;
+}
+
+function _markMissing(path: string) {
+  _missingObjectCache.set(path, Date.now());
+}
+
 // The browser cannot run the real Python pipeline; a worker must run elsewhere.
 // Keep the old simulated in-browser worker opt-in only.
 const _RAW_ENABLE_DEMO_WORKER = (import.meta as any).env?.VITE_ENABLE_DEMO_WORKER as string | undefined;
@@ -126,6 +138,7 @@ function isLikelyMacOsJunkFile(name: string): boolean {
 
 async function downloadJson<T>(path: string): Promise<T | null> {
   if (!supabase) return null;
+  if (_isRecentlyMissing(path)) return null;
   const sb = supabase as any;
   if (!sb.storage) return null;
 
@@ -134,6 +147,16 @@ async function downloadJson<T>(path: string): Promise<T | null> {
   // to a signed URL fetch if we can create one.
   try {
     const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(path);
+    if (error) {
+      // Supabase Storage returns 400 for missing objects in some configurations.
+      // Avoid spamming the network with follow-up signed-url attempts.
+      const status = Number((error as any)?.statusCode ?? (error as any)?.status ?? 0);
+      if (status === 400 || status === 404) {
+        _markMissing(path);
+        return null;
+      }
+    }
+
     if (!error && data) {
       const text = await (data as Blob).text();
       return JSON.parse(text) as T;
@@ -143,6 +166,10 @@ async function downloadJson<T>(path: string): Promise<T | null> {
   }
 
   const { data: signed, error: sErr } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
+  if (sErr) {
+    const status = Number((sErr as any)?.statusCode ?? (sErr as any)?.status ?? 0);
+    if (status === 400 || status === 404) _markMissing(path);
+  }
   if (sErr || !signed?.signedUrl) return null;
 
   const res = await fetch(signed.signedUrl);
@@ -152,11 +179,19 @@ async function downloadJson<T>(path: string): Promise<T | null> {
 
 async function toObjectUrl(path: string): Promise<string> {
   if (!supabase) return '';
+  if (_isRecentlyMissing(path)) return '';
   const sb = supabase as any;
   if (!sb.storage) return '';
 
   // Prefer signed URLs (works for private buckets while user is authed).
   const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60);
+  if (error) {
+    const status = Number((error as any)?.statusCode ?? (error as any)?.status ?? 0);
+    if (status === 400 || status === 404) {
+      _markMissing(path);
+      return '';
+    }
+  }
   if (!error && data?.signedUrl) return data.signedUrl;
 
   // Only works if the bucket is public.

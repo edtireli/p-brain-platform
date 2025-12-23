@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { engine } from '@/lib/engine';
+import { engine, isBackendEngine } from '@/lib/engine';
 import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
 
 interface CurvesViewProps {
@@ -27,13 +27,13 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
       const curvesData = await engine.getCurves(subjectId);
       setCurves(curvesData);
 
-      const patlak = await mockEngine.getPatlakData(subjectId, 'gm');
+      const patlak = await engine.getPatlakData(subjectId, 'gm');
       setPatlakData(patlak);
 
-      const tofts = await mockEngine.getToftsData(subjectId, 'gm');
+      const tofts = await engine.getToftsData(subjectId, 'gm');
       setToftsData(tofts);
 
-      const deconv = await mockEngine.getDeconvolutionData(subjectId, 'gm');
+      const deconv = await engine.getDeconvolutionData(subjectId, 'gm');
       setDeconvData(deconv);
     } catch (error) {
       console.error('Failed to load curves:', error);
@@ -48,7 +48,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
     setEnsureOnce(true);
     setEnsuring(true);
     setEnsureMsg('Running p-brain to generate curves…');
-    mockEngine
+    engine
       .ensureSubjectArtifacts(subjectId, 'curves')
       .then((res: any) => setEnsureMsg(res?.reason || 'Started'))
       .catch((e: any) => setEnsureMsg(String(e?.message || e || 'Failed to start pipeline')))
@@ -62,7 +62,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
 
     const t = window.setInterval(async () => {
       try {
-        const curvesData = await mockEngine.getCurves(subjectId);
+        const curvesData = await engine.getCurves(subjectId);
         if (curvesData.length > 0) {
           setCurves(curvesData);
           window.clearInterval(t);
@@ -127,7 +127,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                       onClick={async () => {
                         try {
                           setEnsuring(true);
-                          const res = await mockEngine.ensureSubjectArtifacts(subjectId, 'curves');
+                          const res = await engine.ensureSubjectArtifacts(subjectId, 'curves');
                           setEnsureMsg(res?.reason || 'Started');
                         } catch (e: any) {
                           setEnsureMsg(String(e?.message || e || 'Failed to start pipeline'));

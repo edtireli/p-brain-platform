@@ -3,6 +3,9 @@ import { SupabaseEngineAPI } from '@/lib/supabase-engine';
 // Supabase acts as the control plane; jobs are queued in Supabase and picked up by a local runner.
 export const engine = new SupabaseEngineAPI();
 
+// Used by UI to gate features that require a direct backend HTTP engine.
+export const isBackendEngine = false;
+
 export function assertBackendConfigured(): void {
   /* Supabase auth already gates the UI; nothing to assert here. */
 }
