@@ -1,8 +1,12 @@
 import fs from 'node:fs/promises';
+import fssync from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import process from 'node:process';
 import { createClient } from '@supabase/supabase-js';
 import readline from 'node:readline';
+import zlib from 'node:zlib';
+import { pipeline } from 'node:stream/promises';
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -84,6 +88,20 @@ function isJunk(name) {
 function isNiftiFilename(name) {
   const lower = name.toLowerCase();
   return lower.endsWith('.nii') || lower.endsWith('.nii.gz');
+}
+
+async function gzipFileToTemp(srcPath) {
+  const base = path.basename(srcPath);
+  const outName = base.toLowerCase().endsWith('.nii') ? `${base}.gz` : `${base}.gz`;
+  const tmpPath = path.join(os.tmpdir(), `pbrain-${Date.now()}-${Math.random().toString(16).slice(2)}-${outName}`);
+
+  await pipeline(
+    fssync.createReadStream(srcPath),
+    zlib.createGzip({ level: zlib.constants.Z_BEST_COMPRESSION }),
+    fssync.createWriteStream(tmpPath)
+  );
+
+  return tmpPath;
 }
 
 async function exists(p) {
@@ -373,10 +391,41 @@ async function main() {
       : wanted;
 
     for (const { kind, file } of toUpload) {
-      const local = path.join(niftiRoot, file);
-      const dest = `projects/${projectId}/subjects/${subjectId}/volumes/source/${file}`;
-      const ok = await uploadFile(local, dest, 'application/octet-stream');
-      if (ok) uploadedVolumes.push({ id: file, name: file, path: dest, kind });
+      const local0 = path.join(niftiRoot, file);
+
+      let local = local0;
+      let destName = file;
+      let tmpGz = null;
+
+      try {
+        const st = await fs.stat(local0);
+        const isNii = file.toLowerCase().endsWith('.nii');
+        const isNiiGz = file.toLowerCase().endsWith('.nii.gz');
+
+        // Prefer uploading .nii.gz (smaller + more likely to pass Storage limits).
+        if (isNii && !isNiiGz) {
+          tmpGz = await gzipFileToTemp(local0);
+          const gzSt = await fs.stat(tmpGz);
+          if (gzSt.size <= maxUploadBytes) {
+            local = tmpGz;
+            destName = `${file}.gz`;
+          } else {
+            // Fall back to raw .nii only if it's within the configured cap.
+            if (st.size <= maxUploadBytes) {
+              local = local0;
+              destName = file;
+            }
+          }
+        }
+
+        const dest = `projects/${projectId}/subjects/${subjectId}/volumes/source/${destName}`;
+        const ok = await uploadFile(local, dest, 'application/octet-stream');
+        if (ok) uploadedVolumes.push({ id: destName, name: destName, path: dest, kind });
+      } finally {
+        if (tmpGz) {
+          try { await fs.unlink(tmpGz); } catch { /* ignore */ }
+        }
+      }
     }
   }
 
@@ -386,9 +435,37 @@ async function main() {
     const niftiLike = await listFilesRecursive(analysisRoot, ['.nii', '.nii.gz']);
     for (const f of niftiLike) {
       const rel = normalizeRel(path.relative(analysisRoot, f));
-      const dest = `projects/${projectId}/subjects/${subjectId}/analysis/${rel}`;
-      const ok = await uploadFile(f, dest, 'application/octet-stream');
-      if (ok) uploadedMaps.push({ id: path.basename(f), name: path.basename(f), path: dest });
+
+      let local = f;
+      let destRel = rel;
+      let tmpGz = null;
+
+      try {
+        const st = await fs.stat(f);
+        const isNii = f.toLowerCase().endsWith('.nii');
+        const isNiiGz = f.toLowerCase().endsWith('.nii.gz');
+        if (isNii && !isNiiGz) {
+          tmpGz = await gzipFileToTemp(f);
+          const gzSt = await fs.stat(tmpGz);
+          if (gzSt.size <= maxUploadBytes) {
+            local = tmpGz;
+            destRel = `${rel}.gz`;
+          } else {
+            if (st.size <= maxUploadBytes) {
+              local = f;
+              destRel = rel;
+            }
+          }
+        }
+
+        const dest = `projects/${projectId}/subjects/${subjectId}/analysis/${destRel}`;
+        const ok = await uploadFile(local, dest, 'application/octet-stream');
+        if (ok) uploadedMaps.push({ id: path.basename(destRel), name: path.basename(destRel), path: dest });
+      } finally {
+        if (tmpGz) {
+          try { await fs.unlink(tmpGz); } catch { /* ignore */ }
+        }
+      }
     }
   }
 

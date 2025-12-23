@@ -38,6 +38,46 @@ const STAGES: StageId[] = [
 const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCKET as string | undefined;
 const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
 
+function _sanitizeHttpUrl(raw: string | undefined | null): string | null {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) return null;
+  const noSlash = s.replace(/\/+$/, '');
+  return noSlash.endsWith('/api') ? noSlash.slice(0, -4) : noSlash;
+}
+
+function _localBackendBaseUrl(): string | null {
+  const env = (import.meta as any).env as Record<string, string | undefined> | undefined;
+  return (
+    _sanitizeHttpUrl(env?.VITE_LOCAL_BACKEND_URL) ||
+    _sanitizeHttpUrl(env?.VITE_API_BASE_URL) ||
+    _sanitizeHttpUrl(env?.VITE_BACKEND_URL) ||
+    null
+  );
+}
+
+function _isAbsoluteLocalPath(p: string): boolean {
+  return typeof p === 'string' && (p.startsWith('/') || p.startsWith('file://'));
+}
+
+function _stripFileScheme(p: string): string {
+  return p.startsWith('file://') ? p.slice('file://'.length) : p;
+}
+
+async function _localListFiles(dirAbs: string, glob: string): Promise<Array<{ name: string; path: string }>> {
+  const base = _localBackendBaseUrl();
+  if (!base) return [];
+  const url = `${base}/local/list?dir=${encodeURIComponent(dirAbs)}&glob=${encodeURIComponent(glob)}&recursive=true&limit=800`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return Array.isArray(json?.files) ? json.files : [];
+  } catch {
+    return [];
+  }
+}
+
 const _missingObjectCache = new Map<string, number>();
 
 function _missingTtlForPathMs(path: string): number {
@@ -239,6 +279,12 @@ function _asFiniteNumber(v: any): number | undefined {
 }
 
 async function toObjectUrl(path: string): Promise<string> {
+  if (_isAbsoluteLocalPath(path)) {
+    const base = _localBackendBaseUrl();
+    if (!base) return '';
+    const abs = _stripFileScheme(path);
+    return `${base}/local/file?path=${encodeURIComponent(abs)}`;
+  }
   if (!supabase) return '';
   if (_isRecentlyMissing(path)) return '';
   const sb = supabase as any;
@@ -1162,6 +1208,16 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
+      const localBase = _localBackendBaseUrl();
+      if (localBase && subj.sourcePath) {
+        const u = new URL('/local/analysis/curves', localBase);
+        u.searchParams.set('subjectDir', subj.sourcePath);
+        const resp = await fetch(u.toString());
+        if (!resp.ok) return [];
+        const json = (await resp.json()) as { curves?: Curve[] };
+        return Array.isArray(json?.curves) ? json.curves : [];
+      }
+
       const curves = await _downloadJsonForSubject<{ curves: Curve[] }>(subj, 'curves/curves.json');
       return curves?.curves ?? [];
     }, []);
@@ -1171,6 +1227,27 @@ export class SupabaseEngineAPI {
     return safe(async () => {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
+
+      const localBase = _localBackendBaseUrl();
+      if (localBase && subj.sourcePath) {
+        const u = new URL('/local/analysis/maps', localBase);
+        u.searchParams.set('subjectDir', subj.sourcePath);
+        const resp = await fetch(u.toString());
+        if (!resp.ok) return [];
+        const json = (await resp.json()) as { maps?: any[] };
+        const maps = Array.isArray(json?.maps) ? json.maps : [];
+        return maps
+          .map(m => {
+            const path = typeof m?.path === 'string' ? m.path : undefined;
+            if (!path) return null;
+            const id = typeof m?.id === 'string' ? m.id : basename(path);
+            const name = typeof m?.name === 'string' ? m.name : basename(path).replace(/\.(nii|nii\.gz)$/i, '');
+            const unit = typeof m?.unit === 'string' ? m.unit : '';
+            const group = m?.group === 'diffusion' || m?.group === 'modelling' ? m.group : undefined;
+            return { id, name, unit, path, group } as MapVolume;
+          })
+          .filter(Boolean) as MapVolume[];
+      }
 
       // Prefer the artifacts index produced by scripts/sync-artifacts.mjs.
       const index = await _downloadJsonForSubject<ArtifactIndex>(subj, 'artifacts/index.json');
@@ -1208,6 +1285,29 @@ export class SupabaseEngineAPI {
     return safe(async () => {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
+
+      // Local-only data mode: do not use Supabase Storage for volumes.
+      // If a local backend is configured, list NIfTI files from disk.
+      const localBase = _localBackendBaseUrl();
+      if (localBase && subj.sourcePath) {
+        const folderStructure = await this.getFolderStructureForProject(subj.projectId);
+        const niftiSubfolder = String(folderStructure?.niftiSubfolder || 'NIfTI');
+        const root = String(subj.sourcePath).replace(/\/+$/, '');
+        const niftiDir = `${root}/${niftiSubfolder}`;
+        const files = await _localListFiles(niftiDir, '*.nii*');
+        const vols = files
+          .filter(f => typeof f?.path === 'string' && /\.(nii|nii\.gz)$/i.test(f.path))
+          .map(f => {
+            const name = String(f.name || basename(f.path));
+            return {
+              id: f.path,
+              name,
+              path: f.path,
+              kind: (inferVolumeKindFromFolderStructure(name, folderStructure) || inferVolumeKindFromFilename(name) || 'source') as any,
+            };
+          });
+        if (vols.length > 0) return vols;
+      }
 
       const folderStructure = await this.getFolderStructureForProject(subj.projectId);
 
@@ -1257,6 +1357,30 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
+      const localBase = _localBackendBaseUrl();
+      if (localBase && subj.sourcePath) {
+        const u = new URL('/local/montages', localBase);
+        u.searchParams.set('subjectDir', subj.sourcePath);
+        const resp = await fetch(u.toString());
+        if (!resp.ok) return [];
+        const json = (await resp.json()) as { montages?: any[] };
+        const montages = Array.isArray(json?.montages) ? json.montages : [];
+        const withUrls = await Promise.all(
+          montages.map(async m => {
+            const p = typeof m?.path === 'string' ? m.path : undefined;
+            if (!p) return null;
+            const url = await toObjectUrl(p);
+            if (!url) return null;
+            return {
+              id: typeof m?.id === 'string' ? m.id : basename(p),
+              name: typeof m?.name === 'string' ? m.name : basename(p),
+              path: url,
+            };
+          })
+        );
+        return withUrls.filter(Boolean) as Array<{ id: string; name: string; path: string }>;
+      }
+
       const pngPaths = await listPngObjectPathsWithIndexFallback(subj, 'images/ai/montages');
       const withUrls = await Promise.all(
         pngPaths.map(async fullPath => {
@@ -1296,6 +1420,17 @@ export class SupabaseEngineAPI {
     return safe(async () => {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return { rows: [] };
+
+      const localBase = _localBackendBaseUrl();
+      if (localBase && subj.sourcePath) {
+        const u = new URL('/local/analysis/metrics', localBase);
+        u.searchParams.set('subjectDir', subj.sourcePath);
+        const resp = await fetch(u.toString());
+        if (!resp.ok) return { rows: [] };
+        const json = (await resp.json()) as any;
+        const rows = Array.isArray(json?.rows) ? json.rows : [];
+        return { rows };
+      }
 
       const prefixRel = 'analysis/metrics';
 

@@ -457,6 +457,33 @@ def _analysis_metrics_table(subject: Subject) -> Dict[str, Any]:
     return {"rows": rows}
 
 
+def _analysis_metrics_table_from_dir(subject_dir: Path) -> Dict[str, Any]:
+    analysis_dir = subject_dir.expanduser().resolve() / "Analysis"
+    p = analysis_dir / "AI_values_median_total.json"
+    if not p.exists():
+        return {"rows": []}
+    raw = json.loads(p.read_text())
+
+    rows: List[Dict[str, Any]] = []
+    for k, v in raw.items():
+        if not isinstance(v, dict):
+            continue
+        if not k.endswith("_median_total"):
+            continue
+        region = k.replace("_median_total", "")
+        row: Dict[str, Any] = {
+            "region": region,
+            "Ki": v.get("Ki"),
+            "CBF": v.get("CBF_tikhonov"),
+            "MTT": v.get("MTT_tikhonov"),
+            "CTH": v.get("CTH_tikhonov"),
+        }
+        rows.append(row)
+
+    rows.sort(key=lambda r: r.get("region") or "")
+    return {"rows": rows}
+
+
 def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
     _require_numpy()
     assert np is not None
@@ -502,6 +529,72 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
             if pth and pth.exists():
                 vals = np.load(str(pth)).astype(float).tolist()
                 curves.append({"id": f"tissue_{subtype_dir.name}", "name": f"Tissue ({subtype_dir.name})", "timePoints": time_points, "values": vals, "unit": "mM"})
+                count += 1
+                if count >= 3:
+                    break
+
+    return curves
+
+
+def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
+    _require_numpy()
+    assert np is not None
+    analysis_dir = subject_dir.expanduser().resolve() / "Analysis"
+    time_path = analysis_dir / "Fitting" / "time_points_s.npy"
+    if not time_path.exists():
+        return []
+    time_points = np.load(str(time_path)).astype(float).tolist()
+
+    curves: List[Dict[str, Any]] = []
+
+    def pick_curve(glob_path: Path) -> Optional[Path]:
+        matches = sorted(glob_path.parent.glob(glob_path.name))
+        return matches[0] if matches else None
+
+    artery_dir = analysis_dir / "CTC Data" / "Artery"
+    if artery_dir.exists():
+        for subtype_dir in sorted([d for d in artery_dir.iterdir() if d.is_dir()]):
+            pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
+            if pth and pth.exists():
+                vals = np.load(str(pth)).astype(float).tolist()
+                curves.append({
+                    "id": f"aif_{subtype_dir.name}",
+                    "name": f"AIF ({subtype_dir.name})",
+                    "timePoints": time_points,
+                    "values": vals,
+                    "unit": "mM",
+                })
+                break
+
+    vein_dir = analysis_dir / "CTC Data" / "Vein"
+    if vein_dir.exists():
+        for subtype_dir in sorted([d for d in vein_dir.iterdir() if d.is_dir()]):
+            pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
+            if pth and pth.exists():
+                vals = np.load(str(pth)).astype(float).tolist()
+                curves.append({
+                    "id": f"vif_{subtype_dir.name}",
+                    "name": f"VIF ({subtype_dir.name})",
+                    "timePoints": time_points,
+                    "values": vals,
+                    "unit": "mM",
+                })
+                break
+
+    tissue_dir = analysis_dir / "CTC Data" / "Tissue"
+    if tissue_dir.exists():
+        count = 0
+        for subtype_dir in sorted([d for d in tissue_dir.iterdir() if d.is_dir()]):
+            pth = pick_curve(subtype_dir / "CTC_slice_*.npy")
+            if pth and pth.exists():
+                vals = np.load(str(pth)).astype(float).tolist()
+                curves.append({
+                    "id": f"tissue_{subtype_dir.name}",
+                    "name": f"Tissue ({subtype_dir.name})",
+                    "timePoints": time_points,
+                    "values": vals,
+                    "unit": "mM",
+                })
                 count += 1
                 if count >= 3:
                     break
@@ -607,6 +700,54 @@ def _analysis_map_volumes(subject: Subject) -> List[Dict[str, Any]]:
         maps.append({"id": "fa", "name": "FA Map", "unit": "fraction", "path": str(legacy_fa), "group": "diffusion"})
 
     return maps
+
+
+def _analysis_map_volumes_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
+    analysis_dir = subject_dir.expanduser().resolve() / "Analysis"
+    maps: List[Dict[str, Any]] = []
+
+    atlas_maps = [
+        ("ki_atlas", "Ki Map (atlas)", "ml/100g/min", analysis_dir / "Ki_map_atlas.nii.gz"),
+        ("sd_ki_atlas", "SD Ki Map (atlas)", "ml/100g/min", analysis_dir / "SD_Ki_map_atlas.nii.gz"),
+        ("vp_atlas", "vp Map (atlas)", "fraction", analysis_dir / "vp_map_atlas.nii.gz"),
+        ("cbf_tikh_atlas", "CBF Map (tikhonov, atlas)", "ml/100g/min", analysis_dir / "CBF_tikhonov_map_atlas.nii.gz"),
+        ("mtt_tikh_atlas", "MTT Map (tikhonov, atlas)", "s", analysis_dir / "MTT_tikhonov_map_atlas.nii.gz"),
+        ("cth_tikh_atlas", "CTH Map (tikhonov, atlas)", "s", analysis_dir / "CTH_tikhonov_map_atlas.nii.gz"),
+    ]
+    for map_id, name, unit, path in atlas_maps:
+        if path.exists():
+            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "modelling"})
+
+    diffusion_dir = analysis_dir / "diffusion"
+    diffusion_maps = [
+        ("fa", "FA Map", "fraction", diffusion_dir / "fa_map.nii.gz"),
+        ("md", "MD Map", "mm²/s", diffusion_dir / "md_map.nii.gz"),
+        ("ad", "AD Map", "mm²/s", diffusion_dir / "ad_map.nii.gz"),
+        ("rd", "RD Map", "mm²/s", diffusion_dir / "rd_map.nii.gz"),
+    ]
+    for map_id, name, unit, path in diffusion_maps:
+        if path.exists():
+            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "diffusion"})
+
+    legacy_fa = analysis_dir / "FA_map.nii.gz"
+    if legacy_fa.exists() and not any(m.get("id") == "fa" for m in maps):
+        maps.append({"id": "fa", "name": "FA Map", "unit": "fraction", "path": str(legacy_fa), "group": "diffusion"})
+
+    return maps
+
+
+def _montage_images_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
+    montage_dir = subject_dir.expanduser().resolve() / "Images" / "AI" / "Montages"
+    if not montage_dir.exists():
+        return []
+    images: List[Dict[str, Any]] = []
+    for p in sorted(montage_dir.glob("*.png")):
+        if not p.is_file():
+            continue
+        if p.name.startswith("._") or p.name == ".DS_Store":
+            continue
+        images.append({"id": p.stem, "name": p.name, "path": str(p)})
+    return images
 
 
 def _montage_dir_for_subject(subject: Subject) -> Path:
@@ -1147,6 +1288,134 @@ def spark_loaded() -> Dict[str, Any]:
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {"ok": True, "time": _now_iso()}
+
+
+def _allowed_roots() -> List[Path]:
+    raw = os.environ.get("PBRAIN_ALLOWED_ROOTS")
+    if raw is None:
+        raw = os.environ.get("PBRAIN_STORAGE_ROOT")
+    roots = []
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            roots.append(Path(p).expanduser().resolve())
+        except Exception:
+            continue
+    return roots
+
+
+def _require_allowed_roots() -> List[Path]:
+    roots = _allowed_roots()
+    if not roots:
+        raise HTTPException(
+            status_code=400,
+            detail="Local file access disabled. Set PBRAIN_STORAGE_ROOT (or PBRAIN_ALLOWED_ROOTS) on the backend.",
+        )
+    return roots
+
+
+def _assert_path_allowed(p: Path) -> Path:
+    roots = _require_allowed_roots()
+    try:
+        rp = p.expanduser().resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    for r in roots:
+        try:
+            if rp.is_relative_to(r):
+                return rp
+        except Exception:
+            # Python <3.9 compatibility not needed here, but keep safe.
+            rp_str = str(rp)
+            r_str = str(r)
+            if rp_str == r_str or rp_str.startswith(r_str.rstrip(os.sep) + os.sep):
+                return rp
+    raise HTTPException(status_code=403, detail="Path not allowed")
+
+
+@app.get("/local/list")
+def local_list(dir: str, glob: str = "*", recursive: bool = True, limit: int = 500) -> Dict[str, Any]:
+    """List files under a local directory (guarded by PBRAIN_STORAGE_ROOT).
+
+    Intended for local-only UI use. Returns absolute paths.
+    """
+
+    root = _assert_path_allowed(Path(dir))
+    if not root.exists() or not root.is_dir():
+        return {"files": []}
+
+    max_n = int(limit) if isinstance(limit, (int, str)) else 500
+    max_n = max(1, min(max_n, 5000))
+
+    patt = str(glob or "*")
+    out: List[Dict[str, Any]] = []
+
+    # Use fnmatch against relative paths for flexibility.
+    def iter_paths() -> Any:
+        if recursive:
+            yield from root.rglob("*")
+        else:
+            yield from root.glob("*")
+
+    for p in iter_paths():
+        if len(out) >= max_n:
+            break
+        if not p.is_file():
+            continue
+        if p.name == ".DS_Store" or p.name.startswith("._"):
+            continue
+        rel = p.relative_to(root).as_posix()
+        if not fnmatch.fnmatch(rel, patt) and not fnmatch.fnmatch(p.name, patt):
+            continue
+        out.append({"name": p.name, "path": str(p)})
+
+    return {"files": out}
+
+
+@app.get("/local/file")
+def local_file(path: str) -> FileResponse:
+    """Serve a local file by absolute path (guarded by PBRAIN_STORAGE_ROOT)."""
+
+    p = _assert_path_allowed(Path(path))
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    lower = p.name.lower()
+    if lower.endswith(".nii") or lower.endswith(".nii.gz"):
+        mt = "application/octet-stream"
+    elif lower.endswith(".json"):
+        mt = "application/json"
+    elif lower.endswith(".png"):
+        mt = "image/png"
+    else:
+        mt = "application/octet-stream"
+    return FileResponse(str(p), media_type=mt)
+
+
+@app.get("/local/analysis/curves")
+def local_analysis_curves(subjectDir: str) -> Dict[str, Any]:
+    d = _assert_path_allowed(Path(subjectDir))
+    return {"curves": _analysis_curves_from_dir(d)}
+
+
+@app.get("/local/analysis/maps")
+def local_analysis_maps(subjectDir: str) -> Dict[str, Any]:
+    d = _assert_path_allowed(Path(subjectDir))
+    return {"maps": _analysis_map_volumes_from_dir(d)}
+
+
+@app.get("/local/analysis/metrics")
+def local_analysis_metrics(subjectDir: str) -> Dict[str, Any]:
+    d = _assert_path_allowed(Path(subjectDir))
+    return _analysis_metrics_table_from_dir(d)
+
+
+@app.get("/local/montages")
+def local_montages(subjectDir: str) -> Dict[str, Any]:
+    d = _assert_path_allowed(Path(subjectDir))
+    return {"montages": _montage_images_from_dir(d)}
 
 
 @app.post("/_spark/loaded")
