@@ -39,6 +39,8 @@ export interface Subject {
 export interface FolderStructureConfig {
   subjectFolderPattern: string;
   t1Pattern: string;
+  t2Pattern: string;
+  flairPattern: string;
   dcePattern: string;
   diffusionPattern: string;
   niftiSubfolder: string;
@@ -213,6 +215,8 @@ export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {
   // Defaults aligned with p-brain `utils/parameters.py` conventions.
   // Patterns are comma-separated fallbacks (first match wins).
   t1Pattern: 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*',
+  t2Pattern: 'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,ax*WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,WIPAxT2TSEmatrix.nii*,*T2*.nii*',
+  flairPattern: 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,ax*WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,*FLAIR*.nii*',
   dcePattern: 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*',
   diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
   niftiSubfolder: 'NIfTI',

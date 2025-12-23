@@ -425,27 +425,27 @@ export class SupabaseEngineAPI {
     const sb = supabase as any;
 
     let cancelled = false;
-    let lastCount = 0;
+    let lastId = 0;
 
     const tick = async () => {
       try {
         const { data, error } = await sb
           .from('job_events')
-          .select('ts, level, message')
+          .select('id, ts, level, message')
           .eq('job_id', jobId)
-          .order('ts', { ascending: true })
+          .gt('id', lastId)
+          .order('id', { ascending: true })
           .limit(200);
         if (cancelled) return;
         if (error || !data) return;
 
-        if (data.length > lastCount) {
-          const fresh = data.slice(lastCount);
-          fresh.forEach((row: any) => {
-            const ts = row.ts ? new Date(row.ts).toISOString() : '';
-            listener(`${ts} [${row.level ?? 'info'}] ${row.message ?? ''}`);
-          });
-          lastCount = data.length;
-        }
+
+        (data as any[]).forEach((row: any) => {
+          const ts = row.ts ? new Date(row.ts).toISOString() : '';
+          listener(`${ts} [${row.level ?? 'info'}] ${row.message ?? ''}`);
+          const idNum = Number(row.id ?? 0);
+          if (Number.isFinite(idNum) && idNum > lastId) lastId = idNum;
+        });
       } catch {
         /* ignore */
       }
@@ -734,39 +734,60 @@ export class SupabaseEngineAPI {
   }
 
   async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
-    // Queue one job per subject with a payload the local runner can resolve.
+    // Queue one job per stage per subject with a payload the local runner can resolve.
     return safe(async () => {
       const sb = supabase! as any;
+
+      const { data: projRow, error: pErr } = await sb.from('projects').select('id, config').eq('id', projectId).maybeSingle();
+      if (pErr) throw pErr;
+      const folderStructure = (projRow?.config?.folderStructure ?? DEFAULT_CONFIG.folderStructure) as any;
+
       const { data: subjects, error: sErr } = await sb
         .from('subjects')
-        .select('id, source_path')
+        .select('id, name, source_path')
         .in('id', subjectIds);
       if (sErr) throw sErr;
-      const rows = (subjects || []).map((s: any) => ({
-        project_id: projectId,
-        subject_id: s.id,
-        stage_id: 'import',
-        status: 'queued',
-        progress: 0,
-        current_step: 'Queued (waiting for runner)',
-        payload: {
-          relative_path: s.source_path ?? '',
-          subject_id: s.id,
-        },
-      }));
-      if (rows.length === 0) return [];
 
-      // Persist a "running" indicator immediately so the dashboard dots reflect queued work.
-      // (External runners may take a moment to claim jobs.)
+      const normalized = (subjects || []).map((s: any) => ({
+        id: String(s.id),
+        name: String(s.name ?? ''),
+        sourcePath: String(s.source_path ?? ''),
+      }));
+      if (normalized.length === 0) return [];
+
+      // Reset stage statuses so dots represent this run (and persist across refresh).
       await Promise.all(
-        subjectIds.map(async sid => {
+        normalized.map(async s => {
           try {
-            await this.updateSubjectStage(sid, 'import', 'running');
+            await sb.from('subjects').update({ stage_statuses: emptyStageStatuses() }).eq('id', s.id);
           } catch {
             /* ignore */
           }
         })
       );
+
+      const rows: any[] = [];
+      for (const s of normalized) {
+        for (let i = 0; i < STAGES.length; i++) {
+          const stageId = STAGES[i];
+          rows.push({
+            project_id: projectId,
+            subject_id: s.id,
+            stage_id: stageId,
+            status: 'queued',
+            progress: 0,
+            current_step: 'Queued (waiting for runner)',
+            payload: {
+              relative_path: s.sourcePath,
+              pbrain_id: s.name || undefined,
+              subject_id: s.id,
+              stage_index: i,
+              folder_structure: folderStructure,
+            },
+          });
+        }
+      }
+
       const { data, error } = await sb.from('jobs').insert(rows).select('*');
       if (error) throw error;
       return (data || []).map(mapJobRow);

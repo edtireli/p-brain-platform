@@ -219,6 +219,9 @@ const PRESET_STRUCTURES = [
       subjectFolderPattern: '{subject_id}',
       // Comma-separated fallbacks (first match wins)
       t1Pattern: 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*',
+      t2Pattern:
+        'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,ax*WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,WIPAxT2TSEmatrix.nii*,*T2*.nii*',
+      flairPattern: 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,ax*WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,*FLAIR*.nii*',
       dcePattern: 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*',
       diffusionPattern: 'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*',
       niftiSubfolder: 'NIfTI',
@@ -233,6 +236,8 @@ const PRESET_STRUCTURES = [
     config: {
       subjectFolderPattern: 'sub-{subject_id}',
       t1Pattern: 'anat/*T1w*.nii.gz',
+      t2Pattern: 'anat/*T2w*.nii.gz',
+      flairPattern: 'anat/*FLAIR*.nii.gz',
       dcePattern: 'perf/*dce*.nii.gz',
       diffusionPattern: 'dwi/*dwi*.nii.gz',
       niftiSubfolder: '',

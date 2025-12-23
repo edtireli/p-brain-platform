@@ -40,6 +40,7 @@ function usage(msg) {
       'Notes:',
       '  - Uploads a small set of p-brain outputs so the GitHub Pages UI can render in Supabase-only mode.',
       '  - Upload paths are normalized to avoid spaces and macOS junk files.',
+      '  - By default, does NOT upload Analysis/**/*.nii* (too large); enable with --upload-analysis-niftis true.',
     ].join('\n')
   );
   process.exit(1);
@@ -203,6 +204,7 @@ async function main() {
 
   const uploadPngs = args['upload-pngs'] === false ? false : (String(args['upload-pngs'] || 'true').toLowerCase() !== 'false');
   const uploadNiftis = args['upload-niftis'] === false ? false : (String(args['upload-niftis'] || 'true').toLowerCase() !== 'false');
+  const uploadAnalysisNiftis = String(args['upload-analysis-niftis'] || 'false').toLowerCase() === 'true' || args['upload-analysis-niftis'] === true;
   const uploadAllSourceNiftis = String(args['upload-all-source-niftis'] || 'false').toLowerCase() === 'true' || args['upload-all-source-niftis'] === true;
   const maxUploadMb = Number(args['max-upload-mb'] || process.env.PBRAIN_MAX_UPLOAD_MB || 45);
   const maxUploadBytes = Number.isFinite(maxUploadMb) && maxUploadMb > 0 ? Math.floor(maxUploadMb * 1024 * 1024) : 45 * 1024 * 1024;
@@ -378,8 +380,8 @@ async function main() {
     }
   }
 
-  // Analysis map volumes (nii/nii.gz) - these are the "real" p-brain computed maps.
-  if (uploadNiftis) {
+  // Analysis map volumes (nii/nii.gz) - optional (usually too large).
+  if (uploadAnalysisNiftis && uploadNiftis) {
     const analysisRoot = path.join(subjectDir, 'Analysis');
     const niftiLike = await listFilesRecursive(analysisRoot, ['.nii', '.nii.gz']);
     for (const f of niftiLike) {

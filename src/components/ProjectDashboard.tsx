@@ -4,6 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -15,6 +18,7 @@ import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
 import { FolderStructureConfig as FolderStructureConfigComponent } from './FolderStructureConfig';
 import { motion, AnimatePresence } from 'framer-motion';
+import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
 
 interface DetectedSubject {
   name: string;
@@ -26,6 +30,77 @@ interface ProjectDashboardProps {
   projectId: string;
   onBack: () => void;
   onSelectSubject: (subjectId: string) => void;
+}
+
+const STAGES: StageId[] = [
+  'import',
+  't1_fit',
+  'input_functions',
+  'time_shift',
+  'segmentation',
+  'tissue_ctc',
+  'modelling',
+  'diffusion',
+  'montage_qc',
+];
+
+function normalizeStageStatuses(stageStatuses: Partial<Record<StageId, StageStatus>> | undefined | null) {
+  const out: Record<StageId, StageStatus> = {} as any;
+  for (const s of STAGES) out[s] = 'not_run';
+  if (stageStatuses) {
+    for (const [k, v] of Object.entries(stageStatuses)) {
+      if (!(STAGES as readonly string[]).includes(k) || !v) continue;
+      // Back-compat: older values leaked into the DB.
+      if (v === ('pending' as any)) {
+        out[k as StageId] = 'not_run';
+        continue;
+      }
+      out[k as StageId] = v as StageStatus;
+    }
+  }
+  return out;
+}
+
+function mergeStageStatusesFromJobs(
+  subject: Subject,
+  jobs: Job[]
+): Record<StageId, StageStatus> {
+  const next = normalizeStageStatuses(subject.stageStatuses);
+
+  const perStage = new Map<StageId, Job[]>();
+  for (const j of jobs) {
+    if (!j.subjectId) continue;
+    if (j.subjectId !== subject.id) continue;
+    const stageId = j.stageId as StageId;
+    if (!STAGES.includes(stageId)) continue;
+    const arr = perStage.get(stageId) || [];
+    arr.push(j);
+    perStage.set(stageId, arr);
+  }
+
+  // Precedence: running > failed > completed. Do NOT treat queued jobs as running;
+  // queued work should not overwrite persisted stage_statuses.
+  for (const stageId of STAGES) {
+    const arr = perStage.get(stageId) || [];
+    if (arr.some(j => j.status === 'running')) {
+      next[stageId] = 'running';
+      continue;
+    }
+    if (arr.some(j => j.status === 'failed')) {
+      next[stageId] = 'failed';
+      continue;
+    }
+    if (arr.some(j => j.status === 'cancelled')) {
+      next[stageId] = 'failed';
+      continue;
+    }
+    if (arr.some(j => j.status === 'completed')) {
+      next[stageId] = 'done';
+      continue;
+    }
+  }
+
+  return next;
 }
 
 export function ProjectDashboard({ projectId, onBack, onSelectSubject }: ProjectDashboardProps) {
@@ -44,6 +119,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const [detectedSubjects, setDetectedSubjects] = useState<DetectedSubject[]>([]);
   const [droppedFolderName, setDroppedFolderName] = useState<string>('');
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const [draftFolderStructure, setDraftFolderStructure] = useState<FolderStructureConfig>(DEFAULT_FOLDER_STRUCTURE);
 
   const [isScanning, setIsScanning] = useState(false);
 
@@ -55,6 +131,11 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       const jobs = await engine.getJobs({ projectId });
       const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
       setActiveJobsCount(active);
+
+      // Keep stage dots correct even if realtime status updates are missed.
+      setSubjects(prev =>
+        prev.map(s => ({ ...s, stageStatuses: mergeStageStatusesFromJobs(s, jobs) }))
+      );
 
       // Persist the per-subject running indicator across navigation by deriving it
       // from the current jobs table, not transient component state.
@@ -165,7 +246,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
 
   const loadSubjects = async () => {
     const data = await engine.getSubjects(projectId);
-    setSubjects(data);
+    setSubjects(data.map(s => ({ ...s, stageStatuses: normalizeStageStatuses(s.stageStatuses) })));
   };
 
   const handleSaveFolderConfig = async (config: FolderStructureConfig) => {
@@ -287,11 +368,18 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     }));
 
     try {
+      try {
+        await engine.updateProjectConfig(projectId, { folderStructure: draftFolderStructure });
+      } catch (err) {
+        toast.error('Failed to save folder structure config');
+        console.error(err);
+      }
       await engine.importSubjects(projectId, subjectsToImport);
       toast.success(`Imported ${subjectsToImport.length} subject${subjectsToImport.length > 1 ? 's' : ''}`);
       setIsAddDialogOpen(false);
       setDetectedSubjects([]);
       setDroppedFolderName('');
+      setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
       loadSubjects();
     } catch (error) {
       toast.error('Failed to import subjects');
@@ -302,6 +390,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
   const handleClearDropped = () => {
     setDetectedSubjects([]);
     setDroppedFolderName('');
+    setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
   };
 
   const handleScanAndImport = async () => {
@@ -483,17 +572,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
     return <div className="flex h-screen items-center justify-center">Loading...</div>;
   }
 
-  const stages: StageId[] = [
-    'import',
-    't1_fit',
-    'input_functions',
-    'time_shift',
-    'segmentation',
-    'tissue_ctc',
-    'modelling',
-    'diffusion',
-    'montage_qc',
-  ];
+  const stages: StageId[] = STAGES;
 
   return (
     <div className="min-h-screen bg-background">
@@ -574,7 +653,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 className="gap-2"
               >
                 <FolderOpen size={18} />
-                {isScanning ? 'Scanning…' : 'Scan & add subjects'}
+                {isScanning ? 'Importing…' : 'Automatically Import subjects'}
               </Button>
 
               <FolderStructureConfigComponent 
@@ -703,6 +782,72 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                             ))}
                           </div>
                         </ScrollArea>
+
+                        <div className="space-y-3 rounded-lg border border-border p-4">
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-muted-foreground">Folder matching</div>
+                            <div className="text-xs text-muted-foreground">
+                              Configure how the worker finds NIfTI files inside each subject folder.
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">Subject folder pattern</Label>
+                              <Input
+                                value={draftFolderStructure.subjectFolderPattern}
+                                onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, subjectFolderPattern: e.target.value }))}
+                                placeholder="{subject_id}"
+                                className="mono"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">NIfTI subfolder</Label>
+                              <Input
+                                value={draftFolderStructure.niftiSubfolder}
+                                onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, niftiSubfolder: e.target.value }))}
+                                placeholder="NIfTI"
+                                className="mono"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-1">
+                              <Label className="text-xs font-medium">Treat data as nested structure</Label>
+                              <div className="text-xs text-muted-foreground">If enabled, the worker looks under the NIfTI subfolder for volumes.</div>
+                            </div>
+                            <Switch
+                              checked={draftFolderStructure.useNestedStructure}
+                              onCheckedChange={(checked) => setDraftFolderStructure(prev => ({ ...prev, useNestedStructure: checked }))}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label className="text-xs text-muted-foreground">T1 filename patterns (comma-separated)</Label>
+                            <Input
+                              value={draftFolderStructure.t1Pattern}
+                              onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, t1Pattern: e.target.value }))}
+                              className="mono"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs text-muted-foreground">DCE filename patterns (comma-separated)</Label>
+                            <Input
+                              value={draftFolderStructure.dcePattern}
+                              onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, dcePattern: e.target.value }))}
+                              className="mono"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs text-muted-foreground">Diffusion filename patterns (comma-separated)</Label>
+                            <Input
+                              value={draftFolderStructure.diffusionPattern}
+                              onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, diffusionPattern: e.target.value }))}
+                              className="mono"
+                            />
+                          </div>
+                        </div>
                       </div>
                     )}
 
@@ -744,17 +889,42 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
 
       <div className="mx-auto max-w-full p-6">
         {subjects.length === 0 ? (
-          <Card className="border-dashed">
+          <Card
+            className={`border-dashed ${isDragging ? 'border-accent bg-accent/5' : ''}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+              setIsAddDialogOpen(true);
+              if (e.dataTransfer.items) processDroppedItems(e.dataTransfer.items);
+            }}
+          >
             <CardContent className="flex flex-col items-center justify-center py-16">
               <UserPlus size={64} className="mb-4 text-muted-foreground" />
               <h3 className="mb-2 text-base font-medium">No subjects yet</h3>
               <p className="mb-6 text-center text-sm text-muted-foreground">
-                Add subjects to begin neuroimaging analysis
+                {isDragging ? 'Drop a subjects folder here' : 'Add subjects to begin neuroimaging analysis'}
               </p>
-              <Button onClick={() => setIsAddDialogOpen(true)} className="gap-2">
-                <UserPlus size={20} weight="bold" />
-                Add Subjects
-              </Button>
+              <div className="flex items-center gap-3">
+                <Button onClick={() => setIsAddDialogOpen(true)} className="gap-2">
+                  <UserPlus size={20} weight="bold" />
+                  Add Subjects
+                </Button>
+                <Button variant="secondary" onClick={handleScanAndImport} disabled={isScanning} className="gap-2">
+                  <FolderOpen size={18} />
+                  {isScanning ? 'Importing…' : 'Automatically Import subjects'}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         ) : (
@@ -804,8 +974,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                     </thead>
                     <tbody>
                       {subjects.map((subject, index) => {
-                        const isSubjectRunning = runningSubjectIds.has(subject.id) || 
-                          Object.values(subject.stageStatuses).some(s => s === 'running');
+                        const isSubjectRunning = runningSubjectIds.has(subject.id) ||
+                          Object.values(subject.stageStatuses || {}).some(s => s === 'running');
                         const isSelected = selectedSubjectIds.has(subject.id);
                         
                         return (
