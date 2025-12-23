@@ -1,6 +1,7 @@
 import type {
   Curve,
   DeconvolutionData,
+  FolderStructureConfig,
   Job,
   JobStatus,
   MapVolume,
@@ -258,31 +259,114 @@ function _looksAxialVariant(nameLower: string): boolean {
   return nameLower.startsWith('ax') || nameLower.startsWith('ax_') || nameLower.startsWith('ax-');
 }
 
+function _parseCommaPatterns(raw: unknown): string[] {
+  return String(raw ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function _globToRegExp(glob: string): RegExp {
+  // Minimal glob -> RegExp.
+  // Supports: * and ? (and treats ** same as *).
+  const s = String(glob ?? '').trim();
+  let out = '^';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '*') {
+      // Collapse consecutive *.
+      while (i + 1 < s.length && s[i + 1] === '*') i++;
+      out += '.*';
+      continue;
+    }
+    if (ch === '?') {
+      out += '.';
+      continue;
+    }
+    // Escape regexp special chars.
+    if ('\\^$+.|(){}[]'.includes(ch)) out += `\\${ch}`;
+    else out += ch;
+  }
+  out += '$';
+  return new RegExp(out, 'i');
+}
+
+function _matchesAnyPattern(filenameOrPath: string, patterns: string[]): boolean {
+  const target = _stripQuery(filenameOrPath);
+  const base = basename(target);
+  for (const pat of patterns) {
+    if (!pat) continue;
+    const re = _globToRegExp(pat);
+    // Match either basename (common) or the whole string (in case the pattern includes folders).
+    if (re.test(base) || re.test(target)) return true;
+  }
+  return false;
+}
+
+function _patternsForKind(fs: FolderStructureConfig | null | undefined, kind: string): string[] {
+  const cfg = fs ?? DEFAULT_CONFIG.folderStructure;
+  if (kind === 't1') return _parseCommaPatterns(cfg.t1Pattern);
+  if (kind === 't2') return _parseCommaPatterns(cfg.t2Pattern);
+  if (kind === 'flair') return _parseCommaPatterns(cfg.flairPattern);
+  if (kind === 'dce') return _parseCommaPatterns(cfg.dcePattern);
+  if (kind === 'diffusion') return _parseCommaPatterns(cfg.diffusionPattern);
+  return [];
+}
+
 function inferVolumeKindFromFilename(filenameOrPath: string): string {
+  // Fallback only (when no explicit kind and no folderStructure config available).
+  // Keep this generic; do not hardcode scanner-specific filenames.
   const n = _lowerBase(filenameOrPath);
-  // p-brain utils/parameters.py conventions
-  if (n.includes('wipcs_t1w_3d_tfe_32channel')) return 't1';
-  if (n.includes('wipcs_3d_brain_view_t2_32chshc') || n.includes('wipaxt2tsematrix')) return 't2';
-  if (n.includes('wipcs_3d_brain_view_flair_shc')) return 'flair';
-  if (n.includes('wipdelrec-hperf120long') || n.includes('wiphperf120long')) return 'dce';
-  if (n.includes('reg-dwinysense') || n.includes('isodwib-1000') || n.includes('wipdti_rsi') || n.includes('wipdwi_rsi')) return 'diffusion';
+  if (n.includes('flair')) return 'flair';
+  if (n.includes('t2')) return 't2';
+  if (n.includes('t1')) return 't1';
+  if (n.includes('dce') || n.includes('perf')) return 'dce';
+  if (n.includes('dwi') || n.includes('dti') || n.includes('adc') || n.includes('diff')) return 'diffusion';
   return '';
 }
 
-const _DIFFUSION_PRIORITY_BASENAMES = [
-  'reg-dwinysense.nii',
-  'reg-dwinysense.nii.gz',
-  'reg-dwinysense_adc.nii',
-  'reg-dwinysense_adc.nii.gz',
-  'isodwib-1000.nii',
-  'isodwib-1000.nii.gz',
-  'wipdti_rsi_p.nii',
-  'wipdti_rsi_p.nii.gz',
-  'wipdti_rsi_a.nii',
-  'wipdti_rsi_a.nii.gz',
-  'wipdwi_rsi_p.nii',
-  'wipdwi_rsi_p.nii.gz',
-];
+function inferVolumeKindFromFolderStructure(
+  filenameOrPath: string,
+  folderStructure: FolderStructureConfig | null | undefined
+): string {
+  // Priority order for matching: T1/T2/FLAIR/DCE first; diffusion is optional.
+  const fs = folderStructure ?? DEFAULT_CONFIG.folderStructure;
+  const priority: Array<{ kind: string; patterns: string[] }> = [
+    { kind: 't1', patterns: _parseCommaPatterns(fs.t1Pattern) },
+    { kind: 't2', patterns: _parseCommaPatterns(fs.t2Pattern) },
+    { kind: 'flair', patterns: _parseCommaPatterns(fs.flairPattern) },
+    { kind: 'dce', patterns: _parseCommaPatterns(fs.dcePattern) },
+    { kind: 'diffusion', patterns: _parseCommaPatterns(fs.diffusionPattern) },
+  ];
+  for (const { kind, patterns } of priority) {
+    if (patterns.length === 0) continue;
+    if (_matchesAnyPattern(filenameOrPath, patterns)) return kind;
+  }
+  return '';
+}
+
+function _pickByPatternOrder(
+  vols: VolumeFile[],
+  patterns: string[],
+  opts: { preferNonAxial: boolean }
+): VolumeFile | undefined {
+  const { preferNonAxial } = opts;
+  if (patterns.length === 0) return undefined;
+  const byName = vols.map(v => ({ v, name: String(v.name || v.path || '') }));
+  for (const pat of patterns) {
+    const re = _globToRegExp(pat);
+    const matches = byName
+      .filter(({ name }) => re.test(basename(_stripQuery(name))) || re.test(_stripQuery(name)))
+      .map(({ v }) => v);
+    if (matches.length === 0) continue;
+    if (preferNonAxial) {
+      const nonAx = matches.find(m => !_looksAxialVariant(_lowerBase(m.name || m.path)));
+      if (nonAx) return nonAx;
+    }
+    return matches[0];
+  }
+  return undefined;
+}
 
 type ArtifactIndex = {
   paths?: string[];
@@ -310,6 +394,8 @@ export class SupabaseEngineAPI {
   private jobsChannel: any | undefined;
   private subjectsChannel: any | undefined;
 
+  private folderStructureCache = new Map<string, FolderStructureConfig>();
+
   private workerAbort = false;
   private workerPromise: Promise<void> | undefined;
   private authUnsub: any | undefined;
@@ -336,6 +422,23 @@ export class SupabaseEngineAPI {
       // No in-browser worker. Jobs must be processed by an external worker.
       this.stopLocalWorker();
     }
+  }
+
+  private async getFolderStructureForProject(projectId: string): Promise<FolderStructureConfig> {
+    const cached = this.folderStructureCache.get(projectId);
+    if (cached) return cached;
+
+    const fs = await safe(async () => {
+      const sb = supabase! as any;
+      const { data, error } = await sb.from('projects').select('config').eq('id', projectId).maybeSingle();
+      if (error) throw error;
+      const next = (data?.config?.folderStructure ?? DEFAULT_CONFIG.folderStructure) as FolderStructureConfig;
+      this.folderStructureCache.set(projectId, next);
+      return next;
+    }, DEFAULT_CONFIG.folderStructure);
+
+    this.folderStructureCache.set(projectId, fs);
+    return fs;
   }
 
   private broadcastJob(job: Job) {
@@ -684,6 +787,8 @@ export class SupabaseEngineAPI {
         .select('*')
         .maybeSingle();
       if (error) throw error;
+      const nextFs = (nextConfig?.folderStructure ?? DEFAULT_CONFIG.folderStructure) as FolderStructureConfig;
+      this.folderStructureCache.set(projectId, nextFs);
       return row ? mapProjectRow(row) : undefined;
     }, undefined);
   }
@@ -903,6 +1008,9 @@ export class SupabaseEngineAPI {
       return maps[0]?.path ?? '';
     }
 
+    const subj = await this.getSubject(_subjectId);
+    const folderStructure = subj ? await this.getFolderStructureForProject(subj.projectId) : DEFAULT_CONFIG.folderStructure;
+
     const vols = await this.getVolumes(_subjectId);
     const kindLower = kindLower0;
 
@@ -910,39 +1018,29 @@ export class SupabaseEngineAPI {
     const explicit = vols.find(v => String(v.kind || '').toLowerCase() === kindLower)?.path;
     if (explicit) return explicit;
 
-    // 2) Try filename inference.
-    const inferredHit = vols.find(v => inferVolumeKindFromFilename(v.name || v.path) === kindLower)?.path;
-    if (inferredHit) return inferredHit;
+    // 2) Try folderStructure patterns (project config).
+    const inferredCfgHit = vols.find(v => inferVolumeKindFromFolderStructure(v.name || v.path, folderStructure) === kindLower)?.path;
+    if (inferredCfgHit) return inferredCfgHit;
 
-    // 3) Diffusion: honor ordered candidates (utils/parameters.py)
-    if (kindLower === 'diffusion') {
-      const byBase = new Map(vols.map(v => [_lowerBase(v.name || v.path), v.path] as const));
-      for (const b of _DIFFUSION_PRIORITY_BASENAMES) {
-        const hit = byBase.get(b);
-        if (hit) return hit;
-      }
-    }
+    // 3) Try generic filename inference (fallback only).
+    const inferredLooseHit = vols.find(v => inferVolumeKindFromFilename(v.name || v.path) === kindLower)?.path;
+    if (inferredLooseHit) return inferredLooseHit;
 
-    // 4) DCE: prefer DelRec fallback when present.
+    // 4) Select by pattern order (respects comma-separated fallbacks).
+    const patterns = _patternsForKind(folderStructure, kindLower);
+    const picked = _pickByPatternOrder(vols, patterns, { preferNonAxial: kindLower === 't1' || kindLower === 't2' || kindLower === 'flair' });
+    if (picked?.path) return picked.path;
+
+    // 5) If caller asked for DCE but it isn't available, fall back to the priority modalities.
     if (kindLower === 'dce') {
-      const fallback = vols.find(v => _lowerBase(v.name || v.path).includes('wipdelrec-hperf120long'))?.path;
-      if (fallback) return fallback;
-      const primary = vols.find(v => _lowerBase(v.name || v.path).includes('wiphperf120long'))?.path;
-      if (primary) return primary;
-    }
-
-    // 5) T2/FLAIR: prefer non-axial variant when both exist.
-    if (kindLower === 't2' || kindLower === 'flair' || kindLower === 't1') {
-      const key = kindLower === 't1'
-        ? 'wipcs_t1w_3d_tfe_32channel'
-        : kindLower === 't2'
-          ? 'wipcs_3d_brain_view_t2_32chshc'
-          : 'wipcs_3d_brain_view_flair_shc';
-      const matches = vols.filter(v => _lowerBase(v.name || v.path).includes(key));
-      const nonAx = matches.find(v => !_looksAxialVariant(_lowerBase(v.name || v.path)))?.path;
-      if (nonAx) return nonAx;
-      const ax = matches[0]?.path;
-      if (ax) return ax;
+      for (const k of ['t1', 't2', 'flair'] as const) {
+        const p = _patternsForKind(folderStructure, k);
+        const v = _pickByPatternOrder(vols, p, { preferNonAxial: true });
+        if (v?.path) return v.path;
+      }
+      // Diffusion is optional.
+      const diff = _pickByPatternOrder(vols, _patternsForKind(folderStructure, 'diffusion'), { preferNonAxial: false });
+      if (diff?.path) return diff.path;
     }
 
     return vols[0]?.path ?? '';
@@ -1039,6 +1137,8 @@ export class SupabaseEngineAPI {
       const subj = await this.getSubject(_subjectId);
       if (!subj) return [];
 
+      const folderStructure = await this.getFolderStructureForProject(subj.projectId);
+
       const indexPath = `projects/${subj.projectId}/subjects/${subj.id}/artifacts/index.json`;
       const index = await downloadJson<ArtifactIndex>(indexPath);
       const vols = (index?.volumes ?? [])
@@ -1047,7 +1147,7 @@ export class SupabaseEngineAPI {
           id: v.id || basename(v.path),
           name: v.name || basename(v.path),
           path: v.path,
-				kind: v.kind || inferVolumeKindFromFilename(v.name || v.path) || 'source',
+				kind: v.kind || inferVolumeKindFromFolderStructure(v.name || v.path, folderStructure) || inferVolumeKindFromFilename(v.name || v.path) || 'source',
         }));
       if (vols.length > 0) return vols;
 
@@ -1055,7 +1155,12 @@ export class SupabaseEngineAPI {
       const objs = await listObjects(prefix);
       const source = objs
         .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
-        .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: (inferVolumeKindFromFilename(o.name) || 'source') as any }));
+        .map(o => ({
+          id: o.name,
+          name: o.name,
+          path: o.fullPath,
+          kind: (inferVolumeKindFromFolderStructure(o.name, folderStructure) || inferVolumeKindFromFilename(o.name) || 'source') as any,
+        }));
       if (source.length > 0) return source;
 
       // If source volumes are too large to upload (Supabase Storage size limits),
