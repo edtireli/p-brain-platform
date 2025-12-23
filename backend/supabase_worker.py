@@ -394,16 +394,16 @@ def _run_pbrain(cfg: WorkerConfig, sb: SupabaseHttp, job_id: str, subject_db_id:
 
 	# Stream output so we can surface progress + stage statuses in the UI.
 	last_sent_at = 0.0
-	last_progress_sent = -1.0
+	last_progress_sent = -1
 
-	def send_job_update(*, progress: Optional[float] = None, step: Optional[str] = None, force: bool = False) -> None:
+	def send_job_update(*, progress: Optional[int] = None, step: Optional[str] = None, force: bool = False) -> None:
 		nonlocal last_sent_at, last_progress_sent
 		now = time.monotonic()
-		p = None if progress is None else float(progress)
+		p = None if progress is None else int(progress)
 		if not force:
 			if now - last_sent_at < 1.25:
 				return
-			if p is not None and abs(p - last_progress_sent) < 0.01:
+			if p is not None and abs(p - last_progress_sent) < 1:
 				# Avoid spamming tiny progress deltas.
 				p = None
 		if p is None and step is None:
@@ -411,8 +411,9 @@ def _run_pbrain(cfg: WorkerConfig, sb: SupabaseHttp, job_id: str, subject_db_id:
 		try:
 			patch: Dict[str, Any] = {}
 			if p is not None:
-				patch["progress"] = max(0.0, min(0.99, p))
-				last_progress_sent = float(patch["progress"])
+				# UI expects percent (0..100). Keep 100 for the final completion update.
+				patch["progress"] = max(0, min(99, int(p)))
+				last_progress_sent = int(patch["progress"])
 			if step is not None:
 				patch["current_step"] = step
 			_update_job(sb, job_id, patch)
@@ -422,13 +423,13 @@ def _run_pbrain(cfg: WorkerConfig, sb: SupabaseHttp, job_id: str, subject_db_id:
 
 	# Import stage is completed before calling _run_pbrain.
 	_set_subject_stage(sb, subject_db_id, "t1_fit", "running")
-	send_job_update(progress=0.12, step="T1 fitting", force=True)
+	send_job_update(progress=12, step="T1 fitting", force=True)
 
 	stage_progress = {
-		"t1_fit": (0.12, 0.30),
-		"input_functions": (0.32, 0.48),
-		"modelling": (0.50, 0.86),
-		"montage_qc": (0.88, 0.92),
+		"t1_fit": (12, 30),
+		"input_functions": (32, 48),
+		"modelling": (50, 86),
+		"montage_qc": (88, 92),
 	}
 
 	def begin_stage(stage_id: str, label: str) -> None:
@@ -504,8 +505,8 @@ def _run_pbrain(cfg: WorkerConfig, sb: SupabaseHttp, job_id: str, subject_db_id:
 			elif "Generated file:" in line or "Generated image:" in line:
 				# Nudge progress upwards but keep within the current phase ceiling.
 				p = last_progress_sent
-				if p < 0.86:
-					send_job_update(progress=min(0.86, p + 0.002))
+				if p < 86:
+					send_job_update(progress=min(86, p + 1))
 
 			rc = proc.wait()
 
@@ -601,12 +602,12 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 	if subject_db_id:
 		_set_subject_stage(sb, subject_db_id, "import", "running")
 	try:
-		_update_job(sb, job_id, {"current_step": "Import & Index", "progress": 0.02})
+		_update_job(sb, job_id, {"current_step": "Import & Index", "progress": 2})
 		has_t1, has_dce, has_diff = _scan_subject_inputs(subject_path)
 		if subject_db_id:
 			_update_subject_flags(sb, subject_db_id, has_t1=has_t1, has_dce=has_dce, has_diffusion=has_diff)
 			_set_subject_stage(sb, subject_db_id, "import", "done")
-		_update_job(sb, job_id, {"current_step": "indexed", "progress": 0.08})
+		_update_job(sb, job_id, {"current_step": "Indexed", "progress": 8})
 		_log_event(sb, job_id, "info", f"indexed inputs: t1={has_t1} dce={has_dce} diff={has_diff}")
 	except Exception as exc:
 		# Don't fail the pipeline for indexing issues; proceed to p-brain.
@@ -616,7 +617,7 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 		_run_pbrain(cfg, sb, job_id, subject_db_id, subject_id, subject_path, log_path)
 
 		# Sync artifacts so the web UI can render Viewer/Curves/Maps.
-		_update_job(sb, job_id, {"current_step": "uploading artifacts", "progress": 0.92})
+		_update_job(sb, job_id, {"current_step": "Uploading artifacts", "progress": 92})
 		_log_event(sb, job_id, "info", "syncing artifacts to Storage")
 		_sync_artifacts(cfg, job, subject_path, log_path)
 		# The sync script writes these well-known paths.
@@ -637,8 +638,8 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 			job_id,
 			{
 				"status": "completed",
-				"progress": 1,
-				"current_step": "done",
+				"progress": 100,
+				"current_step": "Done",
 				"finished_at": _utc_now_iso(),
 				"end_time": _utc_now_iso(),
 			},

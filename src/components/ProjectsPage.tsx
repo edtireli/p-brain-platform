@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 import { engine } from '@/lib/engine';
-import type { Project } from '@/types';
+import type { FolderStructureConfig, Project } from '@/types';
+import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
 import { toast } from 'sonner';
 import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
 
@@ -49,6 +50,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [storeWithPatientData, setStoreWithPatientData] = useState(true);
   const [autoFillFromFolder, setAutoFillFromFolder] = useState(true);
 	const [pendingDroppedSubjects, setPendingDroppedSubjects] = useState<Array<{ name: string; sourcePath: string }>>([]);
+  const [draftFolderStructure, setDraftFolderStructure] = useState<FolderStructureConfig>(DEFAULT_FOLDER_STRUCTURE);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
@@ -135,6 +137,14 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
         // When not storing alongside patient data, copy data into the project folder.
         copyDataIntoProject: !storeWithPatientData,
       });
+
+		// If the user configured folder matching rules, persist them before import.
+		try {
+			await engine.updateProjectConfig(project.id, { folderStructure: draftFolderStructure });
+		} catch (err) {
+			toast.error('Project created, but failed to save folder structure config');
+			console.error(err);
+		}
       
       toast.success('Project created successfully');
       setIsCreateDialogOpen(false);
@@ -142,6 +152,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       setDraftStoragePath('');
       setStoreWithPatientData(true);
       setAutoFillFromFolder(true);
+		setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
   		setPendingDroppedSubjects([]);
       loadProjects();
 
@@ -189,6 +200,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     setPendingDroppedSubjects(prefill?.subjects ?? []);
     setStoreWithPatientData(true);
     setAutoFillFromFolder(true);
+		setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
     setIsCreateDialogOpen(true);
   };
 
@@ -395,6 +407,78 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                     />
                   </div>
                 </div>
+
+        {pendingDroppedSubjects.length > 0 ? (
+          <div className="space-y-3 rounded-lg border border-border p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label>Detected subjects</Label>
+                <p className="text-xs text-muted-foreground">
+                  {pendingDroppedSubjects.length} folder{pendingDroppedSubjects.length > 1 ? 's' : ''} will be imported after project creation.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Subject folder pattern</Label>
+                <Input
+                  value={draftFolderStructure.subjectFolderPattern}
+                  onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, subjectFolderPattern: e.target.value }))}
+                  placeholder="{subject_id}"
+                  className="mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">NIfTI subfolder</Label>
+                <Input
+                  value={draftFolderStructure.niftiSubfolder}
+                  onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, niftiSubfolder: e.target.value }))}
+                  placeholder="NIfTI"
+                  className="mono"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <Label>Treat data as nested structure</Label>
+                  <p className="text-xs text-muted-foreground">If enabled, the worker looks under the NIfTI subfolder for volumes.</p>
+                </div>
+                <Switch
+                  checked={draftFolderStructure.useNestedStructure}
+                  onCheckedChange={(checked) => setDraftFolderStructure(prev => ({ ...prev, useNestedStructure: checked }))}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">T1 filename patterns (comma-separated)</Label>
+              <Input
+                value={draftFolderStructure.t1Pattern}
+                onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, t1Pattern: e.target.value }))}
+                className="mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">DCE filename patterns (comma-separated)</Label>
+              <Input
+                value={draftFolderStructure.dcePattern}
+                onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, dcePattern: e.target.value }))}
+                className="mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Diffusion filename patterns (comma-separated)</Label>
+              <Input
+                value={draftFolderStructure.diffusionPattern}
+                onChange={(e) => setDraftFolderStructure(prev => ({ ...prev, diffusionPattern: e.target.value }))}
+                className="mono"
+              />
+            </div>
+          </div>
+        ) : null}
 
                 <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">Data handling</p>
