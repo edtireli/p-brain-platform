@@ -55,6 +55,17 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       const jobs = await engine.getJobs({ projectId });
       const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
       setActiveJobsCount(active);
+
+      // Persist the per-subject running indicator across navigation by deriving it
+      // from the current jobs table, not transient component state.
+      const running = new Set(
+        jobs
+          .filter(j => j.status === 'running' || j.status === 'queued')
+          .map(j => j.subjectId)
+          .filter(Boolean)
+      );
+      setRunningSubjectIds(running);
+
       jobs.forEach(job => {
         previousJobStatusesRef.current.set(job.id, job.status);
       });
@@ -84,6 +95,15 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
       }
       
       previousJobStatusesRef.current.set(job.id, job.status);
+
+      // Keep the per-subject running indicator in sync (queued/running => active).
+      if (job.status === 'running' || job.status === 'queued') {
+        setRunningSubjectIds(prev => {
+          const next = new Set(prev);
+          next.add(job.subjectId);
+          return next;
+        });
+      }
 
       // Keep active job count in sync without aggressive polling.
       setActiveJobsCount(() => {

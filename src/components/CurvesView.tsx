@@ -74,6 +74,10 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
     return () => window.clearInterval(t);
   }, [subjectId, curves.length, ensureOnce]);
 
+  const hasPatlak = !!patlakData && (patlakData.x?.length ?? 0) > 0 && (patlakData.y?.length ?? 0) > 0;
+  const hasTofts = !!toftsData && (toftsData.timePoints?.length ?? 0) > 0 && (toftsData.measured?.length ?? 0) > 0;
+  const hasDeconv = !!deconvData && (deconvData.timePoints?.length ?? 0) > 0 && (deconvData.residue?.length ?? 0) > 0;
+
   return (
     <div className="space-y-6">
       <Tabs defaultValue="concentration" className="w-full">
@@ -150,21 +154,21 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
         <TabsContent value="patlak">
           <Card className="p-6">
             <h2 className="mb-4 text-lg font-semibold">Patlak Analysis (Gray Matter)</h2>
-            {patlakData ? (
+            {hasPatlak ? (
               <div className="space-y-6">
                 <Plot
                   data={[
                     {
-                      x: patlakData.x,
-                      y: patlakData.y,
+                      x: patlakData!.x,
+                      y: patlakData!.y,
                       name: 'Measured',
                       type: 'scatter',
                       mode: 'markers',
                       marker: { size: 6, color: '#4A90E2' },
                     },
                     {
-                      x: patlakData.fitLineX,
-                      y: patlakData.fitLineY,
+                      x: patlakData!.fitLineX,
+                      y: patlakData!.fitLineY,
                       name: 'Linear Fit',
                       type: 'scatter',
                       mode: 'lines',
@@ -195,20 +199,20 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">Ki</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData.Ki.toFixed(2)}
+                      {patlakData!.Ki.toFixed(2)}
                       <span className="ml-2 text-sm font-normal">ml/100g/min</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">vp</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData.vp.toFixed(3)}
+                      {patlakData!.vp.toFixed(3)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">R²</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData.r2.toFixed(3)}
+                      {patlakData!.r2.toFixed(3)}
                     </div>
                   </div>
                 </div>
@@ -224,21 +228,21 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
         <TabsContent value="tofts">
           <Card className="p-6">
             <h2 className="mb-4 text-lg font-semibold">Extended Tofts Model (Gray Matter)</h2>
-            {toftsData ? (
+            {hasTofts ? (
               <div className="space-y-6">
                 <Plot
                   data={[
                     {
-                      x: toftsData.timePoints,
-                      y: toftsData.measured,
+                      x: toftsData!.timePoints,
+                      y: toftsData!.measured,
                       name: 'Measured Ct(t)',
                       type: 'scatter',
                       mode: 'markers',
                       marker: { size: 5, color: '#4A90E2' },
                     },
                     {
-                      x: toftsData.timePoints,
-                      y: toftsData.fitted,
+                      x: toftsData!.timePoints,
+                      y: toftsData!.fitted,
                       name: 'Fitted Ct(t)',
                       type: 'scatter',
                       mode: 'lines',
@@ -269,17 +273,17 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">Ktrans</div>
                     <div className="mono text-2xl font-semibold">
-                      {toftsData.Ktrans.toFixed(3)}
+                      {toftsData!.Ktrans.toFixed(3)}
                       <span className="ml-2 text-sm font-normal">min⁻¹</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">ve</div>
-                    <div className="mono text-2xl font-semibold">{toftsData.ve.toFixed(3)}</div>
+                    <div className="mono text-2xl font-semibold">{toftsData!.ve.toFixed(3)}</div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">vp</div>
-                    <div className="mono text-2xl font-semibold">{toftsData.vp.toFixed(3)}</div>
+                    <div className="mono text-2xl font-semibold">{toftsData!.vp.toFixed(3)}</div>
                   </div>
                 </div>
               </div>
@@ -294,7 +298,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
         <TabsContent value="deconvolution">
           <Card className="p-6">
             <h2 className="mb-4 text-lg font-semibold">Deconvolution & Perfusion Metrics (Gray Matter)</h2>
-            {deconvData ? (
+            {hasDeconv ? (
               <div className="space-y-6">
                 <div className="grid gap-6 lg:grid-cols-2">
                   <div>
@@ -302,8 +306,8 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                     <Plot
                       data={[
                         {
-                          x: deconvData.timePoints,
-                          y: deconvData.residue,
+                          x: deconvData!.timePoints,
+                          y: deconvData!.residue,
                           name: 'R(t)',
                           type: 'scatter',
                           mode: 'lines',
@@ -330,8 +334,8 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                     <Plot
                       data={[
                         {
-                          x: deconvData.timePoints,
-                          y: deconvData.h_t,
+                          x: deconvData!.timePoints,
+                          y: deconvData!.h_t,
                           name: 'h(t)',
                           type: 'scatter',
                           mode: 'lines',
@@ -360,21 +364,21 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">CBF</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData.CBF.toFixed(1)}
+                      {deconvData!.CBF.toFixed(1)}
                       <span className="ml-2 text-sm font-normal">ml/100g/min</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">MTT</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData.MTT.toFixed(2)}
+                      {deconvData!.MTT.toFixed(2)}
                       <span className="ml-2 text-sm font-normal">s</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">CTH</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData.CTH.toFixed(2)}
+                      {deconvData!.CTH.toFixed(2)}
                       <span className="ml-2 text-sm font-normal">s</span>
                     </div>
                   </div>

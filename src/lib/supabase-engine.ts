@@ -38,7 +38,9 @@ const _RAW_STORAGE_BUCKET = (import.meta as any).env?.VITE_SUPABASE_STORAGE_BUCK
 const STORAGE_BUCKET: string = _RAW_STORAGE_BUCKET && _RAW_STORAGE_BUCKET.trim().length > 0 ? _RAW_STORAGE_BUCKET.trim() : 'pbrain';
 
 const _missingObjectCache = new Map<string, number>();
-const _MISSING_TTL_MS = 30_000;
+// When artifacts are missing (common while jobs are still running), avoid repeatedly
+// hammering Storage with signed-url attempts.
+const _MISSING_TTL_MS = 5 * 60_000;
 
 function _isRecentlyMissing(path: string): boolean {
   const ts = _missingObjectCache.get(path);
@@ -803,9 +805,18 @@ export class SupabaseEngineAPI {
   }
 
   async getVolumeInfo(_path: string, _subjectId?: string): Promise<VolumeInfo> {
+    const fallback: VolumeInfo = {
+      path: _path,
+      dimensions: [0, 0, 0, 0],
+      voxelSize: [0, 0, 0],
+      dataType: 'unknown',
+      min: 0,
+      max: 0,
+    };
+
     return safe(async () => {
       const url = await toObjectUrl(_path);
-      if (!url) throw new Error('VOLUME_URL_EMPTY');
+      if (!url) return fallback;
       const vol = await cachedLoadNifti(url);
       return {
         path: _path,
@@ -815,24 +826,18 @@ export class SupabaseEngineAPI {
         min: vol.min,
         max: vol.max,
       };
-    }, {
-      path: _path,
-      dimensions: [0, 0, 0, 0],
-      voxelSize: [0, 0, 0],
-      dataType: 'unknown',
-      min: 0,
-      max: 0,
-    });
+    }, fallback);
   }
 
   async getSliceData(_path: string, _z: number, _t: number = 0, _subjectId?: string): Promise<{ data: number[][]; min: number; max: number }> {
+    const fallback = { data: [[0]], min: 0, max: 0 };
     return safe(async () => {
       const url = await toObjectUrl(_path);
-      if (!url) throw new Error('VOLUME_URL_EMPTY');
+      if (!url) return fallback;
       const vol = await cachedLoadNifti(url);
       const data = sliceZ(vol, _z, _t);
       return { data, min: vol.min, max: vol.max };
-    }, { data: [[0]], min: 0, max: 0 });
+    }, fallback);
   }
 
   async getCurves(_subjectId: string): Promise<Curve[]> {

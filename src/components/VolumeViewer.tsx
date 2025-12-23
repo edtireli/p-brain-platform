@@ -215,7 +215,11 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
       <Card className="flex items-center justify-center bg-muted/30 p-8">
-        {isImage && volumePath ? (
+        {!volumePath ? (
+          <div className="text-center text-sm text-muted-foreground">
+            No volumes available yet
+          </div>
+        ) : isImage && volumePath ? (
           <img
             alt="Volume preview"
             src={volumePath}
