@@ -13,6 +13,25 @@ from typing import Any, Dict, Optional
 import requests
 
 
+# Keep stage ids in sync with the web UI (src/lib/supabase-engine.ts).
+_STAGES = (
+	"import",
+	"t1_fit",
+	"input_functions",
+	"time_shift",
+	"segmentation",
+	"tissue_ctc",
+	"modelling",
+	"diffusion",
+	"montage_qc",
+)
+
+
+def _default_stage_statuses() -> Dict[str, str]:
+	# Default each stage to "pending". (The UI treats unknown as pending too.)
+	return {stage: "pending" for stage in _STAGES}
+
+
 def _utc_now_iso() -> str:
 	return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -196,6 +215,85 @@ def _update_job(sb: SupabaseHttp, job_id: str, patch: Dict[str, Any]) -> None:
 	sb.update("jobs", {"id": job_id}, payload)
 
 
+def _update_subject(sb: SupabaseHttp, subject_id: str, patch: Dict[str, Any]) -> None:
+	payload = {**patch, "updated_at": _utc_now_iso()}
+	sb.update("subjects", {"id": subject_id}, payload)
+
+
+def _set_subject_stage(sb: SupabaseHttp, subject_id: str, stage_id: str, status: str) -> None:
+	try:
+		row = sb.select_one("subjects", "id,stage_statuses:stage_statuses", {"id": subject_id})
+		current = (row or {}).get("stage_statuses") or {}
+		if not isinstance(current, dict):
+			current = {}
+		next_statuses: Dict[str, Any] = {**_default_stage_statuses(), **current, stage_id: status}
+		_update_subject(sb, subject_id, {"stage_statuses": next_statuses})
+	except Exception:
+		# Never crash the worker due to status propagation.
+		pass
+
+
+def _fail_running_stages(sb: SupabaseHttp, subject_id: str) -> None:
+	try:
+		row = sb.select_one("subjects", "id,stage_statuses:stage_statuses", {"id": subject_id})
+		current = (row or {}).get("stage_statuses") or {}
+		if not isinstance(current, dict):
+			current = {}
+		next_statuses: Dict[str, Any] = {**_default_stage_statuses(), **current}
+		changed = False
+		for k, v in list(next_statuses.items()):
+			if v == "running":
+				next_statuses[k] = "failed"
+				changed = True
+		if not changed:
+			# If nothing was marked running, still surface failure on the entry stage.
+			next_statuses["import"] = "failed"
+		_update_subject(sb, subject_id, {"stage_statuses": next_statuses})
+	except Exception:
+		pass
+
+
+def _update_subject_flags(sb: SupabaseHttp, subject_id: str, *, has_t1: bool, has_dce: bool, has_diffusion: bool) -> None:
+	try:
+		_update_subject(
+			sb,
+			subject_id,
+			{
+				"has_t1": bool(has_t1),
+				"has_dce": bool(has_dce),
+				"has_diffusion": bool(has_diffusion),
+			},
+		)
+	except Exception:
+		pass
+
+
+def _scan_subject_inputs(subject_path: Path) -> tuple[bool, bool, bool]:
+	"""Fast input presence scan for the Import & Index stage.
+
+	This is intentionally lightweight: it should take milliseconds to seconds.
+	"""
+	nifti_dir = subject_path / "NIfTI"
+	if not nifti_dir.exists() or not nifti_dir.is_dir():
+		return False, False, False
+
+	try:
+		names = [p.name.lower() for p in nifti_dir.iterdir() if p.is_file()]
+	except Exception:
+		return False, False, False
+
+	# Heuristics aligned with observed datasets (e.g. 20250407x4).
+	has_t1 = any("t1" in n and n.endswith((".nii", ".nii.gz")) for n in names)
+	# DCE / perfusion acquisitions are large and often include these tokens.
+	has_dce = any(("perf" in n or "dce" in n) and n.endswith((".nii", ".nii.gz")) for n in names)
+	# Diffusion often includes DWI/ADC tokens or specific known prefixes.
+	has_diff = any(
+		("dwi" in n or "adc" in n or "reg-dwi" in n or "isodwi" in n) and n.endswith((".nii", ".nii.gz"))
+		for n in names
+	)
+	return has_t1, has_dce, has_diff
+
+
 
 def _log_event(sb: SupabaseHttp, job_id: str, level: str, message: str) -> None:
 	try:
@@ -264,7 +362,7 @@ def _resolve_subject(payload: Dict[str, Any], storage_root: Path) -> tuple[str, 
 	return pbrain_id, full
 
 
-def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path: Path) -> None:
+def _run_pbrain(cfg: WorkerConfig, sb: SupabaseHttp, job_id: str, subject_db_id: str, subject_id: str, subject_path: Path, log_path: Path) -> None:
 	cmd = [
 		cfg.pbrain_python,
 		cfg.pbrain_main_py,
@@ -293,15 +391,124 @@ def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path
 		env.setdefault("SS_ROI_MODEL", str(ai_dir / "ss_roi_model.keras"))
 
 	log_path.parent.mkdir(parents=True, exist_ok=True)
-	with log_path.open("wb") as f:
+
+	# Stream output so we can surface progress + stage statuses in the UI.
+	last_sent_at = 0.0
+	last_progress_sent = -1.0
+
+	def send_job_update(*, progress: Optional[float] = None, step: Optional[str] = None, force: bool = False) -> None:
+		nonlocal last_sent_at, last_progress_sent
+		now = time.monotonic()
+		p = None if progress is None else float(progress)
+		if not force:
+			if now - last_sent_at < 1.25:
+				return
+			if p is not None and abs(p - last_progress_sent) < 0.01:
+				# Avoid spamming tiny progress deltas.
+				p = None
+		if p is None and step is None:
+			return
+		try:
+			patch: Dict[str, Any] = {}
+			if p is not None:
+				patch["progress"] = max(0.0, min(0.99, p))
+				last_progress_sent = float(patch["progress"])
+			if step is not None:
+				patch["current_step"] = step
+			_update_job(sb, job_id, patch)
+			last_sent_at = now
+		except Exception:
+			pass
+
+	# Import stage is completed before calling _run_pbrain.
+	_set_subject_stage(sb, subject_db_id, "t1_fit", "running")
+	send_job_update(progress=0.12, step="T1 fitting", force=True)
+
+	stage_progress = {
+		"t1_fit": (0.12, 0.30),
+		"input_functions": (0.32, 0.48),
+		"modelling": (0.50, 0.86),
+		"montage_qc": (0.88, 0.92),
+	}
+
+	def begin_stage(stage_id: str, label: str) -> None:
+		_set_subject_stage(sb, subject_db_id, stage_id, "running")
+		p0 = stage_progress.get(stage_id, (None, None))[0]
+		send_job_update(progress=p0, step=label, force=True)
+
+	def end_stage(stage_id: str, label: str) -> None:
+		_set_subject_stage(sb, subject_db_id, stage_id, "done")
+		p1 = stage_progress.get(stage_id, (None, None))[1]
+		send_job_update(progress=p1, step=label, force=True)
+
+	with log_path.open("w", encoding="utf-8", errors="replace") as f:
 		proc = subprocess.Popen(
 			cmd,
 			cwd=str(Path(cfg.pbrain_main_py).expanduser().resolve().parent),
 			env=env,
-			stdout=f,
+			stdout=subprocess.PIPE,
 			stderr=subprocess.STDOUT,
+			text=True,
+			bufsize=1,
 		)
-		rc = proc.wait()
+		assert proc.stdout is not None
+		for raw_line in proc.stdout:
+			line = raw_line.rstrip("\n")
+			f.write(raw_line)
+			# Keep the log reasonably up to date on disk.
+			f.flush()
+
+			# Parse p-brain automatic logs (see p-brain/utils/cli_logging.py).
+			# Example: "[AUTO] 12:34:56 | Starting process: T1 fitting"
+			if "Starting process:" in line:
+				if "T1 fitting" in line:
+					begin_stage("t1_fit", "T1 fitting")
+				elif "AI input function extraction" in line:
+					end_stage("t1_fit", "T1 fitting done")
+					begin_stage("input_functions", "Input functions")
+				elif "Tissue kinetic modelling" in line:
+					end_stage("input_functions", "Input functions done")
+					# These are sub-steps inside the modelling stage; mark them active together.
+					begin_stage("modelling", "Modelling")
+					_set_subject_stage(sb, subject_db_id, "time_shift", "running")
+					_set_subject_stage(sb, subject_db_id, "segmentation", "running")
+					_set_subject_stage(sb, subject_db_id, "tissue_ctc", "running")
+					if cfg.pbrain_run_diffusion:
+						_set_subject_stage(sb, subject_db_id, "diffusion", "running")
+				elif "Segmented M0/T1 rendering" in line:
+					# Modelling is effectively complete once rendering begins.
+					end_stage("modelling", "Modelling done")
+					_set_subject_stage(sb, subject_db_id, "time_shift", "done")
+					_set_subject_stage(sb, subject_db_id, "segmentation", "done")
+					_set_subject_stage(sb, subject_db_id, "tissue_ctc", "done")
+					if cfg.pbrain_run_diffusion:
+						_set_subject_stage(sb, subject_db_id, "diffusion", "done")
+					begin_stage("montage_qc", "Rendering outputs")
+
+			elif "Completed process:" in line:
+				if "T1 fitting" in line:
+					end_stage("t1_fit", "T1 fitting done")
+				elif "AI input function extraction" in line:
+					end_stage("input_functions", "Input functions done")
+				elif "Tissue kinetic modelling" in line:
+					end_stage("modelling", "Modelling done")
+					_set_subject_stage(sb, subject_db_id, "time_shift", "done")
+					_set_subject_stage(sb, subject_db_id, "segmentation", "done")
+					_set_subject_stage(sb, subject_db_id, "tissue_ctc", "done")
+					if cfg.pbrain_run_diffusion:
+						_set_subject_stage(sb, subject_db_id, "diffusion", "done")
+				elif "Segmented M0/T1 rendering" in line:
+					end_stage("montage_qc", "Rendering done")
+
+			# Opportunistic progress bumps during long runs.
+			elif "Generated file:" in line or "Generated image:" in line:
+				# Nudge progress upwards but keep within the current phase ceiling.
+				p = last_progress_sent
+				if p < 0.86:
+					send_job_update(progress=min(0.86, p + 0.002))
+
+			rc = proc.wait()
+
 	if rc != 0:
 		raise RuntimeError(f"p-brain exited with code {rc}; see log")
 
@@ -322,6 +529,7 @@ def _sync_artifacts(cfg: WorkerConfig, job: Dict[str, Any], subject_path: Path, 
 		raise RuntimeError(f"sync-artifacts script not found: {script}")
 
 	# Favor Node from PATH.
+	max_upload_mb = os.getenv("PBRAIN_MAX_UPLOAD_MB") or "45"
 	cmd = [
 		"node",
 		str(script),
@@ -331,6 +539,8 @@ def _sync_artifacts(cfg: WorkerConfig, job: Dict[str, Any], subject_path: Path, 
 		str(subject_path),
 		"--bucket",
 		cfg.bucket,
+		"--max-upload-mb",
+		str(max_upload_mb),
 	]
 
 	env = os.environ.copy()
@@ -367,6 +577,7 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 		_log_event(sb, job_id, "error", err)
 		return
 
+	subject_db_id = str(job.get("subject_id") or "")
 	log_path = cfg.logs_dir / f"{job_id}.log"
 	storage_path = f"jobs/{job_id}/logs/runner.log"
 	final_status: str = "failed"
@@ -386,8 +597,23 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 	)
 	_log_event(sb, job_id, "info", f"started {subject_id} at {subject_path}")
 
+	# Fast Import & Index: scan inputs + mark the stage done quickly.
+	if subject_db_id:
+		_set_subject_stage(sb, subject_db_id, "import", "running")
 	try:
-		_run_pbrain(cfg, subject_id, subject_path, log_path)
+		_update_job(sb, job_id, {"current_step": "Import & Index", "progress": 0.02})
+		has_t1, has_dce, has_diff = _scan_subject_inputs(subject_path)
+		if subject_db_id:
+			_update_subject_flags(sb, subject_db_id, has_t1=has_t1, has_dce=has_dce, has_diffusion=has_diff)
+			_set_subject_stage(sb, subject_db_id, "import", "done")
+		_update_job(sb, job_id, {"current_step": "indexed", "progress": 0.08})
+		_log_event(sb, job_id, "info", f"indexed inputs: t1={has_t1} dce={has_dce} diff={has_diff}")
+	except Exception as exc:
+		# Don't fail the pipeline for indexing issues; proceed to p-brain.
+		_log_event(sb, job_id, "warning", f"indexing warning: {exc}")
+
+	try:
+		_run_pbrain(cfg, sb, job_id, subject_db_id, subject_id, subject_path, log_path)
 
 		# Sync artifacts so the web UI can render Viewer/Curves/Maps.
 		_update_job(sb, job_id, {"current_step": "uploading artifacts", "progress": 0.92})
@@ -433,6 +659,8 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 			},
 		)
 		_log_event(sb, job_id, "error", err)
+		if subject_db_id:
+			_fail_running_stages(sb, subject_db_id)
 
 	# Upload log to Storage + register as output (best-effort), even on failures.
 	_upload_log(sb, cfg.bucket, storage_path, log_path)

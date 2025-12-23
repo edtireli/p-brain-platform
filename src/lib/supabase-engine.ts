@@ -144,6 +144,24 @@ async function downloadJson<T>(path: string): Promise<T | null> {
   const sb = supabase as any;
   if (!sb.storage) return null;
 
+  const parseLoose = (text: string): T | null => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // p-brain JSON can contain bare NaN/Infinity tokens.
+      // Convert them to null so JSON.parse can proceed.
+      const sanitized = String(text)
+        .replace(/\bNaN\b/g, 'null')
+        .replace(/\bInfinity\b/g, 'null')
+        .replace(/\b-Infinity\b/g, 'null');
+      try {
+        return JSON.parse(sanitized) as T;
+      } catch {
+        return null;
+      }
+    }
+  };
+
   // Prefer SDK download (adds auth headers when a session exists).
   // Some Storage policies reject unauthenticated reads; in that case, fall back
   // to a signed URL fetch if we can create one.
@@ -161,7 +179,7 @@ async function downloadJson<T>(path: string): Promise<T | null> {
 
     if (!error && data) {
       const text = await (data as Blob).text();
-      return JSON.parse(text) as T;
+      return parseLoose(text);
     }
   } catch {
     // ignore and try signed URL fallback
@@ -176,7 +194,13 @@ async function downloadJson<T>(path: string): Promise<T | null> {
 
   const res = await fetch(signed.signedUrl);
   if (!res.ok) return null;
-  return (await res.json()) as T;
+  const text = await res.text();
+  return parseLoose(text);
+}
+
+function _asFiniteNumber(v: any): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : undefined;
 }
 
 async function toObjectUrl(path: string): Promise<string> {
@@ -221,6 +245,44 @@ function basename(p: string): string {
   const parts = p.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? p;
 }
+
+function _stripQuery(p: string): string {
+  return (p || '').split('?')[0] || '';
+}
+
+function _lowerBase(p: string): string {
+  return basename(_stripQuery(p)).toLowerCase();
+}
+
+function _looksAxialVariant(nameLower: string): boolean {
+  return nameLower.startsWith('ax') || nameLower.startsWith('ax_') || nameLower.startsWith('ax-');
+}
+
+function inferVolumeKindFromFilename(filenameOrPath: string): string {
+  const n = _lowerBase(filenameOrPath);
+  // p-brain utils/parameters.py conventions
+  if (n.includes('wipcs_t1w_3d_tfe_32channel')) return 't1';
+  if (n.includes('wipcs_3d_brain_view_t2_32chshc') || n.includes('wipaxt2tsematrix')) return 't2';
+  if (n.includes('wipcs_3d_brain_view_flair_shc')) return 'flair';
+  if (n.includes('wipdelrec-hperf120long') || n.includes('wiphperf120long')) return 'dce';
+  if (n.includes('reg-dwinysense') || n.includes('isodwib-1000') || n.includes('wipdti_rsi') || n.includes('wipdwi_rsi')) return 'diffusion';
+  return '';
+}
+
+const _DIFFUSION_PRIORITY_BASENAMES = [
+  'reg-dwinysense.nii',
+  'reg-dwinysense.nii.gz',
+  'reg-dwinysense_adc.nii',
+  'reg-dwinysense_adc.nii.gz',
+  'isodwib-1000.nii',
+  'isodwib-1000.nii.gz',
+  'wipdti_rsi_p.nii',
+  'wipdti_rsi_p.nii.gz',
+  'wipdti_rsi_a.nii',
+  'wipdti_rsi_a.nii.gz',
+  'wipdwi_rsi_p.nii',
+  'wipdwi_rsi_p.nii.gz',
+];
 
 type ArtifactIndex = {
   paths?: string[];
@@ -693,6 +755,18 @@ export class SupabaseEngineAPI {
         },
       }));
       if (rows.length === 0) return [];
+
+      // Persist a "running" indicator immediately so the dashboard dots reflect queued work.
+      // (External runners may take a moment to claim jobs.)
+      await Promise.all(
+        subjectIds.map(async sid => {
+          try {
+            await this.updateSubjectStage(sid, 'import', 'running');
+          } catch {
+            /* ignore */
+          }
+        })
+      );
       const { data, error } = await sb.from('jobs').insert(rows).select('*');
       if (error) throw error;
       return (data || []).map(mapJobRow);
@@ -798,10 +872,59 @@ export class SupabaseEngineAPI {
     return retried;
   }
 
-  async resolveDefaultVolume(_subjectId: string, _kind: 'dce' | 't1' | 'diffusion' = 'dce'): Promise<string> {
+  async resolveDefaultVolume(
+    _subjectId: string,
+    _kind: 'dce' | 't1' | 't2' | 'flair' | 'diffusion' | 'map' = 'dce'
+  ): Promise<string> {
+    const kindLower0 = String(_kind).toLowerCase();
+    if (kindLower0 === 'map') {
+      const maps = await this.getMapVolumes(_subjectId);
+      return maps[0]?.path ?? '';
+    }
+
     const vols = await this.getVolumes(_subjectId);
-    const preferred = vols.find(v => String(v.kind || '').toLowerCase() === _kind)?.path;
-    return preferred ?? vols[0]?.path ?? '';
+    const kindLower = kindLower0;
+
+    // 1) Prefer explicit kind if present.
+    const explicit = vols.find(v => String(v.kind || '').toLowerCase() === kindLower)?.path;
+    if (explicit) return explicit;
+
+    // 2) Try filename inference.
+    const inferredHit = vols.find(v => inferVolumeKindFromFilename(v.name || v.path) === kindLower)?.path;
+    if (inferredHit) return inferredHit;
+
+    // 3) Diffusion: honor ordered candidates (utils/parameters.py)
+    if (kindLower === 'diffusion') {
+      const byBase = new Map(vols.map(v => [_lowerBase(v.name || v.path), v.path] as const));
+      for (const b of _DIFFUSION_PRIORITY_BASENAMES) {
+        const hit = byBase.get(b);
+        if (hit) return hit;
+      }
+    }
+
+    // 4) DCE: prefer DelRec fallback when present.
+    if (kindLower === 'dce') {
+      const fallback = vols.find(v => _lowerBase(v.name || v.path).includes('wipdelrec-hperf120long'))?.path;
+      if (fallback) return fallback;
+      const primary = vols.find(v => _lowerBase(v.name || v.path).includes('wiphperf120long'))?.path;
+      if (primary) return primary;
+    }
+
+    // 5) T2/FLAIR: prefer non-axial variant when both exist.
+    if (kindLower === 't2' || kindLower === 'flair' || kindLower === 't1') {
+      const key = kindLower === 't1'
+        ? 'wipcs_t1w_3d_tfe_32channel'
+        : kindLower === 't2'
+          ? 'wipcs_3d_brain_view_t2_32chshc'
+          : 'wipcs_3d_brain_view_flair_shc';
+      const matches = vols.filter(v => _lowerBase(v.name || v.path).includes(key));
+      const nonAx = matches.find(v => !_looksAxialVariant(_lowerBase(v.name || v.path)))?.path;
+      if (nonAx) return nonAx;
+      const ax = matches[0]?.path;
+      if (ax) return ax;
+    }
+
+    return vols[0]?.path ?? '';
   }
 
   async getVolumeInfo(_path: string, _subjectId?: string): Promise<VolumeInfo> {
@@ -903,15 +1026,34 @@ export class SupabaseEngineAPI {
           id: v.id || basename(v.path),
           name: v.name || basename(v.path),
           path: v.path,
-          kind: v.kind || 'source',
+				kind: v.kind || inferVolumeKindFromFilename(v.name || v.path) || 'source',
         }));
       if (vols.length > 0) return vols;
 
       const prefix = `projects/${subj.projectId}/subjects/${subj.id}/volumes/source`;
       const objs = await listObjects(prefix);
-      return objs
+      const source = objs
         .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
-        .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: 'source' }));
+        .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: (inferVolumeKindFromFilename(o.name) || 'source') as any }));
+      if (source.length > 0) return source;
+
+      // If source volumes are too large to upload (Supabase Storage size limits),
+      // fall back to analysis maps so the Viewer can still display something.
+      const indexMaps = (index?.maps ?? []).filter(m => typeof m?.path === 'string' && /\.(nii|nii\.gz)$/i.test(m.path));
+      if (indexMaps.length > 0) {
+        return indexMaps.map(m => ({
+          id: basename(m.path),
+          name: basename(m.path),
+          path: m.path,
+          kind: 'analysis',
+        }));
+      }
+
+      const analysisPrefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis`;
+      const analysisObjs = await listObjects(analysisPrefix);
+      return analysisObjs
+        .filter(o => /\.(nii|nii\.gz)$/i.test(o.name))
+        .map(o => ({ id: o.name, name: o.name, path: o.fullPath, kind: 'analysis' }));
     }, []);
   }
 
@@ -954,7 +1096,128 @@ export class SupabaseEngineAPI {
     return { timePoints: [], residue: [], h_t: [], CBF: 0, MTT: 0, CTH: 0 };
   }
 
-  async getMetricsTable(_subjectId: string): Promise<MetricsTable> {
-    return { rows: [] };
+  async getMetricsTable(
+    _subjectId: string,
+    view: 'atlas' | 'tissue' = 'atlas'
+  ): Promise<MetricsTable> {
+    return safe(async () => {
+      const subj = await this.getSubject(_subjectId);
+      if (!subj) return { rows: [] };
+
+      const prefix = `projects/${subj.projectId}/subjects/${subj.id}/analysis/metrics`;
+
+      if (view === 'atlas') {
+        type AtlasEntry = {
+          Ki?: unknown;
+          vp?: unknown;
+          CBF_tikhonov?: unknown;
+          MTT_tikhonov?: unknown;
+          CTH_tikhonov?: unknown;
+        };
+
+        const atlas =
+          (await downloadJson<Record<string, AtlasEntry>>(`${prefix}/Ki_values_atlas_patlak.json`)) ||
+          (await downloadJson<Record<string, AtlasEntry>>(`${prefix}/Ki_values_atlas_tikhonov.json`));
+        if (!atlas) return { rows: [] };
+
+        const rows = Object.entries(atlas)
+          .map(([region, v]) => ({
+            region,
+            Ki: _asFiniteNumber((v as any)?.Ki),
+            vp: _asFiniteNumber((v as any)?.vp),
+            CBF: _asFiniteNumber((v as any)?.CBF_tikhonov),
+            MTT: _asFiniteNumber((v as any)?.MTT_tikhonov),
+            CTH: _asFiniteNumber((v as any)?.CTH_tikhonov),
+          }))
+          .sort((a, b) => (a.region || '').localeCompare(b.region || ''));
+
+        return { rows };
+      }
+
+      type TissueSliceEntry = {
+        Ki?: unknown;
+        vp?: unknown;
+        CBF_tikhonov?: unknown;
+        MTT_tikhonov?: unknown;
+        CTH_tikhonov?: unknown;
+        voxel_count?: unknown;
+      };
+      type TissueSlice = {
+        white_matter_median?: TissueSliceEntry;
+        cortical_gray_matter_median?: TissueSliceEntry;
+        subcortical_gray_matter_median?: TissueSliceEntry;
+      };
+
+      const tissueSlices =
+        (await downloadJson<TissueSlice[]>(`${prefix}/AI_values_median_tikhonov.json`)) ||
+        (await downloadJson<TissueSlice[]>(`${prefix}/AI_values_median_patlak.json`));
+      if (!tissueSlices || !Array.isArray(tissueSlices)) return { rows: [] };
+
+      const defs: Array<{ key: keyof TissueSlice; region: string }> = [
+        { key: 'white_matter_median', region: 'White Matter' },
+        { key: 'cortical_gray_matter_median', region: 'Cortical Gray Matter' },
+        { key: 'subcortical_gray_matter_median', region: 'Subcortical Gray Matter' },
+      ];
+
+      const rows = defs
+        .map(({ key, region }) => {
+          const acc: Record<string, { sum: number; w: number }> = {
+            Ki: { sum: 0, w: 0 },
+            vp: { sum: 0, w: 0 },
+            CBF: { sum: 0, w: 0 },
+            MTT: { sum: 0, w: 0 },
+            CTH: { sum: 0, w: 0 },
+          };
+
+          for (const slice of tissueSlices) {
+            const entry = (slice as any)?.[key] as TissueSliceEntry | undefined;
+            if (!entry) continue;
+            const w = _asFiniteNumber((entry as any).voxel_count) ?? 0;
+            if (!(w > 0)) continue;
+
+            const Ki = _asFiniteNumber((entry as any).Ki);
+            const vp = _asFiniteNumber((entry as any).vp);
+            const CBF = _asFiniteNumber((entry as any).CBF_tikhonov);
+            const MTT = _asFiniteNumber((entry as any).MTT_tikhonov);
+            const CTH = _asFiniteNumber((entry as any).CTH_tikhonov);
+
+            if (Ki !== undefined) {
+              acc.Ki.sum += Ki * w;
+              acc.Ki.w += w;
+            }
+            if (vp !== undefined) {
+              acc.vp.sum += vp * w;
+              acc.vp.w += w;
+            }
+            if (CBF !== undefined) {
+              acc.CBF.sum += CBF * w;
+              acc.CBF.w += w;
+            }
+            if (MTT !== undefined) {
+              acc.MTT.sum += MTT * w;
+              acc.MTT.w += w;
+            }
+            if (CTH !== undefined) {
+              acc.CTH.sum += CTH * w;
+              acc.CTH.w += w;
+            }
+          }
+
+          const row = {
+            region,
+            Ki: acc.Ki.w ? acc.Ki.sum / acc.Ki.w : undefined,
+            vp: acc.vp.w ? acc.vp.sum / acc.vp.w : undefined,
+            CBF: acc.CBF.w ? acc.CBF.sum / acc.CBF.w : undefined,
+            MTT: acc.MTT.w ? acc.MTT.sum / acc.MTT.w : undefined,
+            CTH: acc.CTH.w ? acc.CTH.sum / acc.CTH.w : undefined,
+          };
+
+          const hasAny = Object.values(row).some(v => typeof v === 'number' && Number.isFinite(v));
+          return hasAny ? row : null;
+        })
+        .filter((r): r is NonNullable<typeof r> => !!r);
+
+      return { rows };
+    }, { rows: [] });
   }
 }

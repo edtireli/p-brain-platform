@@ -166,7 +166,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
             </div>
           </div>
 
-          {selected ? <VolumeViewer subjectId={subjectId} path={selected.path} /> : null}
+          {selected ? <VolumeViewer subjectId={subjectId} path={selected.path} kind="map" /> : null}
 
           {ensureMsg ? (
             <div className="text-xs text-muted-foreground">{ensuringMaps ? ensureMsg : ensureMsg}</div>

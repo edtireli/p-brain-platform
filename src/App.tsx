@@ -58,8 +58,8 @@ function App() {
           <>
             {auth.configured && auth.user ? (
               <div className="pointer-events-none fixed right-4 top-4 z-50">
-                <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-border bg-background/80 px-3 py-2 text-xs text-muted-foreground backdrop-blur">
-                  <span className="mono">{auth.user.email}</span>
+                <div className="pointer-events-auto flex flex-col items-end gap-2 rounded-md border border-border bg-background/80 px-3 py-2 text-xs text-muted-foreground backdrop-blur sm:flex-row sm:items-center">
+                  <span className="mono max-w-[240px] truncate sm:max-w-[320px]">{auth.user.email}</span>
                   <Button
                     size="sm"
                     variant="secondary"

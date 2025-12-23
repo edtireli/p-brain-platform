@@ -671,7 +671,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2">
           <TreeStructure size={18} />
-          Configure Folder Structure
+          Configure
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">

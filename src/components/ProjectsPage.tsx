@@ -48,6 +48,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [storeWithPatientData, setStoreWithPatientData] = useState(true);
   const [autoFillFromFolder, setAutoFillFromFolder] = useState(true);
+	const [pendingDroppedSubjects, setPendingDroppedSubjects] = useState<Array<{ name: string; sourcePath: string }>>([]);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
   const dropZoneId = 'project-drop-zone';
 
@@ -59,6 +60,13 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const autoImportSubjects = async (project: Project, storagePath: string) => {
     try {
+    if (pendingDroppedSubjects.length > 0) {
+      await engine.importSubjects(project.id, pendingDroppedSubjects);
+      toast.success(`Imported ${pendingDroppedSubjects.length} subject${pendingDroppedSubjects.length > 1 ? 's' : ''}`);
+      setPendingDroppedSubjects([]);
+      return;
+    }
+
       const scan = await engine.scanProjectSubjects(project.id);
       let toImport = (scan?.subjects || []).slice();
 
@@ -113,8 +121,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       return;
     }
 
-    const storagePath = (storeWithPatientData ? defaultStoragePath(name) : draftStoragePath).trim();
-    if (!storeWithPatientData && !storagePath) {
+    const rawDraft = draftStoragePath.trim();
+    const storagePath = (storeWithPatientData ? (rawDraft || defaultStoragePath(name)) : rawDraft).trim();
+    if (!storagePath) {
       toast.error('Please enter a project storage path');
       return;
     }
@@ -133,6 +142,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       setDraftStoragePath('');
       setStoreWithPatientData(true);
       setAutoFillFromFolder(true);
+  		setPendingDroppedSubjects([]);
       loadProjects();
 
       if (autoFillFromFolder) {
@@ -173,9 +183,10 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   };
 
-  const openCreateDialog = (prefill?: { name?: string; storagePath?: string }) => {
+  const openCreateDialog = (prefill?: { name?: string; storagePath?: string; subjects?: Array<{ name: string; sourcePath: string }> }) => {
     setDraftName(prefill?.name ?? '');
     setDraftStoragePath(prefill?.storagePath ?? '');
+    setPendingDroppedSubjects(prefill?.subjects ?? []);
     setStoreWithPatientData(true);
     setAutoFillFromFolder(true);
     setIsCreateDialogOpen(true);
@@ -201,7 +212,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   };
 
-  const processDroppedItems = useCallback((items: DataTransferItemList) => {
+  const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
     const entries: FileSystemDirectoryEntry[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -219,10 +230,42 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     const rootEntry = entries[0];
+
+    const listChildDirs = async (dir: FileSystemDirectoryEntry): Promise<string[]> => {
+      const out: string[] = [];
+      try {
+        const reader = dir.createReader();
+        while (true) {
+          // readEntries is callback-based
+          const batch: FileSystemEntry[] = await new Promise((resolve) => reader.readEntries(resolve));
+          if (!batch || batch.length === 0) break;
+          for (const e of batch) {
+            if (e.isDirectory) out.push(e.name);
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return out;
+    };
+
+    const childDirs = await listChildDirs(rootEntry);
+    const subjectDirs = childDirs.filter(n => subjectIdRe.test(n));
+    let subjects: Array<{ name: string; sourcePath: string }> = [];
+    if (subjectDirs.length > 0) {
+      subjects = subjectDirs.map(n => ({ name: n, sourcePath: `${rootEntry.name}/${n}` }));
+    } else if (subjectIdRe.test(rootEntry.name)) {
+      subjects = [{ name: rootEntry.name, sourcePath: rootEntry.name }];
+    }
+
     // Browsers don't provide a trustworthy absolute path for dropped folders.
-    // Prefill name only; user must paste the storage path.
-    openCreateDialog({ name: rootEntry.name });
-    toast.info('Paste the folder path into “Project storage path” to enable backend processing.');
+    // Prefill the folder name as a relative storage path.
+    openCreateDialog({ name: rootEntry.name, storagePath: rootEntry.name, subjects });
+    if (subjects.length > 0) {
+      toast.info('Folder dropped. Subject folders will be imported after project creation.');
+    } else {
+      toast.info('Folder dropped. If this contains subject folders, enable “Automatically import subjects” after creating the project.');
+    }
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -249,7 +292,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     e.stopPropagation();
     setIsDraggingCreate(false);
     if (e.dataTransfer.items) {
-      processDroppedItems(e.dataTransfer.items);
+      void processDroppedItems(e.dataTransfer.items);
     }
   }, [processDroppedItems]);
 
@@ -343,8 +386,8 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1">
-                      <Label>Auto-import patient data from folder</Label>
-                      <p className="text-xs text-muted-foreground">Scan the storage path for subject folders after creating the project.</p>
+                      <Label>Automatically import subjects</Label>
+                      <p className="text-xs text-muted-foreground">Import subject folders found in the dropped folder (or the storage path name).</p>
                     </div>
                     <Switch
                       checked={autoFillFromFolder}

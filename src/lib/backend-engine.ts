@@ -314,9 +314,13 @@ export class BackendEngineAPI {
     return api<Job>(`/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' });
   }
 
-  async resolveDefaultVolume(subjectId: string, kind: 'dce' | 't1' | 'diffusion' = 'dce'): Promise<string> {
+  async resolveDefaultVolume(
+    subjectId: string,
+    kind: 'dce' | 't1' | 't2' | 'flair' | 'diffusion' | 'map' = 'dce'
+  ): Promise<string> {
+    const effectiveKind = kind === 'map' ? 'dce' : kind;
     const res = await api<{ path: string }>(
-      `/subjects/${encodeURIComponent(subjectId)}/default-volume?kind=${encodeURIComponent(kind)}`
+      `/subjects/${encodeURIComponent(subjectId)}/default-volume?kind=${encodeURIComponent(effectiveKind)}`
     );
     return res.path;
   }
@@ -398,7 +402,9 @@ export class BackendEngineAPI {
     );
   }
 
-  async getMetricsTable(subjectId: string): Promise<MetricsTable> {
-    return api<MetricsTable>(`/subjects/${encodeURIComponent(subjectId)}/metrics`);
+  async getMetricsTable(subjectId: string, view: 'atlas' | 'tissue' = 'atlas'): Promise<MetricsTable> {
+    return api<MetricsTable>(
+      `/subjects/${encodeURIComponent(subjectId)}/metrics?view=${encodeURIComponent(view)}`
+    );
   }
 }

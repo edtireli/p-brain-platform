@@ -121,7 +121,7 @@ export interface VolumeFile {
   id: string;
   name: string;
   path: string;
-  kind?: 'dce' | 't1' | 'diffusion' | string;
+	kind?: 'dce' | 't1' | 't2' | 'flair' | 'diffusion' | 'analysis' | 'source' | string;
 }
 
 export interface MapVolume {

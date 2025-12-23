@@ -42,18 +42,19 @@ function MetricHeader({ label, unit }: { label: string; unit: string }) {
 
 export function TablesView({ subjectId }: TablesViewProps) {
   const [metricsTable, setMetricsTable] = useState<MetricsTable | null>(null);
+  const [view, setView] = useState<'atlas' | 'tissue'>('atlas');
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await engine.getMetricsTable(subjectId);
+        const data = await engine.getMetricsTable(subjectId, view);
         setMetricsTable(data);
       } catch (error) {
         console.error('Failed to load metrics table:', error);
       }
     };
     loadData();
-  }, [subjectId]);
+  }, [subjectId, view]);
 
   const handleExport = () => {
     if (!metricsTable) return;
@@ -75,7 +76,7 @@ export function TablesView({ subjectId }: TablesViewProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `metrics_${subjectId}_${Date.now()}.csv`;
+    a.download = `metrics_${view}_${subjectId}_${Date.now()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -84,7 +85,30 @@ export function TablesView({ subjectId }: TablesViewProps) {
     <div className="space-y-6">
       <Card className="rounded-xl border border-border/60 bg-card/50 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-[13px] font-medium">Quantitative Metrics by Region</h3>
+          <div className="space-y-1">
+            <h3 className="text-[13px] font-medium">Quantitative Metrics by Region</h3>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={view === 'atlas' ? 'secondary' : 'ghost'}
+                className="h-7 px-2 text-xs"
+                onClick={() => setView('atlas')}
+              >
+                Atlas
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={view === 'tissue' ? 'secondary' : 'ghost'}
+                className="h-7 px-2 text-xs"
+                onClick={() => setView('tissue')}
+              >
+                Tissue
+              </Button>
+            </div>
+          </div>
+
           <Button
             onClick={handleExport}
             variant="ghost"

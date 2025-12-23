@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
 import type { Job, StageId, Subject } from '@/types';
 import { STAGE_NAMES } from '@/types';
@@ -22,6 +23,7 @@ interface SubjectDetailProps {
 
 export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const [subject, setSubject] = useState<Subject | null>(null);
+	const [viewerKind, setViewerKind] = useState<'dce' | 't1' | 't2' | 'flair' | 'diffusion'>('dce');
 
   const [logOpen, setLogOpen] = useState(false);
   const [selectedStage, setSelectedStage] = useState<StageId | null>(null);
@@ -319,7 +321,26 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
           </TabsContent>
 
           <TabsContent value="viewer">
-            <VolumeViewer subjectId={subjectId} />
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-medium text-foreground">Modality</div>
+                <div className="w-[260px]">
+                  <Select value={viewerKind} onValueChange={(v) => setViewerKind(v as any)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="dce">DCE</SelectItem>
+                      <SelectItem value="t1">T1</SelectItem>
+                      <SelectItem value="t2">T2</SelectItem>
+                      <SelectItem value="flair">FLAIR</SelectItem>
+                      <SelectItem value="diffusion">DWI / Diffusion</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <VolumeViewer subjectId={subjectId} kind={viewerKind} />
+            </div>
           </TabsContent>
 
           <TabsContent value="curves">

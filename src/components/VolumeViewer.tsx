@@ -9,7 +9,7 @@ import type { VolumeFile } from '@/types';
 interface VolumeViewerProps {
   subjectId: string;
   path?: string;
-  kind?: 'dce' | 't1' | 'diffusion';
+  kind?: 'dce' | 't1' | 't2' | 'flair' | 'diffusion' | 'map';
   allowSelect?: boolean;
 }
 
@@ -24,8 +24,8 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   const [timeFrame, setTimeFrame] = useState(0);
   const [windowMin, setWindowMin] = useState(0);
   const [windowMax, setWindowMax] = useState(2000);
-  const [colormap, setColormap] = useState('grayscale');
-  const [viewMode, setViewMode] = useState<'single' | 'grid'>('single');
+	const [colormap, setColormap] = useState<'grayscale' | 'viridis' | 'hlcolour'>(() => (kind === 'map' ? 'hlcolour' : 'grayscale'));
+	const [viewMode, setViewMode] = useState<'single' | 'grid'>(() => (kind === 'map' ? 'grid' : 'single'));
   const [slices, setSlices] = useState<number[][][] | null>(null);
 
   const isImagePath = (p: string | null): boolean => {
@@ -43,6 +43,8 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
           setVolumes([]);
           setSelectedVolumeId(path);
           setVolumePath(path);
+			setColormap(kind === 'map' ? 'hlcolour' : 'grayscale');
+			setViewMode(kind === 'map' ? 'grid' : 'single');
           return;
         }
 
@@ -90,8 +92,10 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 
         setSliceZ(prev => Math.min(prev, zMax));
         setTimeFrame(prev => Math.min(prev, tMax));
-        setWindowMin(Math.floor(info.min));
-        setWindowMax(Math.ceil(info.max) || 1);
+			const min = Number.isFinite(Number(info.min)) ? Number(info.min) : 0;
+			const max = Number.isFinite(Number(info.max)) ? Number(info.max) : 1;
+			setWindowMin(Math.floor(min));
+			setWindowMax(Math.max(1, Math.ceil(max)));
       } catch (error) {
         console.error('Failed to load volume info:', error);
       }
@@ -179,6 +183,12 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
             imageData.data[idx + 1] = viridisColor[1];
             imageData.data[idx + 2] = viridisColor[2];
             imageData.data[idx + 3] = 255;
+			} else if (colormap === 'hlcolour') {
+				const c = getHLColour(normalized);
+				imageData.data[idx] = c[0];
+				imageData.data[idx + 1] = c[1];
+				imageData.data[idx + 2] = c[2];
+				imageData.data[idx + 3] = 255;
           }
         }
       }
@@ -188,6 +198,8 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   };
 
   const getViridisColor = (t: number): [number, number, number] => {
+    if (!Number.isFinite(t)) return [0, 0, 0];
+    const tt = Math.max(0, Math.min(1, t));
     const viridis = [
       [68, 1, 84],
       [72, 40, 120],
@@ -201,16 +213,46 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       [253, 231, 37],
     ];
 
-    const idx = Math.floor(t * (viridis.length - 1));
+		const scaled = tt * (viridis.length - 1);
+    const idx = Math.max(0, Math.min(viridis.length - 1, Math.floor(scaled)));
     const nextIdx = Math.min(idx + 1, viridis.length - 1);
-    const localT = (t * (viridis.length - 1)) - idx;
+    const localT = scaled - idx;
 
-    const r = viridis[idx][0] + (viridis[nextIdx][0] - viridis[idx][0]) * localT;
-    const g = viridis[idx][1] + (viridis[nextIdx][1] - viridis[idx][1]) * localT;
-    const b = viridis[idx][2] + (viridis[nextIdx][2] - viridis[idx][2]) * localT;
+    const r = viridis[idx]![0] + (viridis[nextIdx]![0] - viridis[idx]![0]) * localT;
+    const g = viridis[idx]![1] + (viridis[nextIdx]![1] - viridis[idx]![1]) * localT;
+    const b = viridis[idx]![2] + (viridis[nextIdx]![2] - viridis[idx]![2]) * localT;
 
     return [Math.floor(r), Math.floor(g), Math.floor(b)];
   };
+
+	const getHLColour = (t: number): [number, number, number] => {
+		if (!Number.isFinite(t)) return [0, 0, 0];
+		const tt = Math.max(0, Math.min(1, t));
+		// Match p-brain's "specthl" anchors (utils/montage.py).
+		const anchors: Array<[number, [number, number, number]]> = [
+			[0.0, [0, 0, 0]],
+			[0.10, [0, 0, 40]],
+			[0.22, [0, 0, 120]],
+			[0.35, [60, 0, 170]],
+			[0.50, [130, 0, 180]],
+			[0.62, [200, 0, 120]],
+			[0.73, [230, 30, 60]],
+			[0.83, [255, 120, 0]],
+			[0.92, [255, 200, 0]],
+			[1.0, [255, 255, 255]],
+		];
+
+		let i = 0;
+		while (i < anchors.length - 2 && tt > anchors[i + 1]![0]) i++;
+		const [t0, c0] = anchors[i]!;
+		const [t1, c1] = anchors[i + 1]!;
+		const span = t1 - t0 || 1;
+		const u = (tt - t0) / span;
+		const r = c0[0] + (c1[0] - c0[0]) * u;
+		const g = c0[1] + (c1[1] - c0[1]) * u;
+		const b = c0[2] + (c1[2] - c0[2]) * u;
+		return [Math.floor(r), Math.floor(g), Math.floor(b)];
+	};
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
@@ -327,12 +369,13 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 
               <div className="space-y-2">
                 <Label>Colormap</Label>
-                <Select value={colormap} onValueChange={setColormap}>
+                <Select value={colormap} onValueChange={v => setColormap(v as any)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="grayscale">Grayscale</SelectItem>
+                    <SelectItem value="hlcolour">HLColour</SelectItem>
                     <SelectItem value="viridis">Viridis</SelectItem>
                   </SelectContent>
                 </Select>

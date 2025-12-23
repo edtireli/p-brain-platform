@@ -204,6 +204,8 @@ async function main() {
   const uploadPngs = args['upload-pngs'] === false ? false : (String(args['upload-pngs'] || 'true').toLowerCase() !== 'false');
   const uploadNiftis = args['upload-niftis'] === false ? false : (String(args['upload-niftis'] || 'true').toLowerCase() !== 'false');
   const uploadAllSourceNiftis = String(args['upload-all-source-niftis'] || 'false').toLowerCase() === 'true' || args['upload-all-source-niftis'] === true;
+  const maxUploadMb = Number(args['max-upload-mb'] || process.env.PBRAIN_MAX_UPLOAD_MB || 45);
+  const maxUploadBytes = Number.isFinite(maxUploadMb) && maxUploadMb > 0 ? Math.floor(maxUploadMb * 1024 * 1024) : 45 * 1024 * 1024;
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -268,16 +270,46 @@ async function main() {
   const uploads = [];
   const uploadedVolumes = [];
   const uploadedMaps = [];
+  const uploadedMetrics = [];
+  const skipped = [];
 
   async function uploadFile(localPath, destPath, contentType) {
-    const buf = await fs.readFile(localPath);
-    const { error } = await sb.storage.from(bucket).upload(destPath, buf, {
-      upsert: true,
-      contentType,
-      cacheControl: '3600',
-    });
-    if (error) throw error;
-    uploads.push(destPath);
+    const st = await fs.stat(localPath);
+    if (st.size > maxUploadBytes) {
+      skipped.push({ localPath, destPath, reason: `too_large_${st.size}` });
+      console.warn(`[skip] ${destPath} (${st.size} bytes) exceeds limit ${maxUploadBytes} bytes`);
+      return false;
+    }
+
+    try {
+      const buf = await fs.readFile(localPath);
+      const { error } = await sb.storage.from(bucket).upload(destPath, buf, {
+        upsert: true,
+        contentType,
+        cacheControl: '3600',
+      });
+      if (error) {
+        const sc = String(error.statusCode || error.status || '');
+        const msg = String(error.message || error.error || '');
+        if (sc === '413' || /exceeded the maximum allowed size/i.test(msg)) {
+          skipped.push({ localPath, destPath, reason: `storage_${sc || '413'}` });
+          console.warn(`[skip] ${destPath} rejected by Storage (413 too large)`);
+          return false;
+        }
+        throw error;
+      }
+      uploads.push(destPath);
+      return true;
+    } catch (err) {
+      // If Storage is configured with a size cap, skip large objects instead of aborting the whole sync.
+      const msg = String((err && err.message) || err || '');
+      if (/413|exceeded the maximum allowed size/i.test(msg)) {
+        skipped.push({ localPath, destPath, reason: 'storage_413' });
+        console.warn(`[skip] ${destPath} rejected by Storage (413 too large)`);
+        return false;
+      }
+      throw err;
+    }
   }
 
   let montagePngs = [];
@@ -307,18 +339,30 @@ async function main() {
 
     // Patterns aligned with DEFAULT_FOLDER_STRUCTURE in p-brain-web.
     const t1Patterns = parseCommaPatterns(process.env.PBRAIN_T1_PATTERN || 'WIPcs_T1W_3D_TFE_32channel.nii*,*T1*.nii*');
+    const t2Patterns = parseCommaPatterns(
+      process.env.PBRAIN_T2_PATTERN ||
+        'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,ax*WIPcs_3D_Brain_VIEW_T2_32chSHC.nii*,WIPAxT2TSEmatrix.nii*,*T2*.nii*'
+    );
+    const flairPatterns = parseCommaPatterns(
+      process.env.PBRAIN_FLAIR_PATTERN ||
+        'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,ax*WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii*,*FLAIR*.nii*'
+    );
     const dcePatterns = parseCommaPatterns(process.env.PBRAIN_DCE_PATTERN || 'WIPDelRec-hperf120long.nii*,WIPhperf120long.nii*,*DCE*.nii*');
     const diffusionPatterns = parseCommaPatterns(
       process.env.PBRAIN_DIFFUSION_PATTERN ||
-        'Reg-DWInySENSE*.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*'
+        'Reg-DWInySENSE.nii*,Reg-DWInySENSE_ADC.nii*,isoDWIb-1000*.nii*,WIPDTI_RSI_*.nii*,WIPDWI_RSI_*.nii*,*DTI*.nii*'
     );
 
     const t1File = firstMatchingByPatterns(allNifti, t1Patterns);
+    const t2File = firstMatchingByPatterns(allNifti, t2Patterns);
+    const flairFile = firstMatchingByPatterns(allNifti, flairPatterns);
     const dceFile = firstMatchingByPatterns(allNifti, dcePatterns);
     const diffFile = firstMatchingByPatterns(allNifti, diffusionPatterns);
 
     const wanted = [];
     if (t1File) wanted.push({ kind: 't1', file: t1File });
+    if (t2File) wanted.push({ kind: 't2', file: t2File });
+    if (flairFile) wanted.push({ kind: 'flair', file: flairFile });
     if (dceFile) wanted.push({ kind: 'dce', file: dceFile });
     if (diffFile) wanted.push({ kind: 'diffusion', file: diffFile });
 
@@ -329,8 +373,8 @@ async function main() {
     for (const { kind, file } of toUpload) {
       const local = path.join(niftiRoot, file);
       const dest = `projects/${projectId}/subjects/${subjectId}/volumes/source/${file}`;
-      await uploadFile(local, dest, 'application/octet-stream');
-      uploadedVolumes.push({ id: file, name: file, path: dest, kind });
+      const ok = await uploadFile(local, dest, 'application/octet-stream');
+      if (ok) uploadedVolumes.push({ id: file, name: file, path: dest, kind });
     }
   }
 
@@ -341,8 +385,27 @@ async function main() {
     for (const f of niftiLike) {
       const rel = normalizeRel(path.relative(analysisRoot, f));
       const dest = `projects/${projectId}/subjects/${subjectId}/analysis/${rel}`;
-      await uploadFile(f, dest, 'application/octet-stream');
-      uploadedMaps.push({ id: path.basename(f), name: path.basename(f), path: dest });
+      const ok = await uploadFile(f, dest, 'application/octet-stream');
+      if (ok) uploadedMaps.push({ id: path.basename(f), name: path.basename(f), path: dest });
+    }
+  }
+
+  // Metrics JSON (used by Tables): upload a small, stable set of outputs.
+  {
+    const analysisRoot = path.join(subjectDir, 'Analysis');
+    const wanted = [
+      'Ki_values_atlas_patlak.json',
+      'Ki_values_atlas_tikhonov.json',
+      'AI_values_median_patlak.json',
+      'AI_values_median_tikhonov.json',
+    ];
+
+    for (const name of wanted) {
+      const local = path.join(analysisRoot, name);
+      if (!(await exists(local))) continue;
+      const dest = `projects/${projectId}/subjects/${subjectId}/analysis/metrics/${name}`;
+      const ok = await uploadFile(local, dest, 'application/json');
+      if (ok) uploadedMetrics.push({ id: name, name, path: dest });
     }
   }
 
@@ -399,10 +462,12 @@ async function main() {
       curves: curves.length,
       volumes: uploadedVolumes.length,
       maps: uploadedMaps.length,
+      metrics: uploadedMetrics.length,
     },
     paths: uploads,
     volumes: uploadedVolumes,
     maps: uploadedMaps,
+    metrics: uploadedMetrics,
   };
 
   const indexDest = `projects/${projectId}/subjects/${subjectId}/artifacts/index.json`;
@@ -416,6 +481,7 @@ async function main() {
   console.log(`Synced artifacts for subject ${match.name} (${subjectId})`);
   console.log(`Bucket: ${bucket}`);
   console.log(`Uploaded: ${uploads.length + 1} objects`);
+  if (skipped.length) console.log(`Skipped: ${skipped.length} objects (size-limited)`);
   console.log(`Index: ${indexDest}`);
 }
 
