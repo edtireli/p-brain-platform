@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
 import { engine } from '@/lib/engine';
 import type { VolumeFile } from '@/types';
 
@@ -15,9 +16,11 @@ interface VolumeViewerProps {
 
 export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true }: VolumeViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hotkeyRef = useRef<HTMLDivElement>(null);
   const [volumePath, setVolumePath] = useState<string | null>(null);
   const [volumes, setVolumes] = useState<VolumeFile[]>([]);
   const [selectedVolumeId, setSelectedVolumeId] = useState<string>('');
+  const [activeKind, setActiveKind] = useState<NonNullable<VolumeFile['kind']>>(() => kind);
   const [maxZ, setMaxZ] = useState(63);
   const [maxT, setMaxT] = useState(79);
   const [sliceZ, setSliceZ] = useState(32);
@@ -27,6 +30,33 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 	const [colormap, setColormap] = useState<'grayscale' | 'viridis' | 'hlcolour'>(() => (kind === 'map' ? 'hlcolour' : 'grayscale'));
 	const [viewMode, setViewMode] = useState<'single' | 'grid'>(() => (kind === 'map' ? 'grid' : 'single'));
   const [slices, setSlices] = useState<number[][][] | null>(null);
+  const [hotkeysActive, setHotkeysActive] = useState(false);
+
+  useEffect(() => {
+    setActiveKind(kind);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
+
+  const kindButtons = useMemo(
+    () =>
+      [
+        { key: 'dce', label: 'DCE' },
+        { key: 't1', label: 'T1' },
+        { key: 't2', label: 'T2' },
+        { key: 'flair', label: 'FLAIR' },
+        { key: 'diffusion', label: 'Diffusion' },
+      ] as const,
+    []
+  );
+
+  const availableKinds = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of volumes) {
+      const k = String((v as any)?.kind || '').toLowerCase();
+      if (k) s.add(k);
+    }
+    return s;
+  }, [volumes]);
 
   const isImagePath = (p: string | null): boolean => {
     if (!p) return false;
@@ -37,14 +67,48 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
   const isImage = isImagePath(volumePath);
 
   useEffect(() => {
+    if (!hotkeysActive) return;
+    if (!volumePath || isImage) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSliceZ(prev => Math.max(0, Math.min(maxZ, prev - 1)));
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSliceZ(prev => Math.max(0, Math.min(maxZ, prev + 1)));
+        return;
+      }
+
+      const isDce = String(activeKind).toLowerCase() === 'dce';
+      if (!isDce || maxT <= 0) return;
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev - 1)));
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setTimeFrame(prev => Math.max(0, Math.min(maxT, prev + 1)));
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, { passive: false });
+    return () => window.removeEventListener('keydown', onKeyDown as any);
+  }, [hotkeysActive, volumePath, isImage, maxZ, maxT, activeKind]);
+
+  useEffect(() => {
     const load = async () => {
       try {
         if (path) {
           setVolumes([]);
           setSelectedVolumeId(path);
           setVolumePath(path);
-			setColormap(kind === 'map' ? 'hlcolour' : 'grayscale');
-			setViewMode(kind === 'map' ? 'grid' : 'single');
+			setColormap(activeKind === 'map' ? 'hlcolour' : 'grayscale');
+			setViewMode(activeKind === 'map' ? 'grid' : 'single');
           return;
         }
 
@@ -53,7 +117,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
           setVolumes(list);
 
           const preferred =
-            list.find(v => (v.kind || '').toString().toLowerCase() === kind)?.path ||
+            list.find(v => (v.kind || '').toString().toLowerCase() === String(activeKind).toLowerCase())?.path ||
             list[0]?.path ||
             null;
 
@@ -61,12 +125,12 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
             setSelectedVolumeId(preferred);
             setVolumePath(preferred);
           } else {
-            const resolved = await engine.resolveDefaultVolume(subjectId, kind);
+            const resolved = await engine.resolveDefaultVolume(subjectId, activeKind as any);
             setSelectedVolumeId(resolved);
             setVolumePath(resolved);
           }
         } else {
-          const resolvedPath = await engine.resolveDefaultVolume(subjectId, kind);
+          const resolvedPath = await engine.resolveDefaultVolume(subjectId, activeKind as any);
           setSelectedVolumeId(resolvedPath);
           setVolumePath(resolvedPath);
         }
@@ -77,7 +141,7 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
       }
     };
     load();
-  }, [subjectId, path, kind, allowSelect]);
+  }, [subjectId, path, activeKind, allowSelect]);
 
   useEffect(() => {
     const loadInfo = async () => {
@@ -168,7 +232,8 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
           const value = row?.[x] ?? 0;
           const normalized = Math.max(0, Math.min(1, (value - windowMin) / safeDenom));
           const px = ox + x;
-          const py = oy + y;
+          // NIfTI slices often come out inverted in our canvas mapping; flip vertically.
+          const py = oy + (height - 1 - y);
           const idx = (py * canvas.width + px) * 4;
 
           if (colormap === 'grayscale') {
@@ -255,8 +320,16 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 	};
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-      <Card className="flex items-center justify-center bg-muted/30 p-8">
+    <div className="flex flex-col gap-4">
+      <Card
+        ref={hotkeyRef as any}
+        className="flex min-h-[65vh] flex-1 items-center justify-center bg-muted/30 p-3"
+        tabIndex={0}
+        onFocus={() => setHotkeysActive(true)}
+        onBlur={() => setHotkeysActive(false)}
+        onMouseEnter={() => setHotkeysActive(true)}
+        onMouseLeave={() => setHotkeysActive(false)}
+      >
         {!volumePath ? (
           <div className="text-center text-sm text-muted-foreground">
             No volumes available yet
@@ -265,20 +338,78 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
           <img
             alt="Volume preview"
             src={volumePath}
-            className="max-h-[600px] w-full max-w-full rounded-lg border border-border bg-background object-contain"
+            className="h-full w-full rounded-lg border border-border bg-background object-contain"
           />
         ) : (
           <canvas
             ref={canvasRef}
-            className="max-h-[600px] max-w-full rounded-lg border border-border shadow-lg"
+            className="h-full w-full rounded-lg border border-border shadow-lg"
             style={{ imageRendering: 'pixelated' }}
           />
         )}
       </Card>
 
-      <Card className="p-6">
-        <div className="space-y-6">
-          {allowSelect && !path ? (
+      <Card className="p-4">
+        <div className="flex flex-col gap-4">
+          {allowSelect && !path && activeKind !== 'map' ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <Label>Modality</Label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {kindButtons.map(kb => {
+                    const k = kb.key;
+                    const isActive = String(activeKind).toLowerCase() === k;
+                    const has = volumes.length > 0 ? availableKinds.has(k) : true;
+                    return (
+                      <Button
+                        key={k}
+                        type="button"
+                        size="sm"
+                        variant={isActive ? 'default' : 'outline'}
+                        disabled={!has}
+                        onClick={async () => {
+                          setActiveKind(k);
+                          try {
+                            const preferred = volumes.find(v => (v.kind || '').toString().toLowerCase() === k)?.path;
+                            const resolved = preferred || (await engine.resolveDefaultVolume(subjectId, k as any));
+                            setSelectedVolumeId(resolved);
+                            setVolumePath(resolved);
+                          } catch (e) {
+                            console.error('Failed to switch modality', e);
+                          }
+                        }}
+                      >
+                        {kb.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Keep the full list for power users (lots of volumes) */}
+              <div className="min-w-[260px]">
+                <Label>Image</Label>
+                <Select
+                  value={selectedVolumeId}
+                  onValueChange={(value) => {
+                    setSelectedVolumeId(value);
+                    setVolumePath(value);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a volume" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {volumes.map(v => (
+                      <SelectItem key={v.id} value={v.path}>
+                        {v.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          ) : allowSelect && !path ? (
             <div className="space-y-2">
               <Label>Image</Label>
               <Select
@@ -304,17 +435,48 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
 
           {isImage ? null : (
             <>
-              <div className="space-y-2">
-                <Label>View</Label>
-                <Select value={viewMode} onValueChange={(v) => setViewMode(v as 'single' | 'grid')}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="single">Single slice</SelectItem>
-                    <SelectItem value="grid">Multi-slice (3×3)</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <Label>View</Label>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" type="button" variant={viewMode === 'single' ? 'default' : 'outline'} onClick={() => setViewMode('single')}>
+                      Single
+                    </Button>
+                    <Button size="sm" type="button" variant={viewMode === 'grid' ? 'default' : 'outline'} onClick={() => setViewMode('grid')}>
+                      3×3
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Colormap</Label>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant={colormap === 'grayscale' ? 'default' : 'outline'}
+                      onClick={() => setColormap('grayscale')}
+                    >
+                      Gray
+                    </Button>
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant={colormap === 'hlcolour' ? 'default' : 'outline'}
+                      onClick={() => setColormap('hlcolour')}
+                    >
+                      HLColour
+                    </Button>
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant={colormap === 'viridis' ? 'default' : 'outline'}
+                      onClick={() => setColormap('viridis')}
+                    >
+                      Viridis
+                    </Button>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -367,19 +529,6 @@ export function VolumeViewer({ subjectId, path, kind = 'dce', allowSelect = true
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label>Colormap</Label>
-                <Select value={colormap} onValueChange={v => setColormap(v as any)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="grayscale">Grayscale</SelectItem>
-                    <SelectItem value="hlcolour">HLColour</SelectItem>
-                    <SelectItem value="viridis">Viridis</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
             </>
           )}
         </div>

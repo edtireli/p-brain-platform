@@ -343,6 +343,20 @@ async function _listObjectsForSubject(subj: Subject, relPrefix: string): Promise
   return [];
 }
 
+async function _listObjectsForSubjectRecursive(
+  subj: Subject,
+  relPrefix: string,
+  opts: { maxDepth: number; maxItems: number }
+): Promise<Array<{ name: string; fullPath: string }>> {
+  const keys = _subjectKeyCandidates(subj);
+  for (const key of keys) {
+    const pfx = _subjectScopedPath(subj.projectId, key, relPrefix);
+    const objs = await listObjectsRecursive(pfx, opts);
+    if (objs.length > 0) return objs;
+  }
+  return [];
+}
+
 async function listObjects(prefix: string): Promise<Array<{ name: string; fullPath: string }>> {
   if (!supabase) return [];
   const sb = supabase as any;
@@ -357,6 +371,38 @@ async function listObjects(prefix: string): Promise<Array<{ name: string; fullPa
   return (data || [])
     .filter((o: any) => o?.name && !isLikelyMacOsJunkFile(o.name))
     .map((o: any) => ({ name: o.name as string, fullPath: `${prefix}/${o.name}` }));
+}
+
+async function listObjectsRecursive(
+  prefix: string,
+  opts: { maxDepth: number; maxItems: number }
+): Promise<Array<{ name: string; fullPath: string }>> {
+  const { maxDepth, maxItems } = opts;
+  const out: Array<{ name: string; fullPath: string }> = [];
+  const seen = new Set<string>();
+  const queue: Array<{ pfx: string; depth: number }> = [{ pfx: prefix, depth: 0 }];
+
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (seen.has(cur.pfx)) continue;
+    seen.add(cur.pfx);
+
+    const listed = await listObjects(cur.pfx);
+    for (const o of listed) {
+      out.push(o);
+      if (out.length >= maxItems) return out;
+
+      if (cur.depth < maxDepth) {
+        const name = basename(o.fullPath);
+        // Heuristic: folders typically have no extension.
+        if (!/\.[a-z0-9]{1,5}$/i.test(name)) {
+          queue.push({ pfx: o.fullPath, depth: cur.depth + 1 });
+        }
+      }
+    }
+  }
+
+  return out;
 }
 
 function basename(p: string): string {
@@ -1266,15 +1312,15 @@ export class SupabaseEngineAPI {
 
       if (indexMaps.length > 0) return indexMaps;
 
-      // Fallback: list any NIfTI outputs under analysis/.
-      const objs = await _listObjectsForSubject(subj, 'analysis');
-      const nifti = objs.filter(o => /\.(nii|nii\.gz)$/i.test(o.name));
+      // Fallback: list any NIfTI outputs under analysis/ (recursively; Storage list() is non-recursive).
+      const objs = await _listObjectsForSubjectRecursive(subj, 'analysis', { maxDepth: 6, maxItems: 4000 });
+      const nifti = objs.filter(o => /\.(nii|nii\.gz)$/i.test(o.fullPath) || /\.(nii|nii\.gz)$/i.test(o.name));
       return nifti.map(o => ({
-        id: o.name,
-        name: o.name.replace(/\.(nii|nii\.gz)$/i, ''),
+        id: o.fullPath,
+        name: basename(o.fullPath).replace(/\.(nii|nii\.gz)$/i, ''),
         unit: '',
         path: o.fullPath,
-        group: /\/diffusion\//i.test(o.fullPath) || /^fa_|^md_|^ad_|^rd_|^mo_|tensor_residual_/i.test(o.name)
+        group: /\/diffusion\//i.test(o.fullPath) || /^fa_|^md_|^ad_|^rd_|^mo_|tensor_residual_/i.test(basename(o.fullPath))
           ? ('diffusion' as const)
           : ('modelling' as const),
       }));

@@ -48,7 +48,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
   const [storeWithPatientData, setStoreWithPatientData] = useState(true);
-  const [autoFillFromFolder, setAutoFillFromFolder] = useState(true);
 	const [pendingDroppedSubjects, setPendingDroppedSubjects] = useState<Array<{ name: string; sourcePath: string }>>([]);
   const [draftFolderStructure, setDraftFolderStructure] = useState<FolderStructureConfig>(DEFAULT_FOLDER_STRUCTURE);
   const [isDraggingCreate, setIsDraggingCreate] = useState(false);
@@ -60,39 +59,14 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
   const subjectIdRe = /^\d{8}x\d+$/i;
 
-  const autoImportSubjects = async (project: Project, storagePath: string) => {
+  const importDroppedSubjectsOnly = async (project: Project) => {
     try {
-    if (pendingDroppedSubjects.length > 0) {
+      if (pendingDroppedSubjects.length === 0) return;
       await engine.importSubjects(project.id, pendingDroppedSubjects);
       toast.success(`Imported ${pendingDroppedSubjects.length} subject${pendingDroppedSubjects.length > 1 ? 's' : ''}`);
       setPendingDroppedSubjects([]);
-      return;
-    }
-
-      const scan = await engine.scanProjectSubjects(project.id);
-      let toImport = (scan?.subjects || []).slice();
-
-      if (toImport.length === 0) {
-        const base = (storagePath || '')
-          .trim()
-          .replace(/\/+$/, '')
-          .split('/')
-          .filter(Boolean)
-          .pop();
-        if (base && subjectIdRe.test(base)) {
-          toImport = [{ name: base, sourcePath: storagePath }];
-        }
-      }
-
-      if (toImport.length === 0) {
-        toast.info('Project created, but no subject folders were found in the storage path.');
-        return;
-      }
-
-      await engine.importSubjects(project.id, toImport);
-      toast.success(`Imported ${toImport.length} subject${toImport.length > 1 ? 's' : ''}`);
     } catch (error) {
-      toast.error('Project created, but failed to auto-import subjects');
+      toast.error('Project created, but failed to import dropped subjects');
       console.error(error);
     }
   };
@@ -151,14 +125,11 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       setDraftName('');
       setDraftStoragePath('');
       setStoreWithPatientData(true);
-      setAutoFillFromFolder(true);
 		setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
   		setPendingDroppedSubjects([]);
       loadProjects();
 
-      if (autoFillFromFolder) {
-        await autoImportSubjects(project, storagePath);
-      }
+      await importDroppedSubjectsOnly(project);
       onSelectProject(project.id);
     } catch (error) {
       toast.error('Failed to create project');
@@ -199,7 +170,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     setDraftStoragePath(prefill?.storagePath ?? '');
     setPendingDroppedSubjects(prefill?.subjects ?? []);
     setStoreWithPatientData(true);
-    setAutoFillFromFolder(true);
 		setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
     setIsCreateDialogOpen(true);
   };
@@ -276,7 +246,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     if (subjects.length > 0) {
       toast.info('Folder dropped. Subject folders will be imported after project creation.');
     } else {
-      toast.info('Folder dropped. If this contains subject folders, enable “Automatically import subjects” after creating the project.');
+      toast.info('Folder dropped. No subject folders detected.');
     }
   }, []);
 
@@ -395,17 +365,6 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                       />
                     </div>
                   )}
-
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <Label>Automatically import subjects</Label>
-                      <p className="text-xs text-muted-foreground">Import subject folders found in the dropped folder (or the storage path name).</p>
-                    </div>
-                    <Switch
-                      checked={autoFillFromFolder}
-                      onCheckedChange={(checked) => setAutoFillFromFolder(checked)}
-                    />
-                  </div>
                 </div>
 
         {pendingDroppedSubjects.length > 0 ? (

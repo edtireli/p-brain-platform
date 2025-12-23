@@ -20,7 +20,6 @@ function App() {
   const auth = useSupabaseAuth();
 
   const showAuthPanel = auth.configured && !!auth.user;
-  const authPanelTopClass = view.type === 'projects' ? 'top-4' : 'top-24';
 
   // Login is always the entry point.
   // - If Supabase isn't configured, show the login page with config instructions.
@@ -54,20 +53,16 @@ function App() {
 
   return (
     <>
-      <div className="relative">
+      <div className="min-h-screen">
         {needsLogin ? (
           <LoginPage />
         ) : (
           <>
             {showAuthPanel ? (
-              <div className={`pointer-events-none fixed right-4 ${authPanelTopClass} z-50`}>
-                <div className="pointer-events-auto flex flex-col items-end gap-2 rounded-md border border-border bg-background/80 px-3 py-2 text-xs text-muted-foreground backdrop-blur sm:flex-row sm:items-center">
-                  <span className="mono max-w-[240px] truncate sm:max-w-[320px]">{auth.user.email}</span>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => supabase?.auth.signOut()}
-                  >
+              <div className="border-b border-border bg-background">
+                <div className="mx-auto flex w-full max-w-7xl items-center justify-end gap-3 px-4 py-3 text-xs text-muted-foreground">
+                  <span className="mono max-w-[60vw] truncate">{auth.user.email}</span>
+                  <Button size="sm" variant="secondary" onClick={() => supabase?.auth.signOut()}>
                     Sign out
                   </Button>
                 </div>
