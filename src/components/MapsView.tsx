@@ -66,7 +66,25 @@ const MAP_GROUPS: MapGroupDef[] = [
       {
         key: 'tissue',
         label: 'Tissue',
-        slot: { id: 'Ki_tissue', label: 'Ki (tissue)', group: 'modelling', candidates: [] },
+        slot: {
+          id: 'Ki_tissue',
+          label: 'Ki (tissue)',
+          group: 'modelling',
+          candidates: [
+            'Ki_wm_tikhonov',
+            'Ki_wm_patlak',
+            'Ki_wm_two_compartment',
+            'Ki_cortical_gm_tikhonov',
+            'Ki_cortical_gm_patlak',
+            'Ki_cortical_gm_two_compartment',
+            'Ki_subcortical_gm_tikhonov',
+            'Ki_subcortical_gm_patlak',
+            'Ki_subcortical_gm_two_compartment',
+            'Ki_boundary_tikhonov',
+            'Ki_boundary_patlak',
+            'Ki_boundary_two_compartment',
+          ],
+        },
       },
     ],
   },
@@ -92,7 +110,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'vp_map_atlas',
           label: 'vp (atlas)',
           group: 'modelling',
-          candidates: ['vp_map_atlas'],
+          candidates: ['vp_map_atlas_tikhonov', 'vp_map_atlas_patlak', 'vp_map_atlas_two_compartment'],
         },
       },
       {
@@ -194,8 +212,8 @@ const MAP_GROUPS: MapGroupDef[] = [
     group: 'diffusion',
     variants: [
       { key: 'voxel', label: 'Voxel', slot: { id: 'FA', label: 'FA', group: 'diffusion', candidates: ['FA_map', 'fa_map'] } },
-      { key: 'segmentation', label: 'Segmentation', slot: { id: 'FA_seg', label: 'FA (seg)', group: 'diffusion', candidates: [] } },
-      { key: 'tissue', label: 'Tissue', slot: { id: 'FA_tissue', label: 'FA (tissue)', group: 'diffusion', candidates: [] } },
+      { key: 'segmentation', label: 'Segmentation', slot: { id: 'FA_seg', label: 'FA (atlas)', group: 'diffusion', candidates: ['fa_map_atlas'] } },
+      { key: 'tissue', label: 'Tissue', slot: { id: 'FA_tissue', label: 'FA (WM)', group: 'diffusion', candidates: ['FA_WM_map', 'fa_wm_map'] } },
     ],
   },
   {
@@ -306,38 +324,50 @@ export function MapsView({ subjectId }: MapsViewProps) {
     id: string;
     label: string;
     group: 'modelling' | 'diffusion';
-    variants: Array<{ key: MapVariantKey; label: string; slot: ExpectedMap; hit: MapVolume | null }>;
+    variants: Array<{ key: MapVariantKey; label: string; slot: ExpectedMap; hits: MapVolume[] }>;
     anyAvailable: boolean;
   };
 
   const grouped = useMemo((): MapGroupRuntime[] => {
     return MAP_GROUPS.map(g => {
       const variants = g.variants.map(v => {
-        const hit = v.slot.candidates
+        const hits = v.slot.candidates
           .map(c => availableByBase.get(String(c).toLowerCase()))
-          .find(Boolean) ?? null;
-        return { ...v, hit };
+          .filter(Boolean) as MapVolume[];
+        return { ...v, hits };
       });
       return {
         id: g.id,
         label: g.label,
         group: g.group,
         variants,
-        anyAvailable: variants.some(v => !!v.hit),
+        anyAvailable: variants.some(v => (v.hits?.length ?? 0) > 0),
       };
     });
   }, [availableByBase]);
 
   const openGroup = useMemo(() => grouped.find(g => g.id === openGroupId) ?? null, [grouped, openGroupId]);
 
+  const [activeFileId, setActiveFileId] = useState<string>('');
+
   useEffect(() => {
     if (!openGroup) return;
-    const preferred = openGroup.variants.find(v => v.key === activeVariant && !!v.hit);
+    const preferred = openGroup.variants.find(v => v.key === activeVariant && (v.hits?.length ?? 0) > 0);
     if (preferred) return;
-    const firstAvail = openGroup.variants.find(v => !!v.hit);
+    const firstAvail = openGroup.variants.find(v => (v.hits?.length ?? 0) > 0);
     setActiveVariant(firstAvail?.key ?? 'voxel');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openGroupId]);
+
+  useEffect(() => {
+    if (!openGroup) {
+      setActiveFileId('');
+      return;
+    }
+    const v = openGroup.variants.find(x => x.key === activeVariant) ?? openGroup.variants[0];
+    const first = v?.hits?.[0];
+    setActiveFileId(first?.id ?? '');
+  }, [openGroupId, activeVariant, openGroup]);
 
   const [ensuringMaps, setEnsuringMaps] = useState(false);
   const [ensureMsg, setEnsureMsg] = useState<string>('');
@@ -464,7 +494,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
                 <div className="flex flex-wrap gap-2">
                   {openGroup.variants.map(v => {
                     const isActive = v.key === activeVariant;
-                    const has = !!v.hit;
+                    const has = (v.hits?.length ?? 0) > 0;
                     return (
                       <Button
                         key={v.key}
@@ -480,39 +510,69 @@ export function MapsView({ subjectId }: MapsViewProps) {
                   })}
                 </div>
 
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={!subject || ensuringMaps}
-                  onClick={async () => {
-                    if (!subject) return;
-                    try {
-                      setEnsuringMaps(true);
-                      setEnsureMsg('Queued full pipeline (waiting for worker)…');
-                      await engine.runFullPipeline(subject.projectId, [subjectId]);
-                    } catch (e: any) {
-                      setEnsureMsg(String(e?.message || e || 'Failed to queue pipeline'));
-                    } finally {
-                      setEnsuringMaps(false);
-                    }
-                  }}
-                >
-                  Run pipeline
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={!subject || ensuringMaps}
+                    onClick={async () => {
+                      if (!subject) return;
+                      try {
+                        setEnsuringMaps(true);
+                        setEnsureMsg('Queued full pipeline (waiting for worker)…');
+                        await engine.runFullPipeline(subject.projectId, [subjectId]);
+                      } catch (e: any) {
+                        setEnsureMsg(String(e?.message || e || 'Failed to queue pipeline'));
+                      } finally {
+                        setEnsuringMaps(false);
+                      }
+                    }}
+                  >
+                    Run pipeline
+                  </Button>
+                </div>
               </div>
 
               {(() => {
                 const v = openGroup.variants.find(x => x.key === activeVariant) ?? openGroup.variants[0];
                 if (!v) return null;
-                if (!v.hit) {
+                if (!v.hits || v.hits.length === 0) {
                   return (
                     <div className="rounded-lg border border-border bg-muted/20 p-6 text-sm text-muted-foreground">
                       {v.slot.label} is missing for this subject.
                     </div>
                   );
                 }
-                return <VolumeViewer subjectId={subjectId} path={v.hit.path} kind="map" />;
+
+                const active = v.hits.find(h => h.id === activeFileId) ?? v.hits[0];
+                const options = v.hits;
+
+                return (
+                  <div className="space-y-3">
+                    {options.length > 1 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-muted-foreground">Showing:</div>
+                        <div className="w-[360px]">
+                          <Select value={active?.id ?? ''} onValueChange={setActiveFileId}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a variant file" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {options.map(o => (
+                                <SelectItem key={o.id} value={o.id}>
+                                  {o.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <VolumeViewer subjectId={subjectId} path={active.path} kind="map" />
+                  </div>
+                );
               })()}
             </div>
           ) : null}

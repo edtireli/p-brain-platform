@@ -704,36 +704,84 @@ def _analysis_map_volumes(subject: Subject) -> List[Dict[str, Any]]:
 
 def _analysis_map_volumes_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
     analysis_dir = subject_dir.expanduser().resolve() / "Analysis"
-    maps: List[Dict[str, Any]] = []
+    if not analysis_dir.exists():
+        return []
 
-    atlas_maps = [
-        ("ki_atlas", "Ki Map (atlas)", "ml/100g/min", analysis_dir / "Ki_map_atlas.nii.gz"),
-        ("sd_ki_atlas", "SD Ki Map (atlas)", "ml/100g/min", analysis_dir / "SD_Ki_map_atlas.nii.gz"),
-        ("vp_atlas", "vp Map (atlas)", "fraction", analysis_dir / "vp_map_atlas.nii.gz"),
-        ("cbf_tikh_atlas", "CBF Map (tikhonov, atlas)", "ml/100g/min", analysis_dir / "CBF_tikhonov_map_atlas.nii.gz"),
-        ("mtt_tikh_atlas", "MTT Map (tikhonov, atlas)", "s", analysis_dir / "MTT_tikhonov_map_atlas.nii.gz"),
-        ("cth_tikh_atlas", "CTH Map (tikhonov, atlas)", "s", analysis_dir / "CTH_tikhonov_map_atlas.nii.gz"),
-    ]
-    for map_id, name, unit, path in atlas_maps:
-        if path.exists():
-            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "modelling"})
+    def base_no_ext(name: str) -> str:
+        n = name
+        if n.lower().endswith(".nii.gz"):
+            return n[:-7]
+        if n.lower().endswith(".nii"):
+            return n[:-4]
+        return n
 
-    diffusion_dir = analysis_dir / "diffusion"
-    diffusion_maps = [
-        ("fa", "FA Map", "fraction", diffusion_dir / "fa_map.nii.gz"),
-        ("md", "MD Map", "mm²/s", diffusion_dir / "md_map.nii.gz"),
-        ("ad", "AD Map", "mm²/s", diffusion_dir / "ad_map.nii.gz"),
-        ("rd", "RD Map", "mm²/s", diffusion_dir / "rd_map.nii.gz"),
-    ]
-    for map_id, name, unit, path in diffusion_maps:
-        if path.exists():
-            maps.append({"id": map_id, "name": name, "unit": unit, "path": str(path), "group": "diffusion"})
+    diffusion_keys = {"fa", "md", "ad", "rd", "mo"}
 
-    legacy_fa = analysis_dir / "FA_map.nii.gz"
-    if legacy_fa.exists() and not any(m.get("id") == "fa" for m in maps):
-        maps.append({"id": "fa", "name": "FA Map", "unit": "fraction", "path": str(legacy_fa), "group": "diffusion"})
+    def infer_group(p: Path) -> str:
+        parts = {x.lower() for x in p.parts}
+        if "diffusion" in parts:
+            return "diffusion"
+        b = base_no_ext(p.name).lower()
+        if b in diffusion_keys or b.startswith("tensor_") or b.endswith("_tensor") or b.startswith("fa_"):
+            return "diffusion"
+        return "modelling"
 
-    return maps
+    def infer_unit(base: str) -> str:
+        b = base.lower()
+        if b.startswith("ki"):
+            return "ml/100g/min"
+        if b.startswith("cbf"):
+            return "ml/100g/min"
+        if b.startswith("mtt"):
+            return "s"
+        if b.startswith("cth"):
+            return "s"
+        if b.startswith("vp"):
+            return "fraction"
+        if b.startswith("fa"):
+            return "fraction"
+        # md/ad/rd units vary; keep empty to avoid lying
+        return ""
+
+    # Collect any NIfTI volumes under Analysis (including diffusion/).
+    files: List[Path] = []
+    for p in analysis_dir.rglob("*.nii"):
+        files.append(p)
+    for p in analysis_dir.rglob("*.nii.gz"):
+        files.append(p)
+
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in sorted(set(files)):
+        if not p.is_file():
+            continue
+        if p.name.startswith("._") or p.name == ".DS_Store":
+            continue
+        # Skip noisy debug outputs.
+        if "native_debug" in p.name.lower():
+            continue
+
+        base = base_no_ext(p.name)
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        group = infer_group(p)
+        unit = infer_unit(base)
+        out.append(
+            {
+                "id": base,
+                "name": base,
+                "unit": unit,
+                "path": str(p),
+                "group": group,
+            }
+        )
+
+    # Stable ordering: modelling first, then diffusion; then alphabetical.
+    out.sort(key=lambda m: (0 if m.get("group") == "modelling" else 1, str(m.get("name") or "")))
+    return out
 
 
 def _montage_images_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
