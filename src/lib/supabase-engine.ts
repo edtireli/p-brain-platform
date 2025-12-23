@@ -732,6 +732,24 @@ export class SupabaseEngineAPI {
     }, []);
   }
 
+  async getRunnerHeartbeats(): Promise<Array<{ workerId: string; lastSeen: string; hostname?: string; meta?: any }>> {
+    return safe(async () => {
+      const sb = supabase! as any;
+      const { data, error } = await sb
+        .from('worker_heartbeats')
+        .select('worker_id,last_seen,hostname,meta')
+        .order('last_seen', { ascending: false })
+        .limit(10);
+      if (error || !data) return [];
+      return (data || []).map((r: any) => ({
+        workerId: String(r.worker_id ?? ''),
+        lastSeen: String(r.last_seen ?? ''),
+        hostname: r.hostname ?? undefined,
+        meta: r.meta ?? undefined,
+      }));
+    }, []);
+  }
+
   async cancelJob(jobId: string): Promise<void> {
     await safe(async () => {
       const sb = supabase! as any;

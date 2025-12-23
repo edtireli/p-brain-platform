@@ -187,6 +187,22 @@ create index if not exists job_outputs_kind_idx on public.job_outputs (kind);
 alter table public.job_events enable row level security;
 alter table public.job_outputs enable row level security;
 
+-- Runner heartbeat (observability)
+create table if not exists public.worker_heartbeats (
+  worker_id text primary key,
+  last_seen timestamptz not null default now(),
+  hostname text,
+  meta jsonb not null default '{}'::jsonb
+);
+
+alter table public.worker_heartbeats enable row level security;
+
+drop policy if exists "worker_heartbeats_select" on public.worker_heartbeats;
+create policy "worker_heartbeats_select"
+  on public.worker_heartbeats for select
+  to authenticated
+  using (true);
+
 -- Events: allow users to see only their jobs' events
 drop policy if exists "job_events_select_own" on public.job_events;
 create policy "job_events_select_own"

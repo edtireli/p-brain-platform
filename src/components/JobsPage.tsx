@@ -23,12 +23,36 @@ export function JobsPage({ onBack }: JobsPageProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [jobLogs, setJobLogs] = useState<Record<string, Job['logs']>>({});
+  const [runnerStatus, setRunnerStatus] = useState<{ lastSeen?: string; workerId?: string; hostname?: string } | null>(null);
 
   useEffect(() => {
     loadJobs();
     const interval = setInterval(loadJobs, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (jobs.length === 0) return;
+    const hasActive = jobs.some(j => j.status === 'running' || j.status === 'queued');
+    const anyRunning = jobs.some(j => j.status === 'running');
+    if (!hasActive || anyRunning) {
+      setRunnerStatus(null);
+      return;
+    }
+    (async () => {
+      try {
+        const beats = await (engine as any).getRunnerHeartbeats?.();
+        const first = Array.isArray(beats) ? beats[0] : null;
+        if (first?.lastSeen) {
+          setRunnerStatus({ lastSeen: first.lastSeen, workerId: first.workerId, hostname: first.hostname });
+        } else {
+          setRunnerStatus({});
+        }
+      } catch {
+        setRunnerStatus({});
+      }
+    })();
+  }, [jobs]);
 
   useEffect(() => {
     filterJobs();
@@ -157,6 +181,16 @@ export function JobsPage({ onBack }: JobsPageProps) {
   const completedJobs = jobs.filter(j => j.status === 'completed').length;
   const failedJobs = jobs.filter(j => j.status === 'failed').length;
 
+  const oldestQueuedAgeSec = (() => {
+    const queued = jobs.filter(j => j.status === 'queued');
+    if (queued.length === 0) return 0;
+    const oldest = queued
+      .map(j => Date.parse((j as any).created_at ?? j.startTime ?? '') || Date.now())
+      .reduce((a, b) => Math.min(a, b), Date.now());
+    return Math.max(0, Math.floor((Date.now() - oldest) / 1000));
+  })();
+  const showRunnerHint = activeJobs > 0 && jobs.every(j => j.status !== 'running') && oldestQueuedAgeSec >= 15;
+
   return (
     <div className="min-h-screen bg-background">
       <div className="border-b border-border bg-card">
@@ -198,6 +232,25 @@ export function JobsPage({ onBack }: JobsPageProps) {
       </div>
 
       <div className="mx-auto max-w-7xl px-6 py-6">
+        {showRunnerHint ? (
+          <Card className="mb-6 border border-border bg-card">
+            <div className="px-5 py-4 text-sm">
+              <div className="font-medium">Jobs are queued but nothing is claiming them.</div>
+              <div className="mt-1 text-muted-foreground">
+                In Supabase control-plane mode you must run the local worker on the machine that has the data.
+                Start it with <span className="mono">backend/scripts/run_supabase_worker.sh</span> (configure <span className="mono">backend/.env</span>).
+              </div>
+              {runnerStatus ? (
+                <div className="mt-2 text-muted-foreground">
+                  {runnerStatus.lastSeen
+                    ? <>Runner last seen: <span className="mono">{runnerStatus.lastSeen}</span>{runnerStatus.hostname ? <> (<span className="mono">{runnerStatus.hostname}</span>)</> : null}</>
+                    : <>Runner status: <span className="mono">unknown</span> (no heartbeat found)</>}
+                </div>
+              ) : null}
+            </div>
+          </Card>
+        ) : null}
+
         <div className="mb-6 flex items-center gap-3">
           <div className="relative flex-1">
             <MagnifyingGlass size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />

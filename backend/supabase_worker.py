@@ -143,6 +143,27 @@ def _upload_log(sb: Any, bucket: str, storage_path: str, log_path: Path) -> None
 		pass
 
 
+def _heartbeat(sb: Any, cfg: WorkerConfig) -> None:
+	try:
+		sb.table("worker_heartbeats").upsert(
+			{
+				"worker_id": cfg.worker_id,
+				"last_seen": _utc_now_iso(),
+				"hostname": socket.gethostname(),
+				"meta": {
+					"storage_root": str(cfg.storage_root),
+					"bucket": cfg.bucket,
+					"poll_interval_s": cfg.poll_interval_s,
+					"pbrain_main_py": cfg.pbrain_main_py,
+				},
+			},
+			on_conflict="worker_id",
+		).execute()
+	except Exception:
+		# Never crash the worker due to observability.
+		pass
+
+
 def _resolve_subject(payload: Dict[str, Any], storage_root: Path) -> tuple[str, Path]:
 	rel_path = (payload.get("relative_path") or payload.get("path") or payload.get("source_path") or "").strip()
 	if not rel_path:
@@ -277,6 +298,7 @@ def main() -> None:
 
 	while True:
 		try:
+			_heartbeat(sb, cfg)
 			job = _claim_job(sb, cfg.worker_id)
 			if not job:
 				time.sleep(cfg.poll_interval_s)
