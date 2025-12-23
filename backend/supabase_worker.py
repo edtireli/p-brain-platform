@@ -494,11 +494,47 @@ def _heartbeat(sb: SupabaseHttp, cfg: WorkerConfig) -> None:
 
 
 
+
+def _normalize_subject_path(raw: str, storage_root: Path) -> Path:
+	"""Resolve a subject path from a payload value.
+
+	The UI typically stores a *relative* path (e.g. "20250218x3") relative to
+	`storage_root`. Some users may provide paths like "data/20250218x3" when
+	`storage_root` itself is the "data" folder; normalize that to avoid
+	".../data/data/...".
+	"""
+	val = (raw or "").strip().replace("\\", "/")
+	if not val:
+		raise RuntimeError("Job payload missing relative_path/path/source_path")
+
+	root = storage_root.expanduser().resolve()
+
+	# 1) If an absolute path is provided and exists, accept it.
+	try_abs = Path(val).expanduser()
+	if try_abs.is_absolute():
+		abs_resolved = try_abs.resolve()
+		if abs_resolved.exists():
+			return abs_resolved
+		# If it's absolute but doesn't exist (e.g. different machine), fall back to
+		# treating it as relative to storage_root.
+		val = val.lstrip("/")
+
+	# 2) If payload accidentally includes the storage_root prefix, make it relative.
+	root_str = str(root).rstrip("/")
+	if root_str and val.startswith(root_str + "/"):
+		val = val[len(root_str) + 1 :]
+
+	# 3) Remove duplicated leading directory (e.g. "data/<x>" when root.name == "data").
+	parts = [p for p in val.split("/") if p and p != "."]
+	if parts and root.name and parts[0] == root.name:
+		parts = parts[1:]
+
+	return (root / Path(*parts)).resolve()
+
+
 def _resolve_subject(payload: Dict[str, Any], storage_root: Path) -> tuple[str, Path]:
 	rel_path = (payload.get("relative_path") or payload.get("path") or payload.get("source_path") or "").strip()
-	if not rel_path:
-		raise RuntimeError("Job payload missing relative_path/path/source_path")
-	full = (storage_root / rel_path).expanduser().resolve()
+	full = _normalize_subject_path(rel_path, storage_root)
 	if not full.exists():
 		raise RuntimeError(f"Local path not found on runner: {full}")
 	# p-brain expects --id to match the dataset folder name under --data-dir.
