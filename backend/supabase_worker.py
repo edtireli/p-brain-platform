@@ -250,6 +250,7 @@ def _heartbeat(sb: SupabaseHttp, cfg: WorkerConfig) -> None:
 		pass
 
 
+
 def _resolve_subject(payload: Dict[str, Any], storage_root: Path) -> tuple[str, Path]:
 	rel_path = (payload.get("relative_path") or payload.get("path") or payload.get("source_path") or "").strip()
 	if not rel_path:
@@ -257,8 +258,10 @@ def _resolve_subject(payload: Dict[str, Any], storage_root: Path) -> tuple[str, 
 	full = (storage_root / rel_path).expanduser().resolve()
 	if not full.exists():
 		raise RuntimeError(f"Local path not found on runner: {full}")
-	subject_id = str(payload.get("subject_id") or full.name)
-	return subject_id, full
+	# p-brain expects --id to match the dataset folder name under --data-dir.
+	# The Supabase subject_id is typically a UUID and should NOT be used here.
+	pbrain_id = str(payload.get("pbrain_id") or full.name)
+	return pbrain_id, full
 
 
 def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path: Path) -> None:
