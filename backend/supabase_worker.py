@@ -306,6 +306,54 @@ def _run_pbrain(cfg: WorkerConfig, subject_id: str, subject_path: Path, log_path
 		raise RuntimeError(f"p-brain exited with code {rc}; see log")
 
 
+def _sync_artifacts(cfg: WorkerConfig, job: Dict[str, Any], subject_path: Path, log_path: Path) -> None:
+	"""Upload a minimal set of artifacts to Supabase Storage for the web UI.
+
+	Uses the repo's scripts/sync-artifacts.mjs to keep artifact layout consistent.
+	"""
+	job_id = str(job.get("id"))
+	project_id = str(job.get("project_id") or "")
+	if not project_id:
+		raise RuntimeError("Job missing project_id; cannot sync artifacts")
+
+	repo_root = Path(__file__).expanduser().resolve().parents[1]
+	script = repo_root / "scripts" / "sync-artifacts.mjs"
+	if not script.exists():
+		raise RuntimeError(f"sync-artifacts script not found: {script}")
+
+	# Favor Node from PATH.
+	cmd = [
+		"node",
+		str(script),
+		"--project",
+		project_id,
+		"--subject-dir",
+		str(subject_path),
+		"--bucket",
+		cfg.bucket,
+	]
+
+	env = os.environ.copy()
+	env.setdefault("SUPABASE_URL", cfg.supabase_url)
+	env.setdefault("SUPABASE_SERVICE_ROLE_KEY", cfg.supabase_service_role_key)
+	env.setdefault("SUPABASE_BUCKET", cfg.bucket)
+
+	# Append output to the same runner log for easy debugging.
+	with log_path.open("ab") as f:
+		f.write(b"\n[supabase-worker] syncing artifacts to Storage...\n")
+		proc = subprocess.Popen(
+			cmd,
+			cwd=str(repo_root),
+			env=env,
+			stdout=f,
+			stderr=subprocess.STDOUT,
+		)
+		rc = proc.wait()
+		if rc != 0:
+			raise RuntimeError(f"sync-artifacts exited with code {rc}; see log")
+		f.write(b"[supabase-worker] artifact sync done\n")
+
+
 def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> None:
 	job_id = str(job.get("id"))
 	payload: Dict[str, Any] = job.get("payload") or {}
@@ -340,6 +388,23 @@ def _process_job(cfg: WorkerConfig, sb: SupabaseHttp, job: Dict[str, Any]) -> No
 
 	try:
 		_run_pbrain(cfg, subject_id, subject_path, log_path)
+
+		# Sync artifacts so the web UI can render Viewer/Curves/Maps.
+		_update_job(sb, job_id, {"current_step": "uploading artifacts", "progress": 0.92})
+		_log_event(sb, job_id, "info", "syncing artifacts to Storage")
+		_sync_artifacts(cfg, job, subject_path, log_path)
+		# The sync script writes these well-known paths.
+		try:
+			_insert_output(
+				sb,
+				job_id,
+				kind="artifacts_index",
+				storage_path=f"projects/{job.get('project_id')}/subjects/{job.get('subject_id')}/artifacts/index.json",
+				meta={"runner_id": cfg.worker_id},
+			)
+		except Exception:
+			pass
+
 		final_status = "completed"
 		_update_job(
 			sb,
