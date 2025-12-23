@@ -42,11 +42,33 @@ function baseNoExt(filename: string): string {
   return filename.replace(/\.(nii|nii\.gz|png)$/i, '');
 }
 
+function labelForMontage(filename: string): string {
+  const base = baseNoExt(filename).toLowerCase();
+  if (base === 'cbf_montage') return 'CBF';
+  if (base === 'mtt_montage') return 'MTT';
+  if (base === 'cth_montage') return 'CTH';
+  if (/^ki.*montage/.test(base)) return 'Ki';
+  if (/^vp.*montage/.test(base)) return 'vp';
+  if (/^fa.*montage/.test(base)) return 'FA';
+  if (/^md.*montage/.test(base)) return 'MD';
+  if (/^ad.*montage/.test(base)) return 'AD';
+  if (/^rd.*montage/.test(base)) return 'RD';
+  if (/^mo.*montage/.test(base)) return 'MO';
+  return filename;
+}
+
 export function MapsView({ subjectId }: MapsViewProps) {
   const [subject, setSubject] = useState<Subject | null>(null);
   const [maps, setMaps] = useState<MapVolume[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const selected = useMemo(() => maps.find(m => m.id === selectedId) ?? null, [maps, selectedId]);
+
+  const [montages, setMontages] = useState<Array<{ id: string; name: string; path: string }>>([]);
+  const [selectedMontageId, setSelectedMontageId] = useState<string>('');
+  const selectedMontage = useMemo(
+    () => montages.find(m => m.id === selectedMontageId) ?? null,
+    [montages, selectedMontageId]
+  );
 
   const availableByBase = useMemo(() => {
     const m = new Map<string, MapVolume>();
@@ -74,6 +96,14 @@ export function MapsView({ subjectId }: MapsViewProps) {
         if (cancelled) return;
         setSubject(s ?? null);
 
+        const montageList = await engine.getMontageImages(subjectId);
+        if (cancelled) return;
+        setMontages(montageList);
+        setSelectedMontageId(prev => {
+          if (prev && montageList.some(m => m.id === prev)) return prev;
+          return montageList[0]?.id ?? '';
+        });
+
         const list = await engine.getMapVolumes(subjectId);
         if (cancelled) return;
         setMaps(list);
@@ -84,6 +114,8 @@ export function MapsView({ subjectId }: MapsViewProps) {
       } catch (err) {
         console.error('Failed to load map volumes:', err);
         if (!cancelled) {
+          setMontages([]);
+          setSelectedMontageId('');
           setMaps([]);
           setSelectedId('');
         }
@@ -98,80 +130,121 @@ export function MapsView({ subjectId }: MapsViewProps) {
   return (
     <div className="space-y-6">
       <Card className="p-6">
-        <h2 className="mb-4 text-lg font-semibold">Parameter Maps (NIfTI)</h2>
+        <h2 className="mb-4 text-lg font-semibold">Parameter Maps</h2>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {expectedSlots.map(({ slot, hit }) => {
-            const isSelected = hit?.id && hit.id === selectedId;
-            const available = !!hit;
-            return (
-              <button
-                key={slot.id}
-                type="button"
-                onClick={async () => {
-                  if (available && hit) {
-                    setSelectedId(hit.id);
-                    return;
-                  }
+        {montages.length > 0 ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">Montages</Badge>
+                <span className="text-xs text-muted-foreground">{montages.length} images</span>
+              </div>
 
-                  // Missing: schedule a full run for this subject.
-                  if (!subject) return;
-                  try {
-                    setEnsuringMaps(true);
-                    setEnsureMsg('Queued full pipeline (waiting for worker)…');
-                    await engine.runFullPipeline(subject.projectId, [subjectId]);
-                  } catch (e: any) {
-                    setEnsureMsg(String(e?.message || e || 'Failed to queue pipeline'));
-                  } finally {
-                    setEnsuringMaps(false);
-                  }
-                }}
-                className={`rounded-lg border p-6 text-left transition-colors ${
-                  isSelected
-                    ? 'border-primary/60 bg-primary/5'
-                    : 'border-border bg-card hover:bg-muted/40'
-                }`}
-              >
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="font-semibold">{slot.label}</h3>
-                  {available ? <Badge variant="secondary">Available</Badge> : <Badge variant="outline">Missing</Badge>}
-                </div>
-                <div className="mt-3 text-xs text-muted-foreground">
-                  {slot.group === 'diffusion' ? 'Diffusion' : 'Modelling'}
-                </div>
-                <div className="mono mt-2 text-[11px] text-muted-foreground">
-                  {available ? baseNoExt(hit!.name) : 'Click to run'}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="mt-6 space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-base font-semibold">Map Viewer</h3>
-            <div className="w-[260px]">
-              <Select value={selectedId} onValueChange={setSelectedId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select an available map" />
-                </SelectTrigger>
-                <SelectContent>
-                  {maps.map(m => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="w-[320px]">
+                <Select value={selectedMontageId} onValueChange={setSelectedMontageId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a montage" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {montages.map(m => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {labelForMontage(m.name)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
+
+            {selectedMontage ? (
+              <div className="overflow-hidden rounded-lg border bg-card">
+                <img
+                  src={selectedMontage.path}
+                  alt={selectedMontage.name}
+                  className="h-auto w-full"
+                  loading="lazy"
+                />
+              </div>
+            ) : null}
           </div>
+        ) : (
+          <>
+            <div className="mb-4 text-sm text-muted-foreground">
+              No montage images found yet. Showing NIfTI map viewer.
+            </div>
 
-          {selected ? <VolumeViewer subjectId={subjectId} path={selected.path} kind="map" /> : null}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {expectedSlots.map(({ slot, hit }) => {
+                const isSelected = hit?.id && hit.id === selectedId;
+                const available = !!hit;
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    onClick={async () => {
+                      if (available && hit) {
+                        setSelectedId(hit.id);
+                        return;
+                      }
 
-          {ensureMsg ? (
-            <div className="text-xs text-muted-foreground">{ensuringMaps ? ensureMsg : ensureMsg}</div>
-          ) : null}
-        </div>
+                      // Missing: schedule a full run for this subject.
+                      if (!subject) return;
+                      try {
+                        setEnsuringMaps(true);
+                        setEnsureMsg('Queued full pipeline (waiting for worker)…');
+                        await engine.runFullPipeline(subject.projectId, [subjectId]);
+                      } catch (e: any) {
+                        setEnsureMsg(String(e?.message || e || 'Failed to queue pipeline'));
+                      } finally {
+                        setEnsuringMaps(false);
+                      }
+                    }}
+                    className={`rounded-lg border p-6 text-left transition-colors ${
+                      isSelected
+                        ? 'border-primary/60 bg-primary/5'
+                        : 'border-border bg-card hover:bg-muted/40'
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="font-semibold">{slot.label}</h3>
+                      {available ? <Badge variant="secondary">Available</Badge> : <Badge variant="outline">Missing</Badge>}
+                    </div>
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      {slot.group === 'diffusion' ? 'Diffusion' : 'Modelling'}
+                    </div>
+                    <div className="mono mt-2 text-[11px] text-muted-foreground">
+                      {available ? baseNoExt(hit!.name) : 'Click to run'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-6 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold">Map Viewer</h3>
+                <div className="w-[260px]">
+                  <Select value={selectedId} onValueChange={setSelectedId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an available map" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {maps.map(m => (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {selected ? <VolumeViewer subjectId={subjectId} path={selected.path} kind="map" /> : null}
+
+              {ensureMsg ? <div className="text-xs text-muted-foreground">{ensureMsg}</div> : null}
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );
