@@ -1,4 +1,4 @@
-# p-brain Platform (formerly p-brain-web)
+# p-brain Platform
 
 Cross-platform UI and desktop launcher for the p-brain neuroimaging pipeline. It brings subject browsing, diffusion/tractography QC, AI-assisted workflows (AIF extraction + CNN lesion/slice models), and project provisioning into a single experience. A pre-trained CNN bundle is published on Zenodo: https://doi.org/10.5281/zenodo.15655348
 
@@ -65,6 +65,28 @@ The launcher bundles the UI, starts the FastAPI bridge, and can manage a Python 
 APP_SRC="$(pwd)/src-tauri/target/release/bundle/macos/p-brain.app"
 rm -rf /Applications/p-brain.app && cp -R "$APP_SRC" /Applications/p-brain.app && xattr -dr com.apple.quarantine /Applications/p-brain.app
 ```
+
+## Build a DMG (macOS)
+
+```zsh
+cd tauri-launcher
+npm install
+npm run tauri:build
+ls -la src-tauri/target/release/bundle/dmg/*.dmg
+```
+
+## Publish a release (v1.0.0)
+
+Keep build artifacts (DMG/app bundles) out of git; attach them to a GitHub Release instead.
+
+1) Tag and push:
+
+```zsh
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+2) GitHub UI: **Releases** → **Draft a new release** → choose `v1.0.0` → upload the DMG from `tauri-launcher/src-tauri/target/release/bundle/dmg/`.
 
 ## AI models (CNN)
 
