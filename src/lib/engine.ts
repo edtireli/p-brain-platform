@@ -1,21 +1,13 @@
-import { SupabaseEngineAPI } from '@/lib/supabase-engine';
+import { BackendEngineAPI, backendConfigured, setBackendOverride } from '@/lib/backend-engine';
 
-// Supabase acts as the control plane; jobs are queued in Supabase and picked up by a local runner.
-export const engine = new SupabaseEngineAPI();
+// Local-only app engine: UI talks to the bundled FastAPI backend.
+export const engine = new BackendEngineAPI();
 
 // Used by UI to gate features that require a direct backend HTTP engine.
-export const isBackendEngine = false;
+export const isBackendEngine = true;
 
 export function assertBackendConfigured(): void {
-  /* Supabase auth already gates the UI; nothing to assert here. */
+  if (!backendConfigured()) throw new Error('BACKEND_NOT_CONFIGURED');
 }
 
-// Kept for compatibility with callers that gate on backendConfigured(). Always true when Supabase is configured.
-export function backendConfigured(): boolean {
-  return true;
-}
-
-// No-op placeholder to satisfy callers that set overrides in backend mode.
-export function setBackendOverride(_url: string): string | null {
-  return null;
-}
+export { backendConfigured, setBackendOverride };

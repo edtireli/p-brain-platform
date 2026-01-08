@@ -93,6 +93,17 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
     }
   };
 
+  const handleCancelAll = async () => {
+    try {
+      const res = await (engine as any).cancelAllJobs?.({});
+      const cancelled = typeof res?.cancelled === 'number' ? res.cancelled : undefined;
+      toast.success(cancelled != null ? `Cancelled ${cancelled} jobs` : 'Cancelled jobs');
+      loadJobs();
+    } catch {
+      toast.error('Failed to cancel jobs');
+    }
+  };
+
   const RunningIndicator = ({ size = 12 }: { size?: number }) => (
     <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
       <motion.div
@@ -184,9 +195,21 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
               <ConnectionStatus isConnected={isConnected} className="mt-0.5" />
             </div>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0">
-            <X size={14} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-[11px]"
+              disabled={runningCount + queuedCount === 0}
+              onClick={handleCancelAll}
+            >
+              <X size={12} />
+              Kill all
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0">
+              <X size={14} />
+            </Button>
+          </div>
         </div>
 
         <div className="border-b border-border bg-muted/20 px-5 py-3">

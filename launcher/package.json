@@ -1,0 +1,43 @@
+{
+  "name": "p-brain-launcher",
+  "private": true,
+  "version": "0.1.0",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "node scripts/prepare.mjs --dev && electron .",
+    "build:resources": "node scripts/prepare.mjs",
+    "pack:mac": "node scripts/prepare.mjs && electron-builder --mac --dir",
+    "dist:mac": "node scripts/prepare.mjs && electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.pbrain.launcher",
+    "productName": "p-brain",
+    "files": [
+      "main.cjs",
+      "preload.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/ui",
+        "to": "ui"
+      },
+      {
+        "from": "build-resources/backend",
+        "to": "backend"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.medical"
+    }
+  }
+}

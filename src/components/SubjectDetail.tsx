@@ -1,18 +1,20 @@
-import { useState, useEffect } from 'react';
-import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, XCircle } from '@phosphor-icons/react';
+import { useMemo, useState, useEffect } from 'react';
+import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, XCircle, Play } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
-import type { Job, StageId, Subject } from '@/types';
-import { STAGE_NAMES } from '@/types';
+import type { Job, RoiMaskVolume, RoiOverlay, StageId, Subject } from '@/types';
+import { STAGE_DEPENDENCIES, STAGE_NAMES } from '@/types';
 import { VolumeViewer } from './VolumeViewer';
 import { CurvesView } from './CurvesView';
 import { MapsView } from './MapsView';
 import { TablesView } from './TablesView';
+import { TractographyView } from './TractographyView';
 import { LogStream } from './LogStream';
 import { motion } from 'framer-motion';
 
@@ -23,15 +25,41 @@ interface SubjectDetailProps {
 
 export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const [subject, setSubject] = useState<Subject | null>(null);
-	const [viewerKind, setViewerKind] = useState<'dce' | 't1' | 't2' | 'flair' | 'diffusion'>('dce');
+  const [viewerKind] = useState<'dce' | 't1' | 't2' | 'flair' | 'diffusion'>('dce');
+
+  const [showRoiOverlays, setShowRoiOverlays] = useState(false);
+  const [roiOverlays, setRoiOverlays] = useState<RoiOverlay[]>([]);
+  const [roiMasks, setRoiMasks] = useState<RoiMaskVolume[]>([]);
+  const [roiEnsureAttempted, setRoiEnsureAttempted] = useState(false);
+  const [roiLoading, setRoiLoading] = useState(false);
 
   const [logOpen, setLogOpen] = useState(false);
   const [selectedStage, setSelectedStage] = useState<StageId | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobLoading, setJobLoading] = useState(false);
+  const [runningStageId, setRunningStageId] = useState<StageId | null>(null);
+
+  const [jobsById, setJobsById] = useState<Record<string, Job>>({});
+
+  const jobs = useMemo(() => Object.values(jobsById), [jobsById]);
+  const hasActiveRun = useMemo(
+    () => jobs.some(j => j.status === 'queued' || j.status === 'running'),
+    [jobs]
+  );
 
   useEffect(() => {
     loadSubject();
+
+    (async () => {
+      try {
+        const js = await engine.getJobs({ subjectId });
+        const next: Record<string, Job> = {};
+        for (const j of js) next[j.id] = j;
+        setJobsById(next);
+      } catch {
+        setJobsById({});
+      }
+    })();
 
     const unsubscribe = engine.onStatusUpdate(update => {
       if (update.subjectId === subjectId) {
@@ -43,8 +71,14 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
       }
     });
 
+    const unsubscribeJobs = engine.onJobUpdate(job => {
+      if (job.subjectId !== subjectId) return;
+      setJobsById(prev => ({ ...prev, [job.id]: job }));
+    });
+
     return () => {
       unsubscribe();
+      unsubscribeJobs();
     };
   }, [subjectId]);
 
@@ -52,6 +86,86 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     const data = await engine.getSubject(subjectId);
     if (data) setSubject(data);
   };
+
+  const ensureRoiOverlaysLoaded = async () => {
+    if (roiLoading) return;
+    setRoiLoading(true);
+    try {
+      const overlays = await engine.getSubjectRoiOverlays(subjectId);
+      const list = Array.isArray(overlays) ? overlays : [];
+      setRoiOverlays(list);
+
+      if (isBackendEngine && list.length === 0 && !roiEnsureAttempted) {
+        setRoiEnsureAttempted(true);
+        try {
+          await engine.ensureSubjectArtifacts(subjectId, 'roi');
+        } catch {
+          // ignore; viewer can still work without ROI artifacts
+        }
+
+        // Poll briefly for ROI overlays to appear.
+        let attempts = 0;
+        const t = window.setInterval(async () => {
+          attempts += 1;
+          try {
+            const next = await engine.getSubjectRoiOverlays(subjectId);
+            if (Array.isArray(next) && next.length > 0) {
+              setRoiOverlays(next);
+              window.clearInterval(t);
+            }
+          } catch {
+            // ignore
+          }
+          if (attempts >= 24) {
+            window.clearInterval(t);
+          }
+        }, 2500);
+      }
+    } catch {
+      setRoiOverlays([]);
+    } finally {
+      setRoiLoading(false);
+    }
+  };
+
+  const ensureRoiMasksLoaded = async () => {
+    try {
+      const masks = await engine.getSubjectRoiMasks(subjectId);
+      setRoiMasks(Array.isArray(masks) ? masks : []);
+    } catch {
+      setRoiMasks([]);
+    }
+  };
+
+  const STAGE_ORDER: StageId[] = [
+    'import',
+    't1_fit',
+    'input_functions',
+    'time_shift',
+    'segmentation',
+    'tissue_ctc',
+    'modelling',
+    'diffusion',
+    'tractography',
+  ];
+
+  const normalizeStageStatuses = (stageStatuses: any): Record<StageId, any> => {
+    const out: Record<StageId, any> = {} as any;
+    for (const s of STAGE_ORDER) out[s] = 'not_run';
+    if (stageStatuses && typeof stageStatuses === 'object') {
+      for (const [k, v] of Object.entries(stageStatuses)) {
+        if (!STAGE_ORDER.includes(k as StageId)) continue;
+        if (v === ('pending' as any)) {
+          out[k as StageId] = 'not_run';
+          continue;
+        }
+        out[k as StageId] = v as any;
+      }
+    }
+    return out;
+  };
+
+  const normalizedStatuses = normalizeStageStatuses(subject?.stageStatuses);
 
   const openStageLogs = async (stageId: StageId) => {
     setSelectedStage(stageId);
@@ -71,12 +185,64 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     }
   };
 
+  const canRunStage = (stageId: StageId): boolean => {
+    if (!subject) return false;
+    if (runningStageId) return false;
+    if (hasActiveRun) return false;
+    const statuses = normalizedStatuses;
+    if (statuses[stageId] === 'running') return false;
+
+    // If a stage is already completed, allow rerun even if some dependency
+    // statuses are missing/unknown (common for older subjects).
+    if (statuses[stageId] === 'done') return true;
+
+    const deps = STAGE_DEPENDENCIES[stageId] || [];
+    return deps.every(d => statuses[d] === 'done');
+  };
+
+  const stageUiStatus = (stageId: StageId): 'not_run' | 'queued' | 'running' | 'done' | 'failed' => {
+    if (!subject) return 'not_run';
+
+    const perStage = jobs.filter(j => j.subjectId === subjectId && j.stageId === stageId);
+    if (perStage.length > 0) {
+      const newest = [...perStage].sort((a, b) => {
+        const ak = String(a.startTime || a.endTime || a.id || '');
+        const bk = String(b.startTime || b.endTime || b.id || '');
+        return bk.localeCompare(ak);
+      })[0];
+
+      if (newest.status === 'running') return 'running';
+      if (newest.status === 'queued') return 'queued';
+      if (newest.status === 'completed') return 'done';
+      if (newest.status === 'failed' || newest.status === 'cancelled') return 'failed';
+    }
+
+    const persisted = normalizedStatuses?.[stageId] ?? 'not_run';
+
+    // Back-compat: older runs could leak multiple stages as `running`.
+    // If no job is actually running for this stage during an active subject run, treat it as queued/not started.
+    if (persisted === 'running' && hasActiveRun) return 'not_run';
+
+    return persisted as any;
+  };
+
+  const runStage = async (stageId: StageId) => {
+    if (!subject) return;
+    if (!canRunStage(stageId)) return;
+    setRunningStageId(stageId);
+    try {
+      await engine.runSubjectStage(subject.id, stageId);
+    } finally {
+      setRunningStageId(null);
+    }
+  };
+
   if (!subject) {
     return <div className="flex h-screen items-center justify-center">Loading...</div>;
   }
 
-  const completedStages = Object.values(subject.stageStatuses).filter(s => s === 'done').length;
-  const totalStages = Object.keys(subject.stageStatuses).length;
+  const completedStages = STAGE_ORDER.filter(s => normalizedStatuses?.[s] === 'done').length;
+  const totalStages = STAGE_ORDER.length;
   const progressPercent = (completedStages / totalStages) * 100;
 
   return (
@@ -171,6 +337,9 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
               <MapTrifold size={16} />
               Maps
             </TabsTrigger>
+            <TabsTrigger value="tractography" className="gap-2 text-sm font-normal px-4">
+              Tractography
+            </TabsTrigger>
             <TabsTrigger value="tables" className="gap-2 text-sm font-normal px-4">
               <TableIcon size={16} />
               Tables
@@ -184,17 +353,33 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                   Pipeline Status
                 </h2>
                 <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {Object.entries(subject.stageStatuses).map(([stageId, status]) => (
-                    <button
+                  {STAGE_ORDER.map(stageId => {
+                    const status = stageUiStatus(stageId);
+                    return (
+                    <div
                       key={stageId}
-                      type="button"
-                      onClick={() => openStageLogs(stageId as StageId)}
+                      onClick={() => openStageLogs(stageId)}
+                      role="button"
+                      tabIndex={0}
                       className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-muted/30"
                     >
                       <span className="text-sm font-normal">
-                        {STAGE_NAMES[stageId as keyof typeof STAGE_NAMES]}
+                        {STAGE_NAMES[stageId]}
                       </span>
                       <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-8 gap-2"
+                          disabled={!canRunStage(stageId)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runStage(stageId);
+                          }}
+                        >
+                          <Play size={14} weight="fill" />
+                          {status === 'done' ? 'Rerun' : 'Run'}
+                        </Button>
                         {status === 'done' ? (
                           <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/10">
                             <div className="h-2 w-2 rounded-full bg-success" />
@@ -217,14 +402,19 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                             />
                             <div className="h-2 w-2 rounded-full bg-accent" />
                           </div>
+                        ) : status === 'queued' ? (
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-accent/30">
+                            <div className="h-2 w-2 rounded-full bg-accent/60" />
+                          </div>
                         ) : (
                           <div className="flex h-6 w-6 items-center justify-center">
                             <div className="h-1.5 w-1.5 rounded-full bg-border" />
                           </div>
                         )}
                       </div>
-                    </button>
-                  ))}
+                    </div>
+                    );
+                  })}
                 </div>
               </div>
             </Card>
@@ -322,24 +512,30 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
           <TabsContent value="viewer">
             <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium text-foreground">Modality</div>
-                <div className="w-[260px]">
-                  <Select value={viewerKind} onValueChange={(v) => setViewerKind(v as any)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="dce">DCE</SelectItem>
-                      <SelectItem value="t1">T1</SelectItem>
-                      <SelectItem value="t2">T2</SelectItem>
-                      <SelectItem value="flair">FLAIR</SelectItem>
-                      <SelectItem value="diffusion">DWI / Diffusion</SelectItem>
-                    </SelectContent>
-                  </Select>
+              {viewerKind === 'dce' ? (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={showRoiOverlays}
+                    onCheckedChange={(v) => {
+                      const next = v === true;
+                      setShowRoiOverlays(next);
+                      if (next) {
+                        void ensureRoiOverlaysLoaded();
+                        void ensureRoiMasksLoaded();
+                      }
+                    }}
+                  />
+                  <Label className="text-sm text-muted-foreground">Show AIF/VIF ROI</Label>
                 </div>
-              </div>
-              <VolumeViewer subjectId={subjectId} kind={viewerKind} />
+              ) : null}
+
+              <VolumeViewer
+                subjectId={subjectId}
+                kind={viewerKind}
+                showRoiOverlays={showRoiOverlays}
+                roiOverlays={roiOverlays}
+                roiMasks={roiMasks}
+              />
             </div>
           </TabsContent>
 
@@ -349,6 +545,10 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
           <TabsContent value="maps">
             <MapsView subjectId={subjectId} />
+          </TabsContent>
+
+          <TabsContent value="tractography">
+            <TractographyView subjectId={subjectId} />
           </TabsContent>
 
           <TabsContent value="tables">

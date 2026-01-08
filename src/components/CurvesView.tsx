@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { engine, isBackendEngine } from '@/lib/engine';
 import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
@@ -14,6 +15,8 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   const [patlakData, setPatlakData] = useState<PatlakData | null>(null);
   const [toftsData, setToftsData] = useState<ToftsData | null>(null);
   const [deconvData, setDeconvData] = useState<DeconvolutionData | null>(null);
+  const [availableRegions, setAvailableRegions] = useState<Array<{ key: string; label: string }>>([]);
+  const [activeRegion, setActiveRegion] = useState<string>('gm');
   const [ensuring, setEnsuring] = useState(false);
   const [ensureMsg, setEnsureMsg] = useState('');
   const [ensureOnce, setEnsureOnce] = useState(false);
@@ -22,21 +25,80 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
     loadData();
   }, [subjectId]);
 
+  useEffect(() => {
+    // Reload modelling outputs when region changes.
+    loadModels(activeRegion);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectId, activeRegion]);
+
+  const prettyRegionLabel = (key: string): string => {
+    const k = (key || '').toLowerCase();
+    const mapping: Record<string, string> = {
+      gm: 'Gray Matter',
+      cortical_gm: 'Cortical GM',
+      subcortical_gm: 'Subcortical GM',
+      wm: 'White Matter',
+      boundary: 'Boundary',
+      gm_brainstem: 'Brainstem (GM)',
+      gm_cerebellum: 'Cerebellum (GM)',
+      wm_cerebellum: 'Cerebellum (WM)',
+      wm_cc: 'Corpus callosum (WM)',
+    };
+    if (mapping[k]) return mapping[k];
+    return k.replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase());
+  };
+
   const loadData = async () => {
     try {
       const curvesData = await engine.getCurves(subjectId);
       setCurves(curvesData);
 
-      const patlak = await engine.getPatlakData(subjectId, 'gm');
-      setPatlakData(patlak);
+      // Discover regions from AI tissue curves (preferred for modelling endpoints).
+      const seen = new Set<string>();
+      const regs = curvesData
+        .filter(c => /^tissue_ai_/i.test(c.id))
+        .map(c => c.id.replace(/^tissue_ai_/i, ''))
+        .filter(k => {
+          const kk = (k || '').trim();
+          if (!kk) return false;
+          if (seen.has(kk)) return false;
+          seen.add(kk);
+          return true;
+        })
+        .map(k => ({ key: k, label: prettyRegionLabel(k) }));
 
-      const tofts = await engine.getToftsData(subjectId, 'gm');
-      setToftsData(tofts);
+      regs.sort((a, b) => a.label.localeCompare(b.label));
+      setAvailableRegions(regs);
 
-      const deconv = await engine.getDeconvolutionData(subjectId, 'gm');
-      setDeconvData(deconv);
+      setActiveRegion(prev => {
+        if (regs.length === 0) return prev || 'gm';
+        return regs.some(r => r.key === prev) ? prev : regs[0]!.key;
+      });
     } catch (error) {
       console.error('Failed to load curves:', error);
+    }
+  };
+
+  const loadModels = async (regionKey: string) => {
+    try {
+      const patlak = await engine.getPatlakData(subjectId, regionKey || 'gm');
+      setPatlakData(patlak);
+    } catch {
+      setPatlakData(null);
+    }
+
+    try {
+      const tofts = await engine.getToftsData(subjectId, regionKey || 'gm');
+      setToftsData(tofts);
+    } catch {
+      setToftsData(null);
+    }
+
+    try {
+      const deconv = await engine.getDeconvolutionData(subjectId, regionKey || 'gm');
+      setDeconvData(deconv);
+    } catch {
+      setDeconvData(null);
     }
   };
 
@@ -81,6 +143,8 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   const hasInputCurves = curves.some(c => /^aif_/i.test(c.id) || /^vif_/i.test(c.id));
   const hasTissueCurves = curves.some(c => /^tissue_/i.test(c.id));
   const useSplitAxis = hasInputCurves && hasTissueCurves;
+
+  const regionLabel = prettyRegionLabel(activeRegion);
 
   return (
     <div className="space-y-6">
@@ -166,7 +230,24 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
 
         <TabsContent value="patlak">
           <Card className="p-6">
-            <h2 className="mb-4 text-lg font-semibold">Patlak Analysis (Gray Matter)</h2>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">Patlak Analysis ({regionLabel})</h2>
+              {availableRegions.length > 1 ? (
+                <div className="flex flex-wrap gap-2">
+                  {availableRegions.map(r => (
+                    <Button
+                      key={r.key}
+                      type="button"
+                      size="sm"
+                      variant={r.key === activeRegion ? 'default' : 'outline'}
+                      onClick={() => setActiveRegion(r.key)}
+                    >
+                      {r.label}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             {hasPatlak ? (
               <div className="space-y-6">
                 <Plot
@@ -240,7 +321,24 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
 
         <TabsContent value="tofts">
           <Card className="p-6">
-            <h2 className="mb-4 text-lg font-semibold">Extended Tofts Model (Gray Matter)</h2>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">Extended Tofts Model ({regionLabel})</h2>
+              {availableRegions.length > 1 ? (
+                <div className="flex flex-wrap gap-2">
+                  {availableRegions.map(r => (
+                    <Button
+                      key={r.key}
+                      type="button"
+                      size="sm"
+                      variant={r.key === activeRegion ? 'default' : 'outline'}
+                      onClick={() => setActiveRegion(r.key)}
+                    >
+                      {r.label}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             {hasTofts ? (
               <div className="space-y-6">
                 <Plot
@@ -310,7 +408,24 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
 
         <TabsContent value="deconvolution">
           <Card className="p-6">
-            <h2 className="mb-4 text-lg font-semibold">Deconvolution & Perfusion Metrics (Gray Matter)</h2>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">Deconvolution & Perfusion Metrics ({regionLabel})</h2>
+              {availableRegions.length > 1 ? (
+                <div className="flex flex-wrap gap-2">
+                  {availableRegions.map(r => (
+                    <Button
+                      key={r.key}
+                      type="button"
+                      size="sm"
+                      variant={r.key === activeRegion ? 'default' : 'outline'}
+                      onClick={() => setActiveRegion(r.key)}
+                    >
+                      {r.label}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             {hasDeconv ? (
               <div className="space-y-6">
                 <div className="grid gap-6 lg:grid-cols-2">

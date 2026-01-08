@@ -7,11 +7,61 @@ export type StageId =
   | 'tissue_ctc'
   | 'modelling'
   | 'diffusion'
-  | 'montage_qc';
+  | 'tractography';
 
 export type StageStatus = 'not_run' | 'running' | 'done' | 'failed';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AppSettings {
+  firstName: string;
+  onboardingCompleted: boolean;
+  pbrainMainPy: string;
+  fastsurferDir: string;
+  freesurferHome: string;
+}
+
+export interface SystemDeps {
+  pbrainMainPy: {
+    configured: string;
+    exists: boolean;
+  };
+  freesurfer: {
+    reconAll: string;
+    freesurferHome: string;
+    ok: boolean;
+  };
+  fastsurfer: {
+    fastsurferDir: string;
+    runScript: string;
+    ok: boolean;
+  };
+}
+
+export interface ScanSystemDepsResponse {
+  ok: boolean;
+  applied: boolean;
+  settingsPatch: Partial<AppSettings>;
+  found: {
+    pbrainMainPy: string;
+    fastsurferDir: string;
+    freesurferHome: string;
+  };
+  deps: SystemDeps;
+}
+
+export interface InstallPBrainResponse {
+  ok: boolean;
+  pbrainDir: string;
+  pbrainMainPy: string;
+}
+
+export interface InstallPBrainRequirementsResponse {
+  ok: boolean;
+  command: string;
+  pbrainDir: string;
+  outputTail: string;
+}
 
 export interface Project {
   id: string;
@@ -117,6 +167,10 @@ export interface VolumeInfo {
   dataType: string;
   min: number;
   max: number;
+
+	// Optional: a recommended default window for display (e.g. montage-style 2–98%).
+	displayMin?: number;
+	displayMax?: number;
 }
 
 export interface VolumeFile {
@@ -124,6 +178,28 @@ export interface VolumeFile {
   name: string;
   path: string;
 	kind?: 'dce' | 't1' | 't2' | 'flair' | 'diffusion' | 'analysis' | 'source' | string;
+}
+
+export interface RoiOverlay {
+  id: string;
+  roiType: string;
+  roiSubType: string;
+  sliceIndex: number;
+  frameIndex?: number | null;
+
+  // ROI voxel coordinates are saved as (row, col).
+  row0: number;
+  row1: number;
+  col0: number;
+  col1: number;
+}
+
+export interface RoiMaskVolume {
+  id: string;
+  name: string;
+  path: string;
+  roiType: string;
+  roiSubType: string;
 }
 
 export interface MapVolume {
@@ -186,6 +262,17 @@ export interface MetricsTable {
   }>;
 }
 
+export interface TractographyData {
+  path: string;
+  // Array of streamlines, each a list of [x,y,z] points.
+  streamlines: number[][][];
+  // Optional per-streamline RGB colours (0-1 range), parallel to streamlines.
+  colors?: number[][];
+  totalStreamlines?: number;
+  returned?: number;
+  error?: string;
+}
+
 export const STAGE_NAMES: Record<StageId, string> = {
   import: 'Import & Index',
   t1_fit: 'T1/M0 Fitting',
@@ -195,7 +282,7 @@ export const STAGE_NAMES: Record<StageId, string> = {
   tissue_ctc: 'Tissue Curves',
   modelling: 'Pharmacokinetic Modelling',
   diffusion: 'Diffusion Analysis',
-  montage_qc: 'QC Montage',
+  tractography: 'Tractography',
 };
 
 export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
@@ -207,7 +294,7 @@ export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
   tissue_ctc: ['segmentation', 'time_shift'],
   modelling: ['tissue_ctc'],
   diffusion: ['import'],
-  montage_qc: ['modelling', 'segmentation'],
+  tractography: ['diffusion'],
 };
 
 export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {

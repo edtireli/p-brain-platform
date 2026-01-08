@@ -41,7 +41,7 @@ const STAGES: StageId[] = [
   'tissue_ctc',
   'modelling',
   'diffusion',
-  'montage_qc',
+  'tractography',
 ];
 
 function normalizeStageStatuses(stageStatuses: Partial<Record<StageId, StageStatus>> | undefined | null) {
@@ -652,16 +652,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                 )}
               </Button>
 
-              <Button
-                variant="secondary"
-                onClick={handleScanAndImport}
-                disabled={isScanning}
-                className="gap-2"
-              >
-                <FolderOpen size={18} />
-                {isScanning ? 'Importing…' : 'Automatically Import subjects'}
-              </Button>
-
               <FolderStructureConfigComponent 
                 project={project}
                 onSave={handleSaveFolderConfig}
@@ -675,12 +665,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                   setIsDragging(false);
                 }
               }}>
-                <DialogTrigger asChild>
-                  <Button variant="secondary" className="gap-2">
-                    <UserPlus size={20} weight="bold" />
-                    Add Subjects
-                  </Button>
-                </DialogTrigger>
                 <DialogContent className="max-w-lg">
                   <DialogHeader>
                     <DialogTitle>Import Subjects</DialogTitle>
@@ -982,11 +966,15 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                       {subjects.map((subject, index) => {
                         const isSubjectRunning = runningSubjectIds.has(subject.id) ||
                           Object.values(subject.stageStatuses || {}).some(s => s === 'running');
+                        const hasEverRun = Object.values(subject.stageStatuses || {}).some(s => s === 'done' || s === 'failed');
                         const isSelected = selectedSubjectIds.has(subject.id);
                         
                         return (
-                          <tr
+                          <motion.tr
                             key={subject.id}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.18, delay: Math.min(index * 0.015, 0.25) }}
                             className={`cursor-pointer border-b border-border transition-colors ${isSelected ? 'bg-[oklch(0.94_0.02_250)]' : 'hover:bg-muted/30'}`}
                             onClick={() => onSelectSubject(subject.id)}
                           >
@@ -1034,7 +1022,11 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                   </button>
                                 </TooltipTrigger>
                                 <TooltipContent side="right">
-                                  {isSubjectRunning ? 'Pipeline running...' : 'Run full pipeline for this subject'}
+                                  {isSubjectRunning
+                                    ? 'Pipeline running...'
+                                    : hasEverRun
+                                      ? 'Rerun full pipeline for this subject'
+                                      : 'Run full pipeline for this subject'}
                                 </TooltipContent>
                               </Tooltip>
                             </td>
@@ -1070,13 +1062,22 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                                 </td>
                               );
                             })}
-                          </tr>
+                          </motion.tr>
                         );
                       })}
                     </tbody>
                   </table>
                 </TooltipProvider>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setIsAddDialogOpen(true)}
+                className="flex w-full items-center justify-center gap-2 border-t border-border bg-card px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/30"
+              >
+                <UserPlus size={18} weight="bold" />
+                Add Subjects
+              </button>
             </CardContent>
           </Card>
         )}

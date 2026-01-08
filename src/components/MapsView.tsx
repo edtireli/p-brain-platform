@@ -366,7 +366,6 @@ export function MapsView({ subjectId }: MapsViewProps) {
   const openGroup = useMemo(() => grouped.find(g => g.id === openGroupId) ?? null, [grouped, openGroupId]);
 
   const [activeFileId, setActiveFileId] = useState<string>('');
-  const [activeTissueKey, setActiveTissueKey] = useState<string>('wm');
   const [activeTissueMethod, setActiveTissueMethod] = useState<string>('tikhonov');
 
   useEffect(() => {
@@ -388,7 +387,6 @@ export function MapsView({ subjectId }: MapsViewProps) {
     setActiveFileId(first?.id ?? '');
 		if (activeVariant === 'tissue' && first) {
 			const info = parseTissueInfoFromName(first.name);
-			setActiveTissueKey(info.tissueKey);
 			setActiveTissueMethod(info.methodKey);
 		}
   }, [openGroupId, activeVariant, openGroup]);
@@ -460,12 +458,9 @@ export function MapsView({ subjectId }: MapsViewProps) {
           if (!open) setOpenGroupId('');
         }}
       >
-        <DialogContent className="max-w-5xl">
-          <DialogHeader>
+        <DialogContent className="max-w-6xl p-4">
+          <DialogHeader className="space-y-1">
             <DialogTitle>{openGroup?.label || 'Map'}</DialogTitle>
-            <DialogDescription>
-              {openGroup?.group === 'diffusion' ? 'Diffusion parameter maps.' : 'Modelling parameter maps.'}
-            </DialogDescription>
           </DialogHeader>
 
           {openGroup ? (
@@ -548,38 +543,13 @@ export function MapsView({ subjectId }: MapsViewProps) {
                           return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
                         });
 
-                        const key = tissueKeys.includes(activeTissueKey) ? activeTissueKey : tissueKeys[0] || 'other';
-                        const tissueOptions = enriched.filter(x => x.info.tissueKey === key);
-                        const methods = Array.from(new Set(tissueOptions.map(x => x.info.methodKey)));
+                        const methods = Array.from(new Set(enriched.map(x => x.info.methodKey)));
                         const methodKey = methods.includes(activeTissueMethod) ? activeTissueMethod : methods[0] || 'default';
-                        const selected = tissueOptions.find(x => x.info.methodKey === methodKey)?.o ?? tissueOptions[0]?.o;
                         const methodLabelFor = (mk: string) => (mk === 'patlak' ? 'Patlak' : mk === 'two_compartment' ? '2-comp' : mk === 'tikhonov' ? 'Tikhonov' : 'Default');
 
                         return (
                           <div className="space-y-3">
                             <div className="flex flex-wrap items-center justify-between gap-3">
-                              <div className="flex flex-wrap gap-2">
-                                {tissueKeys.map(tk => {
-                                  const label = enriched.find(x => x.info.tissueKey === tk)?.info.tissueLabel || tk;
-                                  return (
-                                    <Button
-                                      key={tk}
-                                      type="button"
-                                      size="sm"
-                                      variant={tk === key ? 'default' : 'outline'}
-                                      onClick={() => {
-                                        setActiveTissueKey(tk);
-                                        // reset method if current not present
-                                        const ms = Array.from(new Set(enriched.filter(x => x.info.tissueKey === tk).map(x => x.info.methodKey)));
-                                        setActiveTissueMethod(ms.includes(activeTissueMethod) ? activeTissueMethod : (ms[0] || 'default'));
-                                      }}
-                                    >
-                                      {label}
-                                    </Button>
-                                  );
-                                })}
-                              </div>
-
                               {methods.length > 1 ? (
                                 <div className="flex flex-wrap gap-2">
                                   {methods.map(mk => (
@@ -597,16 +567,32 @@ export function MapsView({ subjectId }: MapsViewProps) {
                               ) : null}
                             </div>
 
-                            {selected ? (
-                              <>
-                                <div className="text-xs text-muted-foreground">{selected.name}</div>
-                                <VolumeViewer subjectId={subjectId} path={selected.path} kind="map" />
-                              </>
-                            ) : (
-                              <div className="rounded-lg border border-border bg-muted/20 p-6 text-sm text-muted-foreground">
-                                No tissue maps found.
-                              </div>
-                            )}
+                            {(() => {
+                              const selected = tissueKeys
+                                .map(tk => {
+                                  const tissueOptions = enriched.filter(x => x.info.tissueKey === tk);
+                                  return tissueOptions.find(x => x.info.methodKey === methodKey)?.o ?? tissueOptions[0]?.o ?? null;
+                                })
+                                .filter((x): x is NonNullable<typeof x> => !!x);
+
+                              const overlayPaths = selected.map(s => s.path).filter(Boolean);
+                              if (overlayPaths.length === 0) return null;
+
+                              return (
+                                <div className="space-y-2">
+                                  <div className="text-xs text-muted-foreground">
+                                    Composite overlay ({overlayPaths.length} tissues)
+                                  </div>
+                                  <VolumeViewer
+                                    subjectId={subjectId}
+                                    path={overlayPaths[0]}
+                                    overlayPaths={overlayPaths}
+                                    kind="map"
+                                    allowSelect={false}
+                                  />
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })()

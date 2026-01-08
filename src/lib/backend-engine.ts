@@ -1,20 +1,100 @@
 import type {
+  AppSettings,
   Curve,
   DeconvolutionData,
+  InstallPBrainRequirementsResponse,
+  InstallPBrainResponse,
   Job,
   MapVolume,
   MetricsTable,
   PatlakData,
   Project,
+  RoiOverlay,
+  RoiMaskVolume,
+  ScanSystemDepsResponse,
   Subject,
+  SystemDeps,
   ToftsData,
+  TractographyData,
   VolumeFile,
   VolumeInfo,
 } from '@/types';
+import type { StageId } from '@/types';
 
 type Unsubscribe = () => void;
 
 const STORAGE_KEY = 'pbrain.backendUrl';
+
+let tauriDiscoveryStarted = false;
+let tauriDiscoveryTimer: number | null = null;
+let tauriDiscoveryAttempts = 0;
+
+const TAURI_DISCOVERY_MAX_ATTEMPTS = 120; // ~2 minutes at 1s interval
+const TAURI_DISCOVERY_INTERVAL_MS = 1000;
+
+async function probeHealth(base: string, timeoutMs: number = 350): Promise<boolean> {
+  const controller = new AbortController();
+  const t = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base.replace(/\/+$/, '')}/health`, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function startTauriBackendDiscovery(): void {
+  if (tauriDiscoveryStarted) return;
+  tauriDiscoveryStarted = true;
+
+  const ports: number[] = [];
+  for (let p = 8787; p <= 8887; p++) ports.push(p);
+
+  const publishFound = (found: string) => {
+    try {
+      (globalThis as any).window.__PBRAIN_BACKEND_URL = found;
+      window.dispatchEvent(new Event('pbrain-backend-ready'));
+    } catch {
+      // ignore
+    }
+  };
+
+  const scanOnce = async (): Promise<boolean> => {
+    const batchSize = 16;
+    for (let i = 0; i < ports.length; i += batchSize) {
+      const batch = ports.slice(i, i + batchSize);
+      const bases = batch.map(p => `http://127.0.0.1:${p}`);
+      const results = await Promise.all(bases.map(async b => ((await probeHealth(b, 250)) ? b : null)));
+      const found = results.find(Boolean) as string | null;
+      if (found) {
+        publishFound(found);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const attempt = async () => {
+    tauriDiscoveryAttempts += 1;
+    const ok = await scanOnce();
+    if (ok && tauriDiscoveryTimer !== null) {
+      clearInterval(tauriDiscoveryTimer);
+      tauriDiscoveryTimer = null;
+    }
+    if (!ok && tauriDiscoveryAttempts >= TAURI_DISCOVERY_MAX_ATTEMPTS && tauriDiscoveryTimer !== null) {
+      clearInterval(tauriDiscoveryTimer);
+      tauriDiscoveryTimer = null;
+    }
+  };
+
+  // Start immediately, then keep retrying while the backend spins up.
+  void attempt();
+  tauriDiscoveryTimer = window.setInterval(() => {
+    void attempt();
+  }, TAURI_DISCOVERY_INTERVAL_MS);
+}
 
 function sanitizeUrl(raw: string | null): string | null {
   if (!raw) return null;
@@ -69,6 +149,29 @@ export function setBackendOverride(url: string): string | null {
 }
 
 function backendUrl(): string | null {
+  const hasTauri = typeof (globalThis as any)?.window?.__TAURI__ !== 'undefined';
+
+  // Launchers (Electron/Tauri) can inject a concrete backend base URL.
+  // This is the most reliable option when the UI isn't served by the backend.
+  try {
+    const injected = (globalThis as any)?.window?.__PBRAIN_BACKEND_URL;
+    const cleaned = sanitizeUrl(typeof injected === 'string' ? injected : null);
+    if (cleaned) return cleaned;
+  } catch {
+    // ignore
+  }
+
+  // In the packaged Tauri app, the backend port can change every launch.
+  // Never fall back to a stale localStorage value; wait for the launcher.
+  // (Allow explicit URL override via query string for debugging only.)
+  if (hasTauri) {
+    // Safety net: if injection doesn't arrive (or races webview init), discover by probing ports.
+    startTauriBackendDiscovery();
+    const override = readBackendOverride();
+    if (override) return override;
+    return null;
+  }
+
   const override = readBackendOverride();
   if (override) return override;
 
@@ -79,7 +182,16 @@ function backendUrl(): string | null {
   const stored = readStoredBackend();
   if (stored) return stored;
 
-  // No implicit fallback; this app should be configured explicitly.
+  // Local app default: if UI is served from the local backend, use same-origin.
+  try {
+    const host = window.location.hostname;
+    if (host === '127.0.0.1' || host === 'localhost') {
+      return sanitizeUrl(window.location.origin);
+    }
+  } catch {
+    // ignore
+  }
+
   return null;
 }
 
@@ -240,6 +352,68 @@ export class BackendEngineAPI {
     return api<Project[]>('/projects');
   }
 
+  async getSubjectRoiOverlays(subjectId: string): Promise<RoiOverlay[]> {
+    const payload = await api<{ overlays: RoiOverlay[] }>(`/subjects/${encodeURIComponent(subjectId)}/roi-overlays`);
+    return Array.isArray(payload?.overlays) ? payload.overlays : [];
+  }
+
+  async getSubjectRoiMasks(subjectId: string): Promise<RoiMaskVolume[]> {
+    const payload = await api<{ masks: RoiMaskVolume[] }>(`/subjects/${encodeURIComponent(subjectId)}/roi-masks`);
+    return Array.isArray(payload?.masks) ? payload.masks : [];
+  }
+
+  async getSubjectTractography(subjectId: string): Promise<TractographyData> {
+    return api<TractographyData>(`/subjects/${encodeURIComponent(subjectId)}/tractography`);
+  }
+
+  // ----------------------------
+  // App settings (onboarding)
+  // ----------------------------
+
+  async getSettings(): Promise<AppSettings> {
+    return api<AppSettings>('/settings');
+  }
+
+  async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    return api<AppSettings>('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
+  }
+
+  async getSystemDeps(): Promise<SystemDeps> {
+    return api<SystemDeps>('/system/deps');
+  }
+
+  async scanSystemDeps(apply: boolean = true): Promise<ScanSystemDepsResponse> {
+    return api<ScanSystemDepsResponse>('/system/deps/scan', {
+      method: 'POST',
+      body: JSON.stringify({ apply }),
+    });
+  }
+
+  async installPBrain(installDir: string): Promise<InstallPBrainResponse> {
+    return api<InstallPBrainResponse>('/system/deps/pbrain/install', {
+      method: 'POST',
+      body: JSON.stringify({ installDir }),
+    });
+  }
+
+  async installPBrainRequirements(pbrainDir?: string): Promise<InstallPBrainRequirementsResponse> {
+    return api<InstallPBrainRequirementsResponse>('/system/deps/pbrain/requirements/install', {
+      method: 'POST',
+      body: JSON.stringify({ pbrainDir: pbrainDir || null }),
+    });
+  }
+
+  async warmBackend(): Promise<{ started: boolean; done?: boolean; error?: string; steps?: Record<string, number> }> {
+    return api('/system/warm', { method: 'POST', body: JSON.stringify({}) });
+  }
+
+  async installFastSurfer(installDir: string): Promise<{ ok: boolean; fastsurferDir: string }> {
+    return api<{ ok: boolean; fastsurferDir: string }>('/system/deps/fastsurfer/install', {
+      method: 'POST',
+      body: JSON.stringify({ installDir }),
+    });
+  }
+
   async getProject(id: string): Promise<Project | undefined> {
     return api<Project>(`/projects/${encodeURIComponent(id)}`);
   }
@@ -297,6 +471,13 @@ export class BackendEngineAPI {
     });
   }
 
+  async runSubjectStage(subjectId: string, stageId: StageId): Promise<Job> {
+    return api<Job>(`/subjects/${encodeURIComponent(subjectId)}/run-stage`, {
+      method: 'POST',
+      body: JSON.stringify({ stageId }),
+    });
+  }
+
   async getJobs(filters: { projectId?: string; subjectId?: string; status?: string }): Promise<Job[]> {
     const params = new URLSearchParams();
     if (filters.projectId) params.set('projectId', filters.projectId);
@@ -308,6 +489,13 @@ export class BackendEngineAPI {
 
   async cancelJob(jobId: string): Promise<void> {
     await api(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  }
+
+  async cancelAllJobs(filters: { projectId?: string } = {}): Promise<{ cancelled: number; terminated: number }> {
+    const params = new URLSearchParams();
+    if (filters.projectId) params.set('projectId', filters.projectId);
+    const qs = params.toString();
+    return api<{ cancelled: number; terminated: number }>(`/jobs/cancel-all${qs ? `?${qs}` : ''}`, { method: 'POST' });
   }
 
   async retryJob(jobId: string): Promise<Job> {
@@ -329,12 +517,12 @@ export class BackendEngineAPI {
   // Volumes (real backend)
   // ----------------------------
 
-  async getVolumeInfo(path: string, subjectId?: string): Promise<VolumeInfo> {
+  async getVolumeInfo(path: string, subjectId?: string, kind?: string): Promise<VolumeInfo> {
     if (!subjectId) throw new Error('BackendEngineAPI.getVolumeInfo requires subjectId');
 
     return api<VolumeInfo>(`/volumes/info?subjectId=${encodeURIComponent(subjectId)}`, {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, kind }),
     });
   }
 
@@ -376,7 +564,7 @@ export class BackendEngineAPI {
 
   async ensureSubjectArtifacts(
     subjectId: string,
-    kind: 'all' | 'maps' | 'curves' | 'montages' = 'all'
+    kind: 'all' | 'maps' | 'curves' | 'montages' | 'roi' = 'all'
   ): Promise<{ started: boolean; jobs: any[]; reason: string }> {
     return api<{ started: boolean; jobs: any[]; reason: string }>(
       `/subjects/${encodeURIComponent(subjectId)}/ensure?kind=${encodeURIComponent(kind)}`,
