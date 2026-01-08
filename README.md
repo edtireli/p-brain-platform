@@ -1,4 +1,4 @@
-# p-brain Platform (formerly p-brain-web)
+# p-brain Platform
 
 Cross-platform UI and desktop launcher for the p-brain neuroimaging pipeline. It brings subject browsing, diffusion/tractography QC, AI-assisted workflows (AIF extraction + CNN lesion/slice models), and project provisioning into a single experience. A pre-trained CNN bundle is published on Zenodo: https://doi.org/10.5281/zenodo.15655348
 
@@ -114,19 +114,19 @@ node scripts/seed-supabase.mjs \
 
 ## Image gallery (chronological)
 
-Screenshots live in `docs/images/platform/` and are embedded below from earliest to latest capture time.
+The following screenshots demonstrate the platforms design and operatability. 
 
 ![Screenshot 2026-01-08 17:43:51](docs/images/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
-*Snapshot from an early session showing the platform dashboard and initial subject context.*
+*Snapshot showing the platform dashboard and initial subject context.*
 
 ![Screenshot 2026-01-08 17:45:21](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
-*Progressing through workflow setup with project/subject details visible.*
+*Tractography viewer.*
 
 ![Screenshot 2026-01-08 17:45:41](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
-*QC/visual context for imaging data at this stage of the pipeline.*
+*Display of a voxelwise map (Ki in this example).*
 
 ![Screenshot 2026-01-08 17:45:56](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.56.png)
-*Demonstrates navigation across imaging outputs and related metadata.*
+*Display of a parcelwise map (Ki in this example).*
 
 ![Screenshot 2026-01-08 17:46:02](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
 *Shows the interface transitioning between modalities/QC views.*
