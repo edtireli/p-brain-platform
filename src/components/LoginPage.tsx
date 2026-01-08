@@ -172,7 +172,7 @@ export function LoginPage() {
         <Card>
           <CardHeader>
             <CardTitle>
-              <span className="italic">p</span>-Brain web
+              <span className="italic">p</span>-Brain platform
             </CardTitle>
             <CardDescription>
               {mode === 'signin' && 'Sign in to continue.'}

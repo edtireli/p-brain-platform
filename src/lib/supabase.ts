@@ -1,7 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string | undefined;
+// Local-only build: Supabase removed.
 
 export const SUPABASE_REMEMBER_ME_KEY = 'pbrain.rememberMe';
 export const SUPABASE_REINIT_EVENT = 'pbrain:supabase-reinit';
@@ -26,7 +23,6 @@ export function setRememberMe(remember: boolean): void {
   } catch {
     /* ignore */
   }
-  initSupabase();
   try {
     window.dispatchEvent(new CustomEvent(SUPABASE_REINIT_EVENT));
   } catch {
@@ -34,35 +30,8 @@ export function setRememberMe(remember: boolean): void {
   }
 }
 
-export let supabase = null as ReturnType<typeof createClient> | null;
-
-export function initSupabase(): void {
-  if (!supabaseUrl || !supabaseAnonKey) {
-    supabase = null;
-    return;
-  }
-
-  const remember = readRememberMe();
-  const storage = (() => {
-    try {
-      return remember ? window.localStorage : window.sessionStorage;
-    } catch {
-      return undefined;
-    }
-  })();
-
-  supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-      storage,
-    },
-  });
-}
-
-initSupabase();
+export const supabase = null as any;
 
 export function supabaseConfigured(): boolean {
-  return !!supabase;
+  return false;
 }

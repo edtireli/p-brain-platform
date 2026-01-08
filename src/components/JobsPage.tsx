@@ -93,6 +93,17 @@ export function JobsPage({ onBack }: JobsPageProps) {
     }
   };
 
+  const handleCancelAllJobs = async () => {
+    try {
+      const res = await (engine as any).cancelAllJobs?.({});
+      const cancelled = typeof res?.cancelled === 'number' ? res.cancelled : undefined;
+      toast.success(cancelled != null ? `Cancelled ${cancelled} jobs` : 'Cancelled jobs');
+      loadJobs();
+    } catch {
+      toast.error('Failed to cancel jobs');
+    }
+  };
+
   const handleRetryJob = async (jobId: string) => {
     try {
       await engine.retryJob(jobId);
@@ -226,6 +237,17 @@ export function JobsPage({ onBack }: JobsPageProps) {
                   <span className="font-medium">{failedJobs}</span>
                 </div>
               </div>
+
+              <Button
+                variant="destructive"
+                size="sm"
+                className="gap-2"
+                disabled={activeJobs === 0}
+                onClick={handleCancelAllJobs}
+              >
+                <X size={18} />
+                Kill all
+              </Button>
             </div>
           </div>
         </div>
@@ -434,8 +456,8 @@ export function JobsPage({ onBack }: JobsPageProps) {
                             <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                               Logs
                             </div>
-                            <ScrollArea className="h-64 rounded-md border border-border bg-card">
-                              <pre className="mono p-4 text-xs leading-relaxed">
+                            <ScrollArea className="h-64 min-w-0 rounded-md border border-border bg-card">
+                              <pre className="mono min-w-0 whitespace-pre-wrap break-all p-4 text-xs leading-relaxed">
                                 {(jobLogs[job.id] ?? []).length === 0 ? (
                                   <div className="text-muted-foreground">Waiting for logs…</div>
                                 ) : (

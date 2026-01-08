@@ -8,10 +8,54 @@ import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 import { engine } from '@/lib/engine';
+import { checkLocalBackendHealth, pickFolderWithNativeDialog, resolveStoragePathFromDrop } from '@/lib/local-backend';
 import type { FolderStructureConfig, Project } from '@/types';
 import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
 import { toast } from 'sonner';
-import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
+
+async function probeHealth(base: string, timeoutMs: number = 350): Promise<boolean> {
+  const controller = new AbortController();
+  const t = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base.replace(/\/+$/, '')}/health`, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function discoverLocalBackendBaseUrl(): Promise<string | null> {
+  // Only attempt discovery for non-Tauri local dev flows.
+  // In the packaged Tauri app, the launcher must provide the backend URL.
+  try {
+    const hasTauri = typeof (window as any)?.__TAURI__ !== 'undefined';
+    if (hasTauri) return null;
+
+    const proto = window.location.protocol;
+    const isLocal = proto === 'file:';
+    if (!isLocal) return null;
+  } catch {
+    return null;
+  }
+
+  const ports: number[] = [];
+  for (let p = 8787; p <= 8887; p++) ports.push(p);
+
+  // Probe in small batches to keep startup snappy.
+  const batchSize = 16;
+  for (let i = 0; i < ports.length; i += batchSize) {
+    const batch = ports.slice(i, i + batchSize);
+    const bases = batch.map(p => `http://127.0.0.1:${p}`);
+
+    const results = await Promise.all(bases.map(async b => ((await probeHealth(b)) ? b : null)));
+    const found = results.find(Boolean) as string | null;
+    if (found) return found;
+  }
+
+  return null;
+}
 
 function greetingForLocalTime(): string {
   const h = new Date().getHours();
@@ -33,6 +77,11 @@ function defaultStoragePath(projectName: string): string {
   return `~/pbrain-projects/${slugify(projectName)}`;
 }
 
+function looksLikeAbsolutePath(p: string): boolean {
+  const s = (p || '').trim();
+  return s.startsWith('/') || s.startsWith('~/') || s.startsWith('file://');
+}
+
 interface ProjectsPageProps {
   onSelectProject: (projectId: string) => void;
 }
@@ -42,8 +91,9 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-
-  const auth = useSupabaseAuth();
+  const [backendStatus, setBackendStatus] = useState<'waiting' | 'ready' | 'error'>('waiting');
+  const [warmStatus, setWarmStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  const [startupNote, setStartupNote] = useState<string>('Starting backend…');
 
   const [draftName, setDraftName] = useState('');
   const [draftStoragePath, setDraftStoragePath] = useState('');
@@ -56,8 +106,79 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [editProject, setEditProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState('');
   const [editStoragePath, setEditStoragePath] = useState('');
+  const [isPickingFolder, setIsPickingFolder] = useState(false);
+  const [firstName, setFirstName] = useState<string>('');
 
   const subjectIdRe = /^\d{8}x\d+$/i;
+
+  const basenameOfPath = (p: string): string => {
+    const s = (p || '').replace(/[\\/]+$/g, '');
+    const parts = s.split(/[\\/]/g).filter(Boolean);
+    return parts[parts.length - 1] || s;
+  };
+
+  const applyDroppedStorageFolder = useCallback(
+    (absPath: string) => {
+      const p = absPath.trim();
+      if (!p) return;
+      setStoreWithPatientData(true);
+      setDraftStoragePath(p);
+      setDraftName((prev) => (prev.trim() ? prev : basenameOfPath(p)));
+    },
+    [setDraftName, setDraftStoragePath, setStoreWithPatientData]
+  );
+
+  const handleDroppedCreateFolder = useCallback(
+    (absPath: string) => {
+      const p = (absPath || '').trim();
+      if (!p) return;
+      setDraftName(basenameOfPath(p));
+      setDraftStoragePath(p);
+      setPendingDroppedSubjects([]);
+      setStoreWithPatientData(true);
+      setDraftFolderStructure(DEFAULT_FOLDER_STRUCTURE);
+      setIsCreateDialogOpen(true);
+      toast.info('Folder dropped. Create a project from it.');
+    },
+    [setDraftName, setDraftStoragePath, setPendingDroppedSubjects, setStoreWithPatientData, setDraftFolderStructure, setIsCreateDialogOpen]
+  );
+
+  useEffect(() => {
+    const tauri = (window as any)?.__TAURI__;
+    const listen = tauri?.event?.listen;
+    if (typeof listen !== 'function') return;
+
+    let unlisten: undefined | (() => void);
+    void (async () => {
+      try {
+        unlisten = await listen('tauri://file-drop', (e: any) => {
+          const payload = e?.payload;
+          const paths: unknown = Array.isArray(payload) ? payload : payload?.paths;
+          const first = Array.isArray(paths) ? paths[0] : undefined;
+          if (typeof first !== 'string') return;
+
+          // If the create dialog is open, treat it as a storage path drop.
+          if (isCreateDialogOpen) {
+            applyDroppedStorageFolder(first);
+            return;
+          }
+
+          // Otherwise, treat it as a quick-create drop.
+          handleDroppedCreateFolder(first);
+        });
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      try {
+        unlisten?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [isCreateDialogOpen, applyDroppedStorageFolder, handleDroppedCreateFolder]);
 
   const importDroppedSubjectsOnly = async (project: Project) => {
     try {
@@ -71,20 +192,157 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   };
 
+  const kickoffWarm = useCallback(async () => {
+    if (warmStatus === 'running' || warmStatus === 'done') return;
+    setWarmStatus('running');
+    setStartupNote('Warming backend (preloading imports)…');
+    try {
+      const res = await engine.warmBackend();
+      if (res?.error) {
+        setWarmStatus('failed');
+        toast.warning('Backend warmup encountered an optional dependency issue. You can keep using the app.');
+        console.warn(res.error);
+      } else {
+        setWarmStatus('done');
+        setStartupNote('');
+      }
+    } catch (err) {
+      setWarmStatus('failed');
+      console.error(err);
+    }
+  }, [warmStatus]);
+
   useEffect(() => {
+    let disposed = false;
+
+    let pollTimer: number | null = null;
+    let discoverTimer: number | null = null;
+    let startupTimeout: number | null = null;
+
+    const onBackendReady = () => {
+      if (disposed) return;
+      setBackendStatus('ready');
+      setStartupNote('Backend ready. Loading projects…');
+      loadProjects();
+      void kickoffWarm();
+    };
+
+    const onBackendError = () => {
+      if (disposed) return;
+      try {
+        const err = (globalThis as any)?.window?.__PBRAIN_BACKEND_ERROR;
+        const msg = typeof err === 'string' && err.trim().length > 0 ? err : 'Backend startup failed';
+        toast.error(msg);
+        setBackendStatus('error');
+        setStartupNote(msg);
+      } catch {
+        toast.error('Backend startup failed');
+        setBackendStatus('error');
+      }
+    };
+
+    window.addEventListener('pbrain-backend-ready', onBackendReady);
+    window.addEventListener('pbrain-backend-error', onBackendError);
+
+    // If the launcher injected the backend URL before React mounted, recover.
+    pollTimer = window.setInterval(() => {
+      if (disposed) return;
+      try {
+        const injected = (globalThis as any)?.window?.__PBRAIN_BACKEND_URL;
+        if (typeof injected === 'string' && injected.trim().length > 0) {
+          setBackendStatus('ready');
+          setStartupNote('Backend ready. Loading projects…');
+          loadProjects();
+          void kickoffWarm();
+          if (pollTimer != null) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, 250);
+
+    // If injection never arrives in non-Tauri local contexts, try to discover the backend.
+    discoverTimer = window.setTimeout(() => {
+      if (disposed) return;
+      void (async () => {
+        try {
+          const injected = (globalThis as any)?.window?.__PBRAIN_BACKEND_URL;
+          if (typeof injected === 'string' && injected.trim().length > 0) return;
+
+          const found = await discoverLocalBackendBaseUrl();
+          if (!found || disposed) return;
+
+          (globalThis as any).window.__PBRAIN_BACKEND_URL = found;
+          setBackendStatus('ready');
+          setStartupNote('Backend ready. Loading projects…');
+          loadProjects();
+          void kickoffWarm();
+        } catch {
+          // ignore
+        }
+      })();
+    }, 1200);
+
+    // Never allow an infinite skeleton; surface a clear error instead.
+    startupTimeout = window.setTimeout(() => {
+      if (disposed) return;
+      setIsLoading(false);
+      try {
+        const err = (globalThis as any)?.window?.__PBRAIN_BACKEND_ERROR;
+        const msg = typeof err === 'string' && err.trim().length > 0 ? err : 'Backend not connected. Quit and reopen the app.';
+        toast.error(msg);
+        setBackendStatus('error');
+        setStartupNote(msg);
+      } catch {
+        toast.error('Backend not connected. Quit and reopen the app.');
+        setBackendStatus('error');
+      }
+    }, 120000);
+
     loadProjects();
-  }, []);
+    (async () => {
+      try {
+        const s = await engine.getSettings();
+        setFirstName((s.firstName || '').trim());
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('pbrain-backend-ready', onBackendReady);
+      window.removeEventListener('pbrain-backend-error', onBackendError);
+
+      if (pollTimer != null) clearInterval(pollTimer);
+      if (discoverTimer != null) clearTimeout(discoverTimer);
+      if (startupTimeout != null) clearTimeout(startupTimeout);
+    };
+  }, [kickoffWarm]);
 
   const loadProjects = async () => {
     setIsLoading(true);
+    setStartupNote('Loading projects…');
     try {
       const data = await engine.getProjects();
       setProjects(data);
+      setIsLoading(false);
+      setStartupNote('');
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('BACKEND_NOT_CONFIGURED')) {
+        // Launchers may inject the backend URL asynchronously.
+        // Keep the loading state until we receive pbrain-backend-ready.
+        setStartupNote('Waiting for backend to finish starting…');
+        return;
+      }
       toast.error('Failed to load projects');
       console.error(error);
-    } finally {
       setIsLoading(false);
+      setStartupNote('Failed to load projects');
     }
   };
 
@@ -98,9 +356,34 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
 
     const rawDraft = draftStoragePath.trim();
-    const storagePath = (storeWithPatientData ? (rawDraft || defaultStoragePath(name)) : rawDraft).trim();
+    let storagePath = (storeWithPatientData ? rawDraft : (rawDraft || defaultStoragePath(name))).trim();
     if (!storagePath) {
-      toast.error('Please enter a project storage path');
+      toast.error(storeWithPatientData ? 'Please paste the patient data folder path' : 'Please enter a project storage path');
+      return;
+    }
+    if (storeWithPatientData && !looksLikeAbsolutePath(storagePath)) {
+      // Preferred: open a native folder picker on the backend machine.
+      const ok = await checkLocalBackendHealth();
+      if (ok) {
+        const picked = await pickFolderWithNativeDialog();
+        if (picked) {
+          storagePath = picked;
+          setDraftStoragePath(picked);
+        }
+      }
+
+      // Fallback: try to infer from allowed roots when picker is unavailable.
+      if (!looksLikeAbsolutePath(storagePath)) {
+        const sampleSubject = pendingDroppedSubjects?.[0]?.name || undefined;
+        const inferred = await resolveStoragePathFromDrop(storagePath, sampleSubject);
+        if (inferred) {
+          storagePath = inferred;
+          setDraftStoragePath(inferred);
+        }
+      }
+    }
+    if (storeWithPatientData && !looksLikeAbsolutePath(storagePath)) {
+      toast.error('Could not infer the absolute data folder path. Please paste it (e.g. /Volumes/.../data).');
       return;
     }
 
@@ -195,10 +478,18 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   };
 
   const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
+    let inferredAbsPath: string | null = null;
     const entries: FileSystemDirectoryEntry[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.kind === 'file') {
+        try {
+          const f = item.getAsFile?.();
+          const p = (f as any)?.path as string | undefined;
+          if (!inferredAbsPath && typeof p === 'string' && p.trim()) inferredAbsPath = p.trim();
+        } catch {
+          // ignore
+        }
         const entry = item.webkitGetAsEntry();
         if (entry?.isDirectory) {
           entries.push(entry as FileSystemDirectoryEntry);
@@ -235,14 +526,32 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     const subjectDirs = childDirs.filter(n => subjectIdRe.test(n));
     let subjects: Array<{ name: string; sourcePath: string }> = [];
     if (subjectDirs.length > 0) {
-      subjects = subjectDirs.map(n => ({ name: n, sourcePath: `${rootEntry.name}/${n}` }));
+      // Store relative paths under the project storage path.
+      subjects = subjectDirs.map(n => ({ name: n, sourcePath: n }));
     } else if (subjectIdRe.test(rootEntry.name)) {
       subjects = [{ name: rootEntry.name, sourcePath: rootEntry.name }];
     }
 
-    // Browsers don't provide a trustworthy absolute path for dropped folders.
-    // Prefill the folder name as a relative storage path.
-    openCreateDialog({ name: rootEntry.name, storagePath: rootEntry.name, subjects });
+    // Prefill the folder name for convenience. If an absolute path is available (desktop shells/electron), use it.
+    // Otherwise, the user must paste the patient data folder path.
+    let storagePrefill = inferredAbsPath || rootEntry.name;
+    if (!looksLikeAbsolutePath(storagePrefill)) {
+      const ok = await checkLocalBackendHealth();
+      if (ok) {
+        // Preferred: native folder picker.
+        const picked = await pickFolderWithNativeDialog();
+        if (picked) {
+          storagePrefill = picked;
+        } else {
+          const inferred = await resolveStoragePathFromDrop(storagePrefill, subjects?.[0]?.name);
+          if (inferred) storagePrefill = inferred;
+        }
+      } else {
+        toast.error('Local backend is not running, so the app cannot infer the absolute data folder path. Start the local app backend.');
+      }
+    }
+
+    openCreateDialog({ name: rootEntry.name, storagePath: storagePrefill, subjects });
     if (subjects.length > 0) {
       toast.info('Folder dropped. Subject folders will be imported after project creation.');
     } else {
@@ -253,6 +562,11 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    try {
+      e.dataTransfer.dropEffect = 'copy';
+    } catch {
+      // ignore
+    }
     setIsDraggingCreate(true);
   }, []);
 
@@ -269,41 +583,110 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     }
   }, []);
 
+  const handlePageDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDraggingCreate(false);
+
+      // In packaged shells (Tauri/Electron), a dropped folder is commonly surfaced as a File with an absolute path.
+      try {
+        const f = e.dataTransfer.files?.[0] as any;
+        const absPath = typeof f?.path === 'string' ? (f.path as string) : undefined;
+        if (absPath && looksLikeAbsolutePath(absPath)) {
+          handleDroppedCreateFolder(absPath);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Browser fallbacks (may not work for folders depending on engine/security policy).
+      if (e.dataTransfer.items) {
+        void processDroppedItems(e.dataTransfer.items);
+      }
+    },
+    [handleDroppedCreateFolder, processDroppedItems]
+  );
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingCreate(false);
+    // In packaged shells (Tauri/Electron), DataTransferItem APIs may be empty but the File can carry an absolute path.
+    try {
+      const f = e.dataTransfer.files?.[0] as any;
+      const absPath = typeof f?.path === 'string' ? (f.path as string) : undefined;
+      if (absPath && looksLikeAbsolutePath(absPath)) {
+        handleDroppedCreateFolder(absPath);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
     if (e.dataTransfer.items) {
       void processDroppedItems(e.dataTransfer.items);
     }
-  }, [processDroppedItems]);
+  }, [handleDroppedCreateFolder, processDroppedItems]);
+
+  const handleStoragePathDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      let inferredAbsPath: string | undefined;
+      try {
+        const f = e.dataTransfer.files?.[0];
+        inferredAbsPath = (f as any)?.path as string | undefined;
+      } catch {
+        // ignore
+      }
+      if (!inferredAbsPath) {
+        try {
+          const item = e.dataTransfer.items?.[0];
+          const f = item?.getAsFile?.();
+          inferredAbsPath = (f as any)?.path as string | undefined;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (inferredAbsPath && looksLikeAbsolutePath(inferredAbsPath)) {
+        applyDroppedStorageFolder(inferredAbsPath);
+      } else {
+        toast.error('Drop a folder from Finder to set the path');
+      }
+    },
+    [applyDroppedStorageFolder]
+  );
 
   const computedStoragePath = defaultStoragePath(draftName || 'project');
 
-  const displayName = (() => {
-    const u: any = auth.user;
-    const full = (u?.user_metadata?.full_name || u?.user_metadata?.name || '').toString().trim();
-    if (full) {
-      const comma = full.indexOf(',');
-      const normalized = comma >= 0 ? full.slice(comma + 1).trim() : full;
-      return normalized.split(/\s+/)[0] || '';
-    }
+  const greeting = firstName ? `${greetingForLocalTime()}, ${firstName}` : `${greetingForLocalTime()}`;
 
-    const email = (u?.email || '').toString().trim();
-    if (!email) return '';
-    const localPart = email.split('@')[0] || '';
-    return localPart.split(/[._-]+/)[0] || localPart;
-  })();
-
-  const greeting = `${greetingForLocalTime()}${displayName ? `, ${displayName}` : ''}`;
+  const showStartupBanner = backendStatus !== 'ready' || warmStatus === 'running' || (isLoading && projects.length === 0);
+  let startupTitle = '';
+  if (backendStatus !== 'ready') {
+    startupTitle = 'Starting backend…';
+  } else if (isLoading && projects.length === 0) {
+    startupTitle = 'Connecting to backend…';
+  } else if (warmStatus === 'running') {
+    startupTitle = 'Warming backend…';
+  }
 
   return (
-    <div className="min-h-screen bg-background p-6">
+    <div
+      className="min-h-screen bg-background p-6"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handlePageDrop}
+    >
       <div className="mx-auto max-w-7xl">
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-medium tracking-tight text-foreground">
-              <span className="italic">p</span>-Brain web
+              <span className="italic">p</span>-Brain platform
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">Advanced neuroimaging analysis platform</p>
           </div>
@@ -352,19 +735,46 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                     />
                   </div>
 
-                  {!storeWithPatientData && (
-                    <div className="space-y-2">
-                      <Label htmlFor="storagePath">Project storage path</Label>
+                  <div className="space-y-2">
+                    <Label htmlFor="storagePath">{storeWithPatientData ? 'Patient data folder' : 'Project storage path'}</Label>
+                    <div className="flex gap-2">
                       <Input
                         id="storagePath"
                         name="storagePath"
-                        placeholder="Enter or paste a folder path"
+                        placeholder={storeWithPatientData ? 'Choose or paste the patient data folder path' : 'Enter or paste a folder path'}
                         value={draftStoragePath}
                         onChange={(e) => setDraftStoragePath(e.target.value)}
-                        required
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                        onDrop={handleStoragePathDrop}
                       />
+                      {storeWithPatientData ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={isPickingFolder}
+                          onClick={async () => {
+                            setIsPickingFolder(true);
+                            try {
+                              const ok = await checkLocalBackendHealth();
+                              if (!ok) {
+                                toast.error('Local backend is not running. Start the local app backend to choose a folder.');
+                                return;
+                              }
+                              const picked = await pickFolderWithNativeDialog();
+                              if (picked) setDraftStoragePath(picked);
+                            } finally {
+                              setIsPickingFolder(false);
+                            }
+                          }}
+                        >
+                          Choose…
+                        </Button>
+                      ) : null}
                     </div>
-                  )}
+                  </div>
                 </div>
 
         {pendingDroppedSubjects.length > 0 ? (
@@ -444,7 +854,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                   <p>The backend processes subjects directly from the storage path and stores logs/indexes in a <span className="mono">.pbrain-web</span> folder under it.</p>
                   <p>{storeWithPatientData ? 'Project state will live beside the patient data (in-place).' : 'Project state will live in the custom path you provide (data copied into project).'}
                   </p>
-                  {draftName.trim() ? (
+                  {!storeWithPatientData && draftName.trim() ? (
                     <p className="mono text-xs">Default project location: {computedStoragePath}</p>
                   ) : null}
                 </div>
@@ -463,6 +873,18 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             </DialogContent>
           </Dialog>
         </div>
+
+        {showStartupBanner ? (
+          <div className="mb-6 rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+            <div className="font-medium text-foreground">{startupTitle || 'Starting…'}</div>
+            <div className="mt-1 text-muted-foreground">
+              {startupNote || 'Waiting for the local backend to finish starting.'}
+            </div>
+            {warmStatus === 'running' ? (
+              <div className="mt-1 text-xs text-muted-foreground">Preloading heavy imports so your first run is faster…</div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mb-8 text-center">
           <div className="text-2xl font-medium tracking-tight text-foreground">{greeting}</div>

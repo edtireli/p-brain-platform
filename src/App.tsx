@@ -1,13 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Toaster } from '@/components/ui/sonner';
 import { ProjectsPage } from './components/ProjectsPage';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { SubjectDetail } from './components/SubjectDetail';
 import { JobsPage } from './components/JobsPage';
-import { LoginPage } from './components/LoginPage';
-import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
-import { Button } from '@/components/ui/button';
-import { supabase } from '@/lib/supabase';
+import { OnboardingWizard } from './components/OnboardingWizard';
+import { engine } from '@/lib/engine';
 
 type View = 
   | { type: 'projects' }
@@ -17,14 +15,26 @@ type View =
 
 function App() {
   const [view, setView] = useState<View>({ type: 'projects' });
-  const auth = useSupabaseAuth();
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
 
-  const showAuthPanel = auth.configured && !!auth.user;
-
-  // Login is always the entry point.
-  // - If Supabase isn't configured, show the login page with config instructions.
-  // - If it is configured, require an active session.
-  const needsLogin = !auth.configured || (!auth.loading && !auth.session);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await engine.getSettings();
+        if (!cancelled) setShowOnboarding(!s.onboardingCompleted);
+      } catch {
+        // If backend isn't ready yet, don't block the UI.
+        if (!cancelled) setShowOnboarding(false);
+      } finally {
+        if (!cancelled) setOnboardingChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSelectProject = (projectId: string) => {
     setView({ type: 'project', projectId });
@@ -54,26 +64,21 @@ function App() {
   return (
     <>
       <div className="min-h-screen">
-        {needsLogin ? (
-          <LoginPage />
-        ) : (
-          <>
-            {showAuthPanel ? (
-              <div className="border-b border-border bg-background">
-                <div className="mx-auto flex w-full max-w-7xl items-center justify-end gap-3 px-4 py-3 text-xs text-muted-foreground">
-                  <span className="mono max-w-[60vw] truncate">{auth.user.email}</span>
-                  <Button size="sm" variant="secondary" onClick={() => supabase?.auth.signOut()}>
-                    Sign out
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
+        {onboardingChecked && showOnboarding ? (
+          <OnboardingWizard
+            onDone={() => {
+              setShowOnboarding(false);
+            }}
+          />
+        ) : null}
         {view.type === 'projects' && <ProjectsPage onSelectProject={handleSelectProject} />}
-        
+
         {view.type === 'project' && (
           <>
-            {(() => { localStorage.setItem('currentProjectId', view.projectId); return null; })()}
+            {(() => {
+              localStorage.setItem('currentProjectId', view.projectId);
+              return null;
+            })()}
             <ProjectDashboard
               projectId={view.projectId}
               onBack={handleBackToProjects}
@@ -81,19 +86,10 @@ function App() {
             />
           </>
         )}
-        
-        {view.type === 'subject' && (
-          <SubjectDetail
-            subjectId={view.subjectId}
-            onBack={handleBackToDashboard}
-          />
-        )}
 
-        {view.type === 'jobs' && (
-          <JobsPage onBack={handleBackToDashboard} />
-        )}
-          </>
-        )}
+        {view.type === 'subject' && <SubjectDetail subjectId={view.subjectId} onBack={handleBackToDashboard} />}
+
+        {view.type === 'jobs' && <JobsPage onBack={handleBackToDashboard} />}
       </div>
       <Toaster />
     </>

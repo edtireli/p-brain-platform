@@ -48,12 +48,28 @@ function _sanitizeHttpUrl(raw: string | undefined | null): string | null {
 
 function _localBackendBaseUrl(): string | null {
   const env = (import.meta as any).env as Record<string, string | undefined> | undefined;
-  return (
+  const fromEnv = (
     _sanitizeHttpUrl(env?.VITE_LOCAL_BACKEND_URL) ||
     _sanitizeHttpUrl(env?.VITE_API_BASE_URL) ||
     _sanitizeHttpUrl(env?.VITE_BACKEND_URL) ||
     null
   );
+
+  if (fromEnv) return fromEnv;
+
+  // If the UI is served by the local backend, default to same-origin.
+  try {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      if (host === '127.0.0.1' || host === 'localhost') {
+        return _sanitizeHttpUrl(window.location.origin);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
 }
 
 function _isAbsoluteLocalPath(p: string): boolean {

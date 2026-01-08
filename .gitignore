@@ -13,6 +13,11 @@ dist-ssr
 *-dist
 *.local
 
+# Packaged launcher outputs
+launcher/build-resources/
+launcher/release/
+launcher/*.dmg
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

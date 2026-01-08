@@ -45,18 +45,18 @@ export function LogStream({ jobId, className = '' }: LogStreamProps) {
   };
 
   return (
-    <div className={className}>
-      <ScrollArea className="h-64 rounded-md border border-border bg-muted/30">
+    <div className={`min-w-0 ${className}`.trim()}>
+      <ScrollArea className="h-64 min-w-0 rounded-md border border-border bg-muted/30">
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="mono p-4 text-xs"
+          className="mono min-w-0 whitespace-pre-wrap break-all p-4 text-xs"
         >
           {logs.length === 0 ? (
             <div className="text-muted-foreground">Waiting for logs...</div>
           ) : (
             logs.map((log, i) => (
-              <div key={i} className={`mb-1 ${getLogColor(log)}`}>
+              <div key={i} className={`mb-1 min-w-0 ${getLogColor(log)}`}>
                 {log}
               </div>
             ))
