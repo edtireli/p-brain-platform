@@ -53,3 +53,7 @@ backend/AI/**
 !backend/AI/README.md
 
 .spark-workbench-id
+
+# Ignore generated backend binaries
+/tauri-launcher/src-tauri/resources/backend/pbrain-web-backend
+/tauri-launcher/src-tauri/resources/pyi-work/
