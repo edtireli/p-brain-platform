@@ -1,10 +1,30 @@
 # p-brain Platform
 
-Cross-platform UI and desktop launcher for the core p-brain neuroimaging pipeline:
+Cross-platform desktop app + web UI that turns the **p-brain** neuroimaging pipeline into a usable end-to-end product: project/subject management, job monitoring, and a fast QC/review workspace for **DCE-MRI** and **diffusion** outputs (including tractography).
 
+Key links:
 - p-brain (pipeline): https://github.com/edtireli/p-brain
+- CNN bundle (Zenodo): https://doi.org/10.5281/zenodo.15655348
+- Releases (macOS DMG): https://github.com/edtireli/p-brain-platform/releases
 
-This platform turns p-brain into a usable end-to-end product: project/subject management, job monitoring, and a rich QC/review UI for DCE-MRI and diffusion outputs (including tractography). A pre-trained CNN bundle is published on Zenodo: https://doi.org/10.5281/zenodo.15655348
+What this platform gives you:
+- A single workspace to browse projects/subjects and review outputs.
+- Fast QC for DCE maps/curves and segmentation-derived summaries.
+- An interactive tractography viewer for diffusion outputs.
+- A desktop app that bundles the UI and runs a local bridge for file access.
+
+## Download (macOS)
+
+We publish macOS builds as a **`.dmg`** in GitHub Releases.
+
+- Download the latest `p-brain_*.dmg` from the Releases page.
+- Open it, then drag `p-brain.app` into `Applications`.
+
+Note: the `.app` is inside the DMG; you don’t need a separate `.app` download.
+
+## Open source
+
+This project is **open source** to encourage collaboration and make the platform better over time. That said, the primary path for most users is simply: **download the latest DMG and use the app**.
 
 ## What p-brain does (pipeline)
 
@@ -19,9 +39,9 @@ p-brain takes raw DCE-MRI (and optional diffusion MRI) and produces quantitative
 ## What’s inside
 
 - **Web UI (Vite/React)** – Supabase-backed subject/projects browser, tractography viewer, QC overlays, and pipeline status.
-- **Desktop launcher (Tauri)** – Ships the web UI with a local FastAPI bridge and Python environment bootstrap.
+- **Desktop app (Tauri)** – Bundles the UI with a local FastAPI bridge and Python environment bootstrap.
 - **Backend bridge (FastAPI)** – Serves tractography streamlines, AI outputs, and local file access for the app.
-- **p-brain pipeline hooks** – Calls out to the Python pipeline (segmentation, diffusion, tractography, AIF, CNN inference) and surfaces the results in the UI.
+- **p-brain pipeline hooks** – Calls out to the Python pipeline (segmentation, diffusion, tractography, AIF, CNN inference) and surfaces results for review.
 
 ## Image gallery
 
@@ -66,9 +86,11 @@ The following screenshots demonstrate the platform’s design and operability.
 ## Requirements
 
 - Node.js 18+ and npm
-- Rust toolchain (for Tauri desktop builds)
-- Python 3.10+ (pipeline + backend) with virtualenv
 - Supabase project (URL + anon key) for remote data/metadata storage
+
+For desktop builds:
+- Rust toolchain (for Tauri)
+- Python 3.10+ (pipeline + backend) with virtualenv
 - Optional system deps for full pipeline (FSL/FreeSurfer if you run the native pipeline locally)
 
 ## Quick start: web UI only
@@ -120,6 +142,12 @@ APP_SRC="$(pwd)/src-tauri/target/release/bundle/macos/p-brain.app"
 rm -rf /Applications/p-brain.app && cp -R "$APP_SRC" /Applications/p-brain.app && xattr -dr com.apple.quarantine /Applications/p-brain.app
 ```
 
+Find the most recent DMG produced by a build:
+
+```zsh
+ls -t src-tauri/target/release/bundle/macos/*.dmg | head -n 1
+```
+
 ## AI models (CNN)
 
 - Download the latest CNN model bundle from Zenodo: https://doi.org/10.5281/zenodo.15655348
@@ -137,7 +165,7 @@ Workflow: `.github/workflows/pages.yml`
 To publish QC artifacts to Supabase Storage for the UI:
 
 ```zsh
-cd p-brain-web
+cd p-brain-platform
 export SUPABASE_URL="https://<ref>.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
 
@@ -155,7 +183,7 @@ Uploads:
 ## Seed a sample project (optional)
 
 ```zsh
-cd p-brain-web
+cd p-brain-platform
 export SUPABASE_URL="https://<ref>.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="<sb_secret_...>"  # local only
 
