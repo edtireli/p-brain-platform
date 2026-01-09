@@ -1,6 +1,20 @@
 # p-brain Platform
 
-Cross-platform UI and desktop launcher for the p-brain neuroimaging pipeline. It brings subject browsing, diffusion/tractography QC, AI-assisted workflows (AIF extraction + CNN lesion/slice models), and project provisioning into a single experience. A pre-trained CNN bundle is published on Zenodo: https://doi.org/10.5281/zenodo.15655348
+Cross-platform UI and desktop launcher for the core p-brain neuroimaging pipeline:
+
+- p-brain (pipeline): https://github.com/edtireli/p-brain
+
+This platform turns p-brain into a usable end-to-end product: project/subject management, job monitoring, and a rich QC/review UI for DCE-MRI and diffusion outputs (including tractography). A pre-trained CNN bundle is published on Zenodo: https://doi.org/10.5281/zenodo.15655348
+
+## What p-brain does (pipeline)
+
+p-brain takes raw DCE-MRI (and optional diffusion MRI) and produces quantitative neuroimaging outputs with transparent QC artifacts:
+
+- **Input functions (AIF/VIF)**: CNN-based rICA + SSS slice detection/ROI extraction.
+- **Pharmacokinetics**: Patlak permeability model (Ki, vp) and Extended Tofts (Ktrans, kep, ve).
+- **Perfusion/deconvolution**: model-free residue deconvolution outputs including CBF, MTT, and CTH.
+- **Anatomy / parcellation**: FastSurfer-style segmentations/parcels propagated to DCE space for parcel-wise summaries.
+- **Deliverables**: voxel-wise NIfTI maps, parcel tables, curve plots, fit diagnostics, and montages for QC.
 
 ## What’s inside
 
@@ -8,6 +22,46 @@ Cross-platform UI and desktop launcher for the p-brain neuroimaging pipeline. It
 - **Desktop launcher (Tauri)** – Ships the web UI with a local FastAPI bridge and Python environment bootstrap.
 - **Backend bridge (FastAPI)** – Serves tractography streamlines, AI outputs, and local file access for the app.
 - **p-brain pipeline hooks** – Calls out to the Python pipeline (segmentation, diffusion, tractography, AIF, CNN inference) and surfaces the results in the UI.
+
+## Image gallery
+
+The following screenshots demonstrate the platform’s design and operability.
+
+![Screenshot 2026-01-08 17:43:51](docs/images/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
+*Snapshot showing the platform dashboard with example project.*
+
+![Screenshot 2026-01-08 17:45:21](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
+*Tractography viewer.*
+
+![Screenshot 2026-01-08 17:47:11](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
+*Dynamic-contrast enhanced series with AI overlay of predicted AIF/VIF.*
+
+![Screenshot 2026-01-08 17:45:41](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
+*Display of a voxelwise map (Ki in this example).*
+
+![Screenshot 2026-01-08 17:45:56](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.56.png)
+*Display of a parcelwise map (Ki in this example).*
+
+![Screenshot 2026-01-08 17:46:02](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
+*Arterial input functions (AIF), venous input functions (VIF), and tissue functions displayed for a subject.*
+
+![Screenshot 2026-01-08 17:46:20](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.20.png)
+*Isolating desired functions for further inspection.*
+
+![Screenshot 2026-01-08 17:46:35](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.35.png)
+*Patlak analysis; dotted line indicates the window used for estimation.*
+
+![Screenshot 2026-01-08 17:46:54](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.54.png)
+*Extended Tofts estimation.*
+
+![Screenshot 2026-01-08 17:49:45](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
+*Table of results from segmentation.*
+
+![Screenshot 2026-01-08 17:47:18](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.18.png)
+*Additional visualization of imaging outputs.*
+
+![Screenshot 2026-01-08 17:49:13](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
+*Overview of subjects; blue indicates an active job; green indicates a completed job.*
 
 ## Requirements
 
@@ -20,8 +74,8 @@ Cross-platform UI and desktop launcher for the p-brain neuroimaging pipeline. It
 ## Quick start: web UI only
 
 ```zsh
-git clone https://github.com/edtireli/p-brain-web.git
-cd p-brain-web
+git clone https://github.com/edtireli/p-brain-platform.git
+cd p-brain-platform
 npm install
 cp .env.example .env.local  # if present; otherwise set vars below
 ```
@@ -111,47 +165,6 @@ node scripts/seed-supabase.mjs \
   --email "you@example.com" \
   --password "choose-a-password"
 ```
-
-## Image gallery
-
-The following screenshots demonstrate the platforms design and operatability. 
-
-![Screenshot 2026-01-08 17:43:51](docs/images/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
-*Snapshot showing the platform dashboard with example project*
-
-![Screenshot 2026-01-08 17:45:21](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
-*Tractography viewer.*
-
-![Screenshot 2026-01-08 17:47:11](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
-*Dyanamic-contrast enhanced series with AI overlay of predicted AIF/VIF.*
-
-![Screenshot 2026-01-08 17:45:41](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
-*Display of a voxelwise map (Ki in this example).*
-
-![Screenshot 2026-01-08 17:45:56](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.56.png)
-*Display of a parcelwise map (Ki in this example).*
-
-![Screenshot 2026-01-08 17:46:02](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
-*Arterial input functions (AIF), Veinous input functions (VIF) and tissue functions displayed for a subject.*
-
-![Screenshot 2026-01-08 17:46:20](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.20.png)
-*Isolating desired functions for further inspection.*
-
-![Screenshot 2026-01-08 17:46:35](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.35.png)
-*Patlak analysis, dotted line indicating the section used for the estimation.*
-
-![Screenshot 2026-01-08 17:46:54](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.54.png)
-*Extended tofts estimation.*
-
-![Screenshot 2026-01-08 17:49:45](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
-*Table of results from segmentation*
-
-![Screenshot 2026-01-08 17:47:18](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.18.png)
-*Additional visualization of imaging outputs.*
-
-![Screenshot 2026-01-08 17:49:13](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
-*Overview of subjects; blue animation indicating a job in process; green indicating a completed job.*
-
 
 ## Contributing
 
