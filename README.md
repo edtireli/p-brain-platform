@@ -1,4 +1,5 @@
 # p-brain Platform
+<img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/a7ee49ac-b972-4e95-b3e1-d24b91c52a40" />
 
 Cross-platform desktop app + web UI that turns the **p-brain** neuroimaging pipeline into a usable end-to-end product: project/subject management, job monitoring, and a fast QC/review workspace for **DCE-MRI** and **diffusion** outputs (including tractography).
 
