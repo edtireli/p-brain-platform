@@ -112,15 +112,18 @@ node scripts/seed-supabase.mjs \
   --password "choose-a-password"
 ```
 
-## Image gallery (chronological)
+## Image gallery
 
 The following screenshots demonstrate the platforms design and operatability. 
 
 ![Screenshot 2026-01-08 17:43:51](docs/images/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
-*Snapshot showing the platform dashboard and initial subject context.*
+*Snapshot showing the platform dashboard with example project*
 
 ![Screenshot 2026-01-08 17:45:21](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
 *Tractography viewer.*
+
+![Screenshot 2026-01-08 17:47:11](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
+*Dyanamic-contrast enhanced series with AI overlay of predicted AIF/VIF.*
 
 ![Screenshot 2026-01-08 17:45:41](docs/images/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
 *Display of a voxelwise map (Ki in this example).*
@@ -129,28 +132,26 @@ The following screenshots demonstrate the platforms design and operatability.
 *Display of a parcelwise map (Ki in this example).*
 
 ![Screenshot 2026-01-08 17:46:02](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
-*Shows the interface transitioning between modalities/QC views.*
+*Arterial input functions (AIF), Veinous input functions (VIF) and tissue functions displayed for a subject.*
 
 ![Screenshot 2026-01-08 17:46:20](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.20.png)
-*Highlights tractography/visual overlays during review.*
+*Isolating desired functions for further inspection.*
 
 ![Screenshot 2026-01-08 17:46:35](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.35.png)
-*Pipeline status and dataset context in the UI.*
+*Patlak analysis, dotted line indicating the section used for the estimation.*
 
 ![Screenshot 2026-01-08 17:46:54](docs/images/platform/Screenshot%202026-01-08%20at%2017.46.54.png)
-*Another QC-focused view to inspect outputs.*
+*Extended tofts estimation.*
 
-![Screenshot 2026-01-08 17:47:11](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
-*Demonstrates navigation and action controls for a subject.*
+![Screenshot 2026-01-08 17:49:45](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
+*Table of results from segmentation*
 
 ![Screenshot 2026-01-08 17:47:18](docs/images/platform/Screenshot%202026-01-08%20at%2017.47.18.png)
 *Additional visualization of imaging outputs.*
 
 ![Screenshot 2026-01-08 17:49:13](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
-*Late-stage review of results, including overlays.*
+*Overview of subjects; blue animation indicating a job in process; green indicating a completed job.*
 
-![Screenshot 2026-01-08 17:49:45](docs/images/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
-*Wrap-up view summarizing processed data and controls.*
 
 ## Contributing
 
