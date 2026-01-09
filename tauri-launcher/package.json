@@ -1,13 +1,13 @@
 {
   "name": "tauri-launcher",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "prepare:resources": "node scripts/prepare.mjs",
     "dev": "npm run prepare:resources && tauri dev",
     "build": "npm run prepare:resources && tauri build",
-    "tauri:build": "npm run prepare:resources && tauri build --bundles app && node scripts/postbuild-copy-backend.mjs",
+    "tauri:build": "npm run prepare:resources && tauri build --bundles app dmg && node scripts/postbuild-copy-backend.mjs",
     "tauri:install": "APP_SRC=\"$PWD/src-tauri/target/release/bundle/macos/p-brain.app\" && rm -rf \"/Applications/p-brain.app\" 2>/dev/null || true && ditto \"$APP_SRC\" \"/Applications/p-brain.app\" && xattr -dr com.apple.quarantine \"/Applications/p-brain.app\" || true && echo \"Installed to /Applications/p-brain.app\"",
     "tauri": "tauri"
   },

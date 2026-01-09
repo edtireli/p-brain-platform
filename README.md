@@ -110,7 +110,7 @@ uvicorn app:app --host 127.0.0.1 --port 8787 --reload
 cd tauri-launcher
 npm install
 npm run tauri:build   # or npm run tauri:dev for live dev
-# macOS: the built app appears under src-tauri/target/release/bundle/macos/
+# macOS: outputs appear under src-tauri/target/release/bundle/macos/ (.app and .dmg)
 ```
 
 The launcher bundles the UI, starts the FastAPI bridge, and can manage a Python virtualenv for the pipeline. After building, you can install locally (example):
