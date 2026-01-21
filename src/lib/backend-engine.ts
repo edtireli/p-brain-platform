@@ -16,8 +16,14 @@ import type {
   SystemDeps,
   ToftsData,
   TractographyData,
+  ConnectomeData,
   VolumeFile,
   VolumeInfo,
+  ProjectAnalysisDataset,
+  ProjectAnalysisView,
+  ProjectAnalysisPearsonResponse,
+  ProjectAnalysisGroupCompareResponse,
+  ProjectAnalysisOlsResponse,
 } from '@/types';
 import type { StageId } from '@/types';
 
@@ -28,6 +34,7 @@ const STORAGE_KEY = 'pbrain.backendUrl';
 let tauriDiscoveryStarted = false;
 let tauriDiscoveryTimer: number | null = null;
 let tauriDiscoveryAttempts = 0;
+let tauriDiscoveryInFlight = false;
 
 const TAURI_DISCOVERY_MAX_ATTEMPTS = 120; // ~2 minutes at 1s interval
 const TAURI_DISCOVERY_INTERVAL_MS = 1000;
@@ -76,24 +83,42 @@ function startTauriBackendDiscovery(): void {
     return false;
   };
 
-  const attempt = async () => {
-    tauriDiscoveryAttempts += 1;
-    const ok = await scanOnce();
-    if (ok && tauriDiscoveryTimer !== null) {
-      clearInterval(tauriDiscoveryTimer);
-      tauriDiscoveryTimer = null;
-    }
-    if (!ok && tauriDiscoveryAttempts >= TAURI_DISCOVERY_MAX_ATTEMPTS && tauriDiscoveryTimer !== null) {
-      clearInterval(tauriDiscoveryTimer);
+  const stop = () => {
+    if (tauriDiscoveryTimer !== null) {
+      clearTimeout(tauriDiscoveryTimer);
       tauriDiscoveryTimer = null;
     }
   };
 
-  // Start immediately, then keep retrying while the backend spins up.
+  const scheduleNext = (delayMs: number) => {
+    stop();
+    tauriDiscoveryTimer = window.setTimeout(() => {
+      void attempt();
+    }, delayMs);
+  };
+
+  const attempt = async () => {
+    if (tauriDiscoveryInFlight) return;
+    tauriDiscoveryInFlight = true;
+    try {
+      tauriDiscoveryAttempts += 1;
+      const ok = await scanOnce();
+      if (ok) {
+        stop();
+        return;
+      }
+      if (tauriDiscoveryAttempts >= TAURI_DISCOVERY_MAX_ATTEMPTS) {
+        stop();
+        return;
+      }
+      scheduleNext(TAURI_DISCOVERY_INTERVAL_MS);
+    } finally {
+      tauriDiscoveryInFlight = false;
+    }
+  };
+
+  // Start immediately, then retry while the backend spins up.
   void attempt();
-  tauriDiscoveryTimer = window.setInterval(() => {
-    void attempt();
-  }, TAURI_DISCOVERY_INTERVAL_MS);
 }
 
 function sanitizeUrl(raw: string | null): string | null {
@@ -209,18 +234,51 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const url = backendUrl();
   if (!url) throw new Error('BACKEND_NOT_CONFIGURED');
 
-  const res = await fetch(`${url}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
+  const timeoutMs = 30_000;
+  const timeoutController = new AbortController();
+  const timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signals: AbortSignal[] = [];
+  if (init?.signal) signals.push(init.signal);
+  signals.push(timeoutController.signal);
+
+  let signal: AbortSignal | undefined;
+  if (signals.length === 1) {
+    signal = signals[0];
+  } else {
+    const anyFn = (AbortSignal as any)?.any as ((signals: AbortSignal[]) => AbortSignal) | undefined;
+    if (typeof anyFn === 'function') {
+      signal = anyFn(signals);
+    } else {
+      const ctrl = new AbortController();
+      const onAbort = () => ctrl.abort();
+      for (const s of signals) {
+        if (s.aborted) {
+          ctrl.abort();
+          break;
+        }
+        s.addEventListener('abort', onAbort, { once: true });
+      }
+      signal = ctrl.signal;
+    }
   }
-  return res.json() as Promise<T>;
+
+  try {
+    const res = await fetch(`${url}${path}`, {
+      ...init,
+      signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<T>;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export class BackendEngineAPI {
@@ -231,50 +289,150 @@ export class BackendEngineAPI {
   private lastLogLines = new Map<string, string[]>();
 
   private pollTimer: number | null = null;
+  private pollAbort: AbortController | null = null;
+  private pollInFlight = false;
+  private disposed = false;
+
+  private lastStatusPollAt = 0;
   private lastJobs = new Map<string, Job>();
   private lastSubjects = new Map<string, Subject>();
 
-  constructor() {
-    this.startPolling();
+  constructor() {}
+
+  async getSubjectConnectome(subjectId: string): Promise<ConnectomeData> {
+    return api<ConnectomeData>(`/subjects/${encodeURIComponent(subjectId)}/connectome`);
   }
 
-  private startPolling() {
-    if (this.pollTimer != null) return;
+  dispose(): void {
+    this.disposed = true;
+    this.stopPolling();
+    this.jobListeners.clear();
+    this.statusListeners.clear();
+    this.logListeners.clear();
+    this.lastJobs.clear();
+    this.lastSubjects.clear();
+    this.lastLogLines.clear();
+  }
 
-    this.pollTimer = window.setInterval(async () => {
+  private hasLiveListeners(): boolean {
+    if (this.jobListeners.size > 0) return true;
+    if (this.statusListeners.size > 0) return true;
+    for (const listeners of this.logListeners.values()) {
+      if (listeners.size > 0) return true;
+    }
+    return false;
+  }
+
+  private ensurePolling(): void {
+    if (this.disposed) return;
+    if (!this.hasLiveListeners()) return;
+    if (this.pollTimer != null) return;
+    this.scheduleNextPoll(0);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer != null) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.pollAbort) {
       try {
-        if (!backendConfigured()) return;
-        const jobs = await this.getJobs({});
+        this.pollAbort.abort();
+      } catch {
+        // ignore
+      }
+      this.pollAbort = null;
+    }
+    this.pollInFlight = false;
+  }
+
+  private maybeStopPolling(): void {
+    if (this.hasLiveListeners()) return;
+    this.stopPolling();
+  }
+
+  private scheduleNextPoll(delayMs: number): void {
+    if (this.disposed) return;
+    if (this.pollTimer != null) clearTimeout(this.pollTimer);
+    this.pollTimer = window.setTimeout(() => {
+      void this.pollOnce();
+    }, delayMs);
+  }
+
+  private jobsEqual(a: Job, b: Job): boolean {
+    return (
+      a.status === b.status &&
+      a.progress === b.progress &&
+      a.currentStep === b.currentStep &&
+      a.estimatedTimeRemaining === b.estimatedTimeRemaining &&
+      a.startTime === b.startTime &&
+      a.endTime === b.endTime &&
+      a.error === b.error
+    );
+  }
+
+  private async pollOnce(): Promise<void> {
+    if (this.disposed) return;
+    if (!this.hasLiveListeners()) {
+      this.stopPolling();
+      return;
+    }
+    if (this.pollInFlight) {
+      // Avoid overlapping polls (can dogpile async fetches).
+      this.scheduleNextPoll(250);
+      return;
+    }
+
+    this.pollInFlight = true;
+    this.pollAbort = new AbortController();
+    const signal = this.pollAbort.signal;
+
+    try {
+      if (!backendConfigured()) {
+        this.scheduleNextPoll(300);
+        return;
+      }
+
+      // Poll jobs only if someone is listening.
+      if (this.jobListeners.size > 0) {
+        const jobs = await api<Job[]>('/jobs', { signal });
         for (const job of jobs) {
           const prev = this.lastJobs.get(job.id);
-          if (!prev || JSON.stringify(prev) !== JSON.stringify(job)) {
+          if (!prev || !this.jobsEqual(prev, job)) {
             this.jobListeners.forEach(l => l(job));
             this.lastJobs.set(job.id, job);
           }
         }
+      }
 
-        // Emit status updates by diffing subjects (cheap, coarse).
-        const projects = await this.getProjects();
-        for (const p of projects) {
-          const subjects = await this.getSubjects(p.id);
-          for (const s of subjects) {
-            const prev = this.lastSubjects.get(s.id);
-            if (prev) {
-              for (const [stageId, status] of Object.entries(s.stageStatuses)) {
-                const old = (prev.stageStatuses as any)[stageId];
-                if (old !== status) {
-                  this.statusListeners.forEach(l => l({ subjectId: s.id, stageId: stageId as any, status }));
+      // Emit status updates by diffing subjects, but do it less often and only when needed.
+      if (this.statusListeners.size > 0) {
+        const now = Date.now();
+        if (now - this.lastStatusPollAt >= 5000) {
+          this.lastStatusPollAt = now;
+          const projects = await api<Project[]>('/projects', { signal });
+          for (const p of projects) {
+            const subjects = await api<Subject[]>(`/projects/${encodeURIComponent(p.id)}/subjects`, { signal });
+            for (const s of subjects) {
+              const prev = this.lastSubjects.get(s.id);
+              if (prev) {
+                for (const [stageId, status] of Object.entries(s.stageStatuses)) {
+                  const old = (prev.stageStatuses as any)[stageId];
+                  if (old !== status) {
+                    this.statusListeners.forEach(l => l({ subjectId: s.id, stageId: stageId as any, status }));
+                  }
                 }
               }
+              this.lastSubjects.set(s.id, s);
             }
-            this.lastSubjects.set(s.id, s);
           }
         }
+      }
 
-        // Poll logs for any jobs that have listeners.
-        for (const [jobId, listeners] of this.logListeners.entries()) {
-          if (listeners.size === 0) continue;
-          const payload = await api<{ lines: string[] }>(`/jobs/${encodeURIComponent(jobId)}/logs?tail=80`);
+      // Poll logs for any jobs that have listeners.
+      for (const [jobId, listeners] of this.logListeners.entries()) {
+        if (listeners.size === 0) continue;
+        const payload = await api<{ lines: string[] }>(`/jobs/${encodeURIComponent(jobId)}/logs?tail=80`, { signal });
 
           const nextLines = payload.lines || [];
           const prevLines = this.lastLogLines.get(jobId) || [];
@@ -316,27 +474,39 @@ export class BackendEngineAPI {
           for (const line of nextLines.slice(startIdx)) {
             listeners.forEach(l => l(line));
           }
-          this.lastLogLines.set(jobId, nextLines);
-        }
-      } catch {
-        // ignore transient backend errors
+        this.lastLogLines.set(jobId, nextLines);
       }
-    }, 1200);
+    } catch {
+      // ignore transient backend errors
+    } finally {
+      this.pollInFlight = false;
+      this.pollAbort = null;
+      this.scheduleNextPoll(1200);
+    }
   }
 
   onJobUpdate(listener: (job: Job) => void): Unsubscribe {
     this.jobListeners.add(listener);
-    return () => this.jobListeners.delete(listener);
+    this.ensurePolling();
+    return () => {
+      this.jobListeners.delete(listener);
+      this.maybeStopPolling();
+    };
   }
 
   onStatusUpdate(listener: (update: { subjectId: string; stageId: any; status: any }) => void): Unsubscribe {
     this.statusListeners.add(listener);
-    return () => this.statusListeners.delete(listener);
+    this.ensurePolling();
+    return () => {
+      this.statusListeners.delete(listener);
+      this.maybeStopPolling();
+    };
   }
 
   onJobLogs(jobId: string, listener: (log: string) => void): Unsubscribe {
     if (!this.logListeners.has(jobId)) this.logListeners.set(jobId, new Set());
     this.logListeners.get(jobId)!.add(listener);
+    this.ensurePolling();
     return () => {
       const set = this.logListeners.get(jobId);
       if (!set) return;
@@ -345,6 +515,7 @@ export class BackendEngineAPI {
         this.logListeners.delete(jobId);
         this.lastLogLines.delete(jobId);
       }
+      this.maybeStopPolling();
     };
   }
 
@@ -418,6 +589,32 @@ export class BackendEngineAPI {
     return api<Project>(`/projects/${encodeURIComponent(id)}`);
   }
 
+  async getProjectAnalysisDataset(projectId: string, view: ProjectAnalysisView): Promise<ProjectAnalysisDataset> {
+    const v = encodeURIComponent(view || 'total');
+    return api<ProjectAnalysisDataset>(`/projects/${encodeURIComponent(projectId)}/analysis/dataset?view=${v}`);
+  }
+
+  async analysisPearson(x: number[], y: number[]): Promise<ProjectAnalysisPearsonResponse> {
+    return api<ProjectAnalysisPearsonResponse>('/analysis/stats/pearson', {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    });
+  }
+
+  async analysisGroupCompare(a: number[], b: number[]): Promise<ProjectAnalysisGroupCompareResponse> {
+    return api<ProjectAnalysisGroupCompareResponse>('/analysis/stats/group-compare', {
+      method: 'POST',
+      body: JSON.stringify({ a, b }),
+    });
+  }
+
+  async analysisOls(y: number[], X: number[][], columns: string[]): Promise<ProjectAnalysisOlsResponse> {
+    return api<ProjectAnalysisOlsResponse>('/analysis/stats/ols', {
+      method: 'POST',
+      body: JSON.stringify({ y, X, columns }),
+    });
+  }
+
   async createProject(data: { name: string; storagePath: string; copyDataIntoProject: boolean }): Promise<Project> {
     return api<Project>('/projects', { method: 'POST', body: JSON.stringify(data) });
   }
@@ -471,10 +668,10 @@ export class BackendEngineAPI {
     });
   }
 
-  async runSubjectStage(subjectId: string, stageId: StageId): Promise<Job> {
+  async runSubjectStage(subjectId: string, stageId: StageId, opts?: { runDependencies?: boolean }): Promise<Job> {
     return api<Job>(`/subjects/${encodeURIComponent(subjectId)}/run-stage`, {
       method: 'POST',
-      body: JSON.stringify({ stageId }),
+      body: JSON.stringify({ stageId, ...(opts?.runDependencies === false ? { runDependencies: false } : {}) }),
     });
   }
 

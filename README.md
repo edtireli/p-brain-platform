@@ -7,6 +7,7 @@ Key links:
 - p-brain (pipeline): https://github.com/edtireli/p-brain
 - CNN bundle (Zenodo): https://doi.org/10.5281/zenodo.15655348
 - Releases (macOS DMG): https://github.com/edtireli/p-brain-platform/releases
+- Cohort analysis guide: docs/COHORT_ANALYSIS.md
 
 What this platform gives you:
 - A single workspace to browse projects/subjects and review outputs.

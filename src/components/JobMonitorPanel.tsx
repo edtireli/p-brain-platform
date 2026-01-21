@@ -56,14 +56,28 @@ export function JobMonitorPanel({ projectId, isOpen, onClose }: JobMonitorPanelP
         });
       });
 
-      const interval = setInterval(() => {
-        if (document.visibilityState !== 'visible') return;
-        loadJobs();
-      }, 30000);
+      let disposed = false;
+      let t: number | null = null;
+
+      const tick = async () => {
+        if (disposed) return;
+        if (document.visibilityState === 'visible') {
+          try {
+            await loadJobs();
+          } catch {
+            // ignore
+          }
+        }
+        if (disposed) return;
+        t = window.setTimeout(tick, 30000);
+      };
+
+      t = window.setTimeout(() => void tick(), 30000);
 
       return () => {
+        disposed = true;
         unsubscribe();
-        clearInterval(interval);
+        if (t != null) window.clearTimeout(t);
       };
     }
   }, [isOpen, projectId]);

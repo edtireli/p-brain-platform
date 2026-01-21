@@ -5,11 +5,13 @@ import { ProjectDashboard } from './components/ProjectDashboard';
 import { SubjectDetail } from './components/SubjectDetail';
 import { JobsPage } from './components/JobsPage';
 import { OnboardingWizard } from './components/OnboardingWizard';
+import { ProjectAnalysis } from './components/ProjectAnalysis';
 import { engine } from '@/lib/engine';
 
 type View = 
   | { type: 'projects' }
   | { type: 'project'; projectId: string }
+  | { type: 'analysis'; projectId: string }
   | { type: 'subject'; subjectId: string }
   | { type: 'jobs' };
 
@@ -48,6 +50,10 @@ function App() {
     setView({ type: 'subject', subjectId });
   };
 
+  const handleOpenAnalysis = (projectId: string) => {
+    setView({ type: 'analysis', projectId });
+  };
+
   const handleBackToDashboard = () => {
     if (view.type === 'subject') {
       const projectId = localStorage.getItem('currentProjectId');
@@ -56,6 +62,8 @@ function App() {
       } else {
         setView({ type: 'projects' });
       }
+    } else if (view.type === 'analysis') {
+      setView({ type: 'project', projectId: view.projectId });
     } else if (view.type === 'jobs') {
       setView({ type: 'projects' });
     }
@@ -83,8 +91,16 @@ function App() {
               projectId={view.projectId}
               onBack={handleBackToProjects}
               onSelectSubject={handleSelectSubject}
+              onOpenAnalysis={() => handleOpenAnalysis(view.projectId)}
             />
           </>
+        )}
+
+        {view.type === 'analysis' && (
+          <ProjectAnalysis
+            projectId={view.projectId}
+            onBack={handleBackToDashboard}
+          />
         )}
 
         {view.type === 'subject' && <SubjectDetail subjectId={view.subjectId} onBack={handleBackToDashboard} />}

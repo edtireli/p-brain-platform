@@ -26,9 +26,25 @@ export function JobsPage({ onBack }: JobsPageProps) {
   const [runnerStatus, setRunnerStatus] = useState<{ lastSeen?: string; workerId?: string; hostname?: string } | null>(null);
 
   useEffect(() => {
-    loadJobs();
-    const interval = setInterval(loadJobs, 2000);
-    return () => clearInterval(interval);
+    let disposed = false;
+    let t: number | null = null;
+
+    const tick = async () => {
+      if (disposed) return;
+      try {
+        await loadJobs();
+      } catch {
+        // ignore
+      }
+      if (disposed) return;
+      t = window.setTimeout(tick, 2000);
+    };
+
+    void tick();
+    return () => {
+      disposed = true;
+      if (t != null) window.clearTimeout(t);
+    };
   }, []);
 
   useEffect(() => {

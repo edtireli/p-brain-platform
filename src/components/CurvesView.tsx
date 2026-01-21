@@ -122,18 +122,32 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
     if (curves.length > 0) return;
     if (!ensureOnce) return;
 
-    const t = window.setInterval(async () => {
+    let disposed = false;
+    let attempts = 0;
+    let t: number | null = null;
+
+    const tick = async () => {
+      if (disposed) return;
+      attempts += 1;
       try {
         const curvesData = await engine.getCurves(subjectId);
         if (curvesData.length > 0) {
           setCurves(curvesData);
-          window.clearInterval(t);
+          return;
         }
       } catch {
         // ignore
       }
-    }, 2500);
-    return () => window.clearInterval(t);
+      if (disposed) return;
+      if (attempts >= 24) return;
+      t = window.setTimeout(() => void tick(), 2500);
+    };
+
+    t = window.setTimeout(() => void tick(), 2500);
+    return () => {
+      disposed = true;
+      if (t != null) window.clearTimeout(t);
+    };
   }, [subjectId, curves.length, ensureOnce]);
 
   const hasPatlak = !!patlakData && (patlakData.x?.length ?? 0) > 0 && (patlakData.y?.length ?? 0) > 0;

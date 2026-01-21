@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Eye, ChartLine, MapTrifold, Table as TableIcon, XCircle, Play } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -15,6 +15,7 @@ import { CurvesView } from './CurvesView';
 import { MapsView } from './MapsView';
 import { TablesView } from './TablesView';
 import { TractographyView } from './TractographyView';
+import { ConnectomeView } from './ConnectomeView';
 import { LogStream } from './LogStream';
 import { motion } from 'framer-motion';
 
@@ -32,6 +33,8 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const [roiMasks, setRoiMasks] = useState<RoiMaskVolume[]>([]);
   const [roiEnsureAttempted, setRoiEnsureAttempted] = useState(false);
   const [roiLoading, setRoiLoading] = useState(false);
+  const roiOverlayPollTimerRef = useRef<number | null>(null);
+  const roiOverlayPollCancelledRef = useRef(false);
 
   const [logOpen, setLogOpen] = useState(false);
   const [selectedStage, setSelectedStage] = useState<StageId | null>(null);
@@ -48,6 +51,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   );
 
   useEffect(() => {
+    roiOverlayPollCancelledRef.current = false;
     loadSubject();
 
     (async () => {
@@ -77,6 +81,11 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     });
 
     return () => {
+      roiOverlayPollCancelledRef.current = true;
+      if (roiOverlayPollTimerRef.current != null) {
+        window.clearTimeout(roiOverlayPollTimerRef.current);
+        roiOverlayPollTimerRef.current = null;
+      }
       unsubscribe();
       unsubscribeJobs();
     };
@@ -105,21 +114,29 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
         // Poll briefly for ROI overlays to appear.
         let attempts = 0;
-        const t = window.setInterval(async () => {
+        if (roiOverlayPollTimerRef.current != null) {
+          window.clearTimeout(roiOverlayPollTimerRef.current);
+          roiOverlayPollTimerRef.current = null;
+        }
+
+        const tick = async () => {
+          if (roiOverlayPollCancelledRef.current) return;
           attempts += 1;
           try {
             const next = await engine.getSubjectRoiOverlays(subjectId);
             if (Array.isArray(next) && next.length > 0) {
               setRoiOverlays(next);
-              window.clearInterval(t);
+              return;
             }
           } catch {
             // ignore
           }
-          if (attempts >= 24) {
-            window.clearInterval(t);
-          }
-        }, 2500);
+          if (roiOverlayPollCancelledRef.current) return;
+          if (attempts >= 24) return;
+          roiOverlayPollTimerRef.current = window.setTimeout(() => void tick(), 2500);
+        };
+
+        roiOverlayPollTimerRef.current = window.setTimeout(() => void tick(), 2500);
       }
     } catch {
       setRoiOverlays([]);
@@ -147,6 +164,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     'modelling',
     'diffusion',
     'tractography',
+    'connectome',
   ];
 
   const normalizeStageStatuses = (stageStatuses: any): Record<StageId, any> => {
@@ -339,6 +357,9 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
             </TabsTrigger>
             <TabsTrigger value="tractography" className="gap-2 text-sm font-normal px-4">
               Tractography
+            </TabsTrigger>
+            <TabsTrigger value="connectome" className="gap-2 text-sm font-normal px-4">
+              Network connectome
             </TabsTrigger>
             <TabsTrigger value="tables" className="gap-2 text-sm font-normal px-4">
               <TableIcon size={16} />
@@ -549,6 +570,9 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
           <TabsContent value="tractography">
             <TractographyView subjectId={subjectId} />
+          </TabsContent>
+          <TabsContent value="connectome" className="space-y-5">
+            <ConnectomeView subjectId={subjectId} />
           </TabsContent>
 
           <TabsContent value="tables">

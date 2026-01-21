@@ -5,6 +5,7 @@ import re
 import fnmatch
 import json
 import os
+import math
 import time
 import subprocess
 import signal
@@ -22,7 +23,7 @@ from typing import Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -79,6 +80,19 @@ def _load_nibabel():
     return nib
 
 
+# Create the FastAPI app early so route decorators below don't fail during import.
+# (Some endpoint groups are defined above other initialization helpers.)
+app = FastAPI(title="p-brain-web local backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 JobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 StageId = Literal[
     "import",
@@ -90,6 +104,7 @@ StageId = Literal[
     "modelling",
     "diffusion",
     "tractography",
+    "connectome",
 ]
 StageStatus = Literal["not_run", "running", "done", "failed"]
 
@@ -214,6 +229,22 @@ class RunStageRequest(BaseModel):
     runDependencies: bool = True
 
 
+class AnalysisPearsonRequest(BaseModel):
+    x: List[float]
+    y: List[float]
+
+
+class AnalysisGroupCompareRequest(BaseModel):
+    a: List[float]
+    b: List[float]
+
+
+class AnalysisOlsRequest(BaseModel):
+    y: List[float]
+    X: List[List[float]]
+    columns: List[str]
+
+
 STAGE_DEPENDENCIES: Dict[StageId, List[StageId]] = {
     "import": [],
     "t1_fit": ["import"],
@@ -224,6 +255,7 @@ STAGE_DEPENDENCIES: Dict[StageId, List[StageId]] = {
     "modelling": ["tissue_ctc"],
     "diffusion": ["modelling"],
     "tractography": ["diffusion"],
+    "connectome": ["tractography"],
 }
 
 
@@ -402,6 +434,7 @@ STAGES: List[StageId] = [
     "modelling",
     "diffusion",
     "tractography",
+    "connectome",
 ]
 
 
@@ -491,11 +524,43 @@ def _freesurfer_lut() -> Dict[int, str]:
 
     s = _get_settings()
     fs_home = (os.environ.get("FREESURFER_HOME") or s.get("freesurferHome") or "").strip()
-    if not fs_home:
-        return {}
 
-    lut_path = Path(fs_home).expanduser().resolve() / "FreeSurferColorLUT.txt"
-    if not lut_path.exists():
+    lut_path: Optional[Path] = None
+    if fs_home:
+        candidate = Path(fs_home).expanduser().resolve() / "FreeSurferColorLUT.txt"
+        if candidate.exists():
+            lut_path = candidate
+
+    # Fallbacks for common macOS installs (useful in packaged apps where shell env vars may not propagate).
+    if lut_path is None:
+        candidates: List[Path] = [
+            Path("/Applications/freesurfer/7.4.1"),
+            Path("/Applications/freesurfer"),
+            Path("/usr/local/freesurfer"),
+        ]
+        for base in candidates:
+            try:
+                base = base.expanduser().resolve()
+            except Exception:
+                continue
+            direct = base / "FreeSurferColorLUT.txt"
+            if direct.exists():
+                lut_path = direct
+                break
+            if base.exists() and base.is_dir():
+                # Look one level down for versioned installs.
+                try:
+                    for child in sorted(base.iterdir(), reverse=True):
+                        candidate = child / "FreeSurferColorLUT.txt"
+                        if candidate.exists():
+                            lut_path = candidate
+                            break
+                except Exception:
+                    pass
+            if lut_path is not None:
+                break
+
+    if lut_path is None or not lut_path.exists():
         return {}
 
     out: Dict[int, str] = {}
@@ -874,13 +939,34 @@ def _analysis_metrics_table(subject: Subject, view: str = "atlas") -> Dict[str, 
             return {"rows": []}
         raw = json.loads(p.read_text())
 
+        def _is_pk_ventricular_region(region_raw: str, region_mapped: str) -> bool:
+            # Filter ventricular/CSF parcels from pharmacokinetic atlas tables.
+            # Applies to both pre-mapped keys and mapped FreeSurfer region names.
+            for candidate in (region_mapped, region_raw):
+                s = (candidate or "").strip()
+                if not s:
+                    continue
+                if s.isdigit() and int(s) in {4, 5, 14, 15, 24, 43, 44, 72}:
+                    return True
+                lower = s.lower()
+                if (
+                    "ventricle" in lower
+                    or lower.endswith("vent")
+                    or "csf" in lower
+                ):
+                    return True
+            return False
+
         rows: List[Dict[str, Any]] = []
         if isinstance(raw, dict):
             for region, v0 in raw.items():
                 if not isinstance(v0, dict):
                     continue
+                mapped = _fs_region_name(region)
+                if _is_pk_ventricular_region(str(region), mapped):
+                    continue
                 row: Dict[str, Any] = {
-                    "region": _fs_region_name(region),
+                    "region": mapped,
                     "Ki": v0.get("Ki"),
                     "vp": v0.get("vp"),
                     "Ktrans": v0.get("Ktrans"),
@@ -943,13 +1029,32 @@ def _analysis_metrics_table_from_dir(subject_dir: Path, view: str = "atlas") -> 
             return {"rows": []}
         raw = json.loads(p.read_text())
 
+        def _is_pk_ventricular_region(region_raw: str, region_mapped: str) -> bool:
+            for candidate in (region_mapped, region_raw):
+                s = (candidate or "").strip()
+                if not s:
+                    continue
+                if s.isdigit() and int(s) in {4, 5, 14, 15, 24, 43, 44, 72}:
+                    return True
+                lower = s.lower()
+                if (
+                    "ventricle" in lower
+                    or lower.endswith("vent")
+                    or "csf" in lower
+                ):
+                    return True
+            return False
+
         rows: List[Dict[str, Any]] = []
         if isinstance(raw, dict):
             for region, v0 in raw.items():
                 if not isinstance(v0, dict):
                     continue
+                mapped = _fs_region_name(region)
+                if _is_pk_ventricular_region(str(region), mapped):
+                    continue
                 row: Dict[str, Any] = {
-                    "region": _fs_region_name(region),
+                    "region": mapped,
                     "Ki": v0.get("Ki"),
                     "vp": v0.get("vp"),
                     "Ktrans": v0.get("Ktrans"),
@@ -1107,6 +1212,138 @@ def _analysis_tractography_streamlines(
         "returned": len(selected),
         "error": load_error,
     }
+
+
+def _analysis_connectome_paths(subject: Subject) -> Dict[str, Optional[Path]]:
+    """Return expected connectome artifact paths under the subject Analysis directory."""
+
+    analysis_dir = _analysis_dir_for_subject(subject)
+    diffusion_dir = analysis_dir / "diffusion"
+    candidates = {
+        "matrix": diffusion_dir / "connectome_matrix.csv",
+        "labels": diffusion_dir / "connectome_labels.csv",
+        "metrics": diffusion_dir / "connectome_metrics.json",
+        "image": diffusion_dir / "connectome_circular.png",
+    }
+
+    out: Dict[str, Optional[Path]] = {}
+    for k, p in candidates.items():
+        out[k] = p if p.exists() and p.is_file() else None
+    return out
+
+
+@app.get("/subjects/{subject_id}/connectome")
+def get_subject_connectome(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    paths = _analysis_connectome_paths(subject)
+    metrics_path = paths.get("metrics")
+
+    payload: Dict[str, Any] = {
+        "available": bool(metrics_path),
+        "files": {
+            "matrix": str(paths["matrix"]) if paths.get("matrix") else None,
+            "labels": str(paths["labels"]) if paths.get("labels") else None,
+            "metrics": str(metrics_path) if metrics_path else None,
+            "image": str(paths["image"]) if paths.get("image") else None,
+        },
+        "metrics": None,
+    }
+
+    if metrics_path and metrics_path.exists():
+        try:
+            payload["metrics"] = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            payload["available"] = False
+            payload["error"] = f"Failed to read connectome metrics: {exc}"
+
+    return payload
+
+
+@app.get("/subjects/{subject_id}/connectome/file")
+def get_subject_connectome_file(subject_id: str, kind: str) -> FileResponse:
+    """Download connectome artifacts (matrix/labels/metrics) for a subject."""
+
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    paths = _analysis_connectome_paths(subject)
+    kind_norm = str(kind or "").strip().lower()
+    if kind_norm not in {"matrix", "labels", "metrics", "image"}:
+        raise HTTPException(status_code=400, detail="kind must be one of: matrix, labels, metrics, image")
+
+    p = paths.get(kind_norm)
+    if not p or not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Connectome file not found")
+
+    # Enforce subject/project sandbox.
+    safe = _safe_resolve_path(project, subject, str(p))
+
+    # Ensure connectome labels use the same FreeSurfer naming scheme as atlas tables.
+    # Some connectome runs may contain numeric names; rewrite them on-the-fly using FreeSurferColorLUT.
+    if kind_norm == "labels" and safe.suffix.lower() == ".csv":
+        try:
+            import csv
+            import io
+
+            lut = _freesurfer_lut()
+            if lut:
+                original = safe.read_text(encoding="utf-8", errors="replace")
+                reader = csv.reader(io.StringIO(original))
+                rows = list(reader)
+                if rows:
+                    header = rows[0]
+                    label_col = 0
+                    name_col: Optional[int] = None
+                    for i, col in enumerate(header):
+                        c = str(col).strip().lower()
+                        if c == "label":
+                            label_col = i
+                        elif c == "name":
+                            name_col = i
+
+                    if name_col is not None:
+                        changed = False
+                        for r in range(1, len(rows)):
+                            row = rows[r]
+                            if not row or len(row) <= max(label_col, name_col):
+                                continue
+                            raw_label = str(row[label_col] or "").strip()
+                            if not raw_label:
+                                continue
+                            mapped = _fs_region_name(raw_label)
+                            if not mapped or mapped == raw_label:
+                                continue
+
+                            current = str(row[name_col] or "").strip()
+                            # Rewrite when missing or numeric-only (e.g., "1017").
+                            if current == "" or current.isdigit() or current == raw_label:
+                                row[name_col] = mapped
+                                changed = True
+
+                        if changed:
+                            out = io.StringIO()
+                            writer = csv.writer(out)
+                            writer.writerows(rows)
+                            return Response(
+                                content=out.getvalue(),
+                                media_type="text/csv",
+                                headers={
+                                    "Content-Disposition": f"attachment; filename=\"{safe.name}\"",
+                                },
+                            )
+        except Exception:
+            # Fall back to serving the file as-is.
+            pass
+
+    mt = "application/octet-stream"
+    lower = safe.name.lower()
+    if lower.endswith(".csv"):
+        mt = "text/csv"
+    elif lower.endswith(".json"):
+        mt = "application/json"
+    elif lower.endswith(".png"):
+        mt = "image/png"
+    return FileResponse(str(safe), media_type=mt)
 
 
 def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
@@ -2807,7 +3044,7 @@ def _pbrain_cli_args_with_python(python_exe: str, project: Project, subject: Sub
     return args
 
 
-_STAGE_RUNNER_VERSION = "14"
+_STAGE_RUNNER_VERSION = "16"
 
 
 def _stage_runner_path(data_root: Path) -> Path:
@@ -2816,9 +3053,16 @@ def _stage_runner_path(data_root: Path) -> Path:
 
 def _ensure_stage_runner_script(data_root: Path) -> Path:
     runner_path = _stage_runner_path(data_root)
+    # Be robust in packaged builds: avoid referencing exception variables outside
+    # their except-block scope (can raise UnboundLocalError in some Python versions).
+    mkdir_error: Exception | None = None
     try:
         runner_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except Exception as e:
+        mkdir_error = e
+
+    if mkdir_error is not None:
+        # We'll still try to proceed; the write below will surface a clearer error.
         pass
 
     content = f"""#!/usr/bin/env python3
@@ -2832,6 +3076,7 @@ import builtins
 import time
 import threading
 import resource
+import functools
 
 # When running in batch/headless mode, ensure matplotlib uses a non-GUI backend.
 if os.environ.get('PBRAIN_TURBO') == '1':
@@ -3170,6 +3415,13 @@ def main() -> int:
         t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
         dce_path = os.path.join(nifti_directory, dce_filename) if dce_filename else None
 
+        flip_angle_deg = None
+        try:
+            if dce_path:
+                flip_angle_deg = AIT.resolve_flip_angle_deg(dce_path, default=None)
+        except Exception:
+            flip_angle_deg = None
+
         seg_dir = os.path.join(nifti_directory, 'segmentation')
         sid = 'segmentation'
         seg_mgz_path = os.path.join(seg_dir, sid, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
@@ -3290,6 +3542,7 @@ def main() -> int:
                 wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
                 wm_cc_mask_t2=wm_cc_mask_t2,
                 wm_cc_mask_dce=wm_cc_mask_dce,
+                flip_angle_deg=flip_angle_deg,
             )
             return 0
 
@@ -3392,9 +3645,16 @@ def main() -> int:
                         wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
                         wm_cc_mask_t2=wm_cc_mask_t2,
                         wm_cc_mask_dce=wm_cc_mask_dce,
+                        flip_angle_deg=flip_angle_deg,
                     ),
                     heartbeat_s=hb,
                     watch_paths=watch,
+                )
+
+                compute_CTC_meta = (
+                    functools.partial(AIT.compute_CTC, flip_angle_deg=flip_angle_deg)
+                    if flip_angle_deg is not None
+                    else AIT.compute_CTC
                 )
 
                 _run_with_heartbeat(
@@ -3408,7 +3668,7 @@ def main() -> int:
                         C_a_full=C_a_full,
                         affine=ref_img.affine,
                         output_directory=analysis_directory,
-                        compute_CTC=AIT.compute_CTC,
+                        compute_CTC=compute_CTC_meta,
                         find_baseline_point_advanced=AIT.find_baseline_point_advanced,
                         custom_shifter=AIT.custom_shifter,
                         patlak_analysis_plotting=AIT.patlak_analysis_plotting,
@@ -3467,7 +3727,39 @@ def main() -> int:
                 enable_pft=True,
                 create_montage=True,
             )
+
+            # Best-effort connectome export (matrix + topology metrics). Non-fatal on failure.
+            try:
+                from modules import connectome
+
+                connectome.compute_connectome(
+                    nifti_directory=nifti_directory,
+                    analysis_directory=analysis_directory,
+                    diffusion_filename=diffusion_filename,
+                )
+                print('[connectome] Saved connectome outputs under Analysis/diffusion')
+            except Exception as exc:
+                print(f'[connectome] Skipped (unable to compute): {{exc}}')
+
             log_process_end('Tractography')
+            return 0
+
+        if stage == 'connectome':
+            diffusion_filename = filenames[-2] if filenames else None
+            if not diffusion_filename:
+                print('[connectome] No diffusion filename available; nothing to do')
+                return 0
+
+            from modules import connectome
+
+            log_process_start('Connectome')
+            connectome.compute_connectome(
+                nifti_directory=nifti_directory,
+                analysis_directory=analysis_directory,
+                diffusion_filename=diffusion_filename,
+            )
+            print('[connectome] Saved connectome outputs under Analysis/diffusion')
+            log_process_end('Connectome')
             return 0
 
         raise SystemExit(f'Unknown stage: {{stage}}')
@@ -3493,14 +3785,18 @@ if __name__ == '__main__':
     except Exception:
         pass
 
+    write_error: Exception | None = None
     try:
         runner_path.write_text(content, encoding="utf-8")
         try:
             runner_path.chmod(0o755)
         except Exception:
             pass
-    except Exception as exc:
-        raise RuntimeError(f"Failed to write stage runner script: {runner_path} ({exc})")
+    except Exception as e:
+        write_error = e
+
+    if write_error is not None:
+        raise RuntimeError(f"Failed to write stage runner script: {runner_path} ({write_error})") from write_error
 
     return runner_path
 
@@ -3557,6 +3853,12 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                 jobs["tractography"].currentStep = "Skipped (no diffusion)"
                 jobs["tractography"].endTime = _now_iso()
                 subject.stageStatuses["tractography"] = "not_run"
+
+                jobs["connectome"].status = "completed"
+                jobs["connectome"].progress = 100
+                jobs["connectome"].currentStep = "Skipped (no diffusion)"
+                jobs["connectome"].endTime = _now_iso()
+                subject.stageStatuses["connectome"] = "not_run"
 
             # Stage: import starts when the run actually begins.
             _set_job(jobs["import"], status="running", progress=5, step="Preparing inputs")
@@ -3697,6 +3999,40 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                         db.save()
                         raise
 
+            # Run connectome as a separate post-step when tractography is present.
+            if subject.hasDiffusion and jobs.get("connectome"):
+                cj = jobs["connectome"]
+                if cj.status not in {"completed", "failed", "cancelled"}:
+                    begin_stage("connectome", "Connectome", 10)
+                    db.save()
+                    try:
+                        runner_path = _ensure_stage_runner_script(data_root)
+                        stage_args = [
+                            python_exe,
+                            "-u",
+                            str(runner_path),
+                            "--stage",
+                            "connectome",
+                            "--id",
+                            str(subject.name),
+                            "--data-dir",
+                            str(data_root),
+                        ]
+                        await _run_cmd_logged(
+                            stage_args,
+                            cwd=pbrain_cwd,
+                            env=_python_env_for_pbrain(),
+                            write_line_sync=write_line_sync,
+                        )
+                        finish_stage("connectome")
+                    except Exception as exc:
+                        err = str(exc)
+                        _set_job(cj, status="failed", progress=cj.progress, step="Failed", error=err)
+                        cj.endTime = _now_iso()
+                        _set_stage_status(subject, "connectome", "failed")
+                        db.save()
+                        raise
+
             # If p-brain exits cleanly but some stages never emitted markers, complete them.
             for stage in stage_order:
                 if jobs[stage].status in {"queued", "running"}:
@@ -3728,19 +4064,6 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                 db._job_tasks.pop(job.id, None)
             db._subject_job_ids.pop(subject.id, None)
             db._subject_stage_index.pop(subject.id, None)
-
-
-app = FastAPI(title="p-brain-web local backend")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 async def _warm_backend_once() -> None:
     """Kick off heavyweight imports and basic filesystem prep in the background."""
 
@@ -4758,6 +5081,234 @@ def update_project_config(project_id: str, req: UpdateProjectConfigRequest) -> D
 def get_subjects(project_id: str) -> List[Dict[str, Any]]:
     _find_project(project_id)
     return [asdict(s) for s in db.subjects if s.projectId == project_id]
+
+
+def _read_float_file(p: Path) -> Optional[float]:
+    try:
+        raw = p.read_text(errors="ignore").strip().splitlines()[0].strip()
+        if not raw:
+            return None
+        v = float(raw)
+        if not math.isfinite(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+
+def _project_analysis_dataset(project: Project, view: str) -> Dict[str, Any]:
+    v = (view or "total").strip().lower()
+    if v not in ("total", "atlas"):
+        v = "total"
+
+    subjects = [s for s in db.subjects if s.projectId == project.id]
+    rows: List[Dict[str, Any]] = []
+
+    for s in subjects:
+        table = _analysis_metrics_table(s, view=v)
+        for r in (table.get("rows") or []):
+            if not isinstance(r, dict):
+                continue
+            out = {
+                "subjectId": s.id,
+                "subjectName": s.name,
+                "region": str(r.get("region") or ""),
+            }
+            for k, val in r.items():
+                if k == "region":
+                    continue
+                out[k] = val
+            rows.append(out)
+
+        # Best-effort diffusion summary values (if present).
+        try:
+            analysis_dir = _analysis_dir_for_subject(s)
+            diff_dir = analysis_dir / "diffusion"
+            fa_all = _read_float_file(diff_dir / "fa_mean.txt")
+            fa_wm = _read_float_file(diff_dir / "fa_mean_wm.txt")
+            fa_gm = _read_float_file(diff_dir / "fa_mean_gm.txt")
+            if fa_all is not None:
+                rows.append({"subjectId": s.id, "subjectName": s.name, "region": "FA_total", "FA": fa_all})
+            if fa_wm is not None:
+                rows.append({"subjectId": s.id, "subjectName": s.name, "region": "FA_wm", "FA": fa_wm})
+            if fa_gm is not None:
+                rows.append({"subjectId": s.id, "subjectName": s.name, "region": "FA_gm", "FA": fa_gm})
+        except Exception:
+            pass
+
+    regions = sorted({str(r.get("region") or "") for r in rows if str(r.get("region") or "")})
+    metrics: set = set()
+    for r in rows:
+        for k in r.keys():
+            if k in ("subjectId", "subjectName", "region"):
+                continue
+            metrics.add(k)
+
+    return {"view": v, "rows": rows, "regions": regions, "metrics": sorted(metrics)}
+
+
+@app.get("/projects/{project_id}/analysis/dataset")
+def get_project_analysis_dataset(project_id: str, view: str = "total") -> Dict[str, Any]:
+    p = _find_project(project_id)
+    return _project_analysis_dataset(p, view=view)
+
+
+@app.post("/analysis/stats/pearson")
+def analysis_stats_pearson(req: AnalysisPearsonRequest) -> Dict[str, Any]:
+    _require_scipy()
+    _require_numpy()
+    assert np is not None
+    from scipy import stats  # type: ignore
+
+    x = np.asarray(req.x, dtype=float)
+    y = np.asarray(req.y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+    if x.size < 3:
+        raise HTTPException(status_code=400, detail="Need at least 3 paired samples")
+
+    r, p = stats.pearsonr(x, y)
+    return {"n": int(x.size), "r": float(r), "p": float(p)}
+
+
+@app.post("/analysis/stats/group-compare")
+def analysis_stats_group_compare(req: AnalysisGroupCompareRequest) -> Dict[str, Any]:
+    _require_scipy()
+    _require_numpy()
+    assert np is not None
+    from scipy import stats  # type: ignore
+
+    a = np.asarray(req.a, dtype=float)
+    b = np.asarray(req.b, dtype=float)
+    a = a[np.isfinite(a)]
+    b = b[np.isfinite(b)]
+    if a.size < 2 or b.size < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 samples per group")
+
+    mean_a = float(np.mean(a))
+    mean_b = float(np.mean(b))
+
+    # Welch's t-test
+    t, t_p = stats.ttest_ind(a, b, equal_var=False)
+
+    # Mann–Whitney U (robust fallback)
+    try:
+        mw_u, mw_p = stats.mannwhitneyu(a, b, alternative="two-sided")
+    except Exception:
+        mw_u, mw_p = float("nan"), float("nan")
+
+    # Cohen's d (pooled SD)
+    try:
+        sa = float(np.std(a, ddof=1))
+        sb = float(np.std(b, ddof=1))
+        pooled = math.sqrt(((a.size - 1) * sa * sa + (b.size - 1) * sb * sb) / (a.size + b.size - 2))
+        cohen_d = float((mean_a - mean_b) / pooled) if pooled > 0 else 0.0
+    except Exception:
+        cohen_d = 0.0
+
+    sh_a: Optional[float] = None
+    sh_b: Optional[float] = None
+    try:
+        if 3 <= a.size <= 5000:
+            _, sh_a = stats.shapiro(a)
+            sh_a = float(sh_a)
+    except Exception:
+        sh_a = None
+    try:
+        if 3 <= b.size <= 5000:
+            _, sh_b = stats.shapiro(b)
+            sh_b = float(sh_b)
+    except Exception:
+        sh_b = None
+
+    return {
+        "na": int(a.size),
+        "nb": int(b.size),
+        "meanA": mean_a,
+        "meanB": mean_b,
+        "t": float(t),
+        "t_p": float(t_p),
+        "mw_u": float(mw_u),
+        "mw_p": float(mw_p),
+        "cohen_d": float(cohen_d),
+        "shapiroA_p": sh_a,
+        "shapiroB_p": sh_b,
+    }
+
+
+@app.post("/analysis/stats/ols")
+def analysis_stats_ols(req: AnalysisOlsRequest) -> Dict[str, Any]:
+    _require_scipy()
+    _require_numpy()
+    assert np is not None
+    from scipy import stats  # type: ignore
+
+    y = np.asarray(req.y, dtype=float)
+    X = np.asarray(req.X, dtype=float)
+    if y.ndim != 1:
+        raise HTTPException(status_code=400, detail="y must be 1D")
+    if X.ndim != 2:
+        raise HTTPException(status_code=400, detail="X must be 2D")
+    if X.shape[0] != y.shape[0]:
+        raise HTTPException(status_code=400, detail="X and y must have same number of rows")
+    if len(req.columns) != X.shape[1]:
+        raise HTTPException(status_code=400, detail="columns length must match X columns")
+    if y.size < X.shape[1] + 2:
+        raise HTTPException(status_code=400, detail="Not enough samples")
+
+    # Remove non-finite rows
+    mask = np.isfinite(y)
+    mask = mask & np.all(np.isfinite(X), axis=1)
+    y = y[mask]
+    X = X[mask, :]
+    n = int(y.size)
+    p = int(X.shape[1])
+    if n < p + 2:
+        raise HTTPException(status_code=400, detail="Not enough finite samples")
+
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    y_hat = X @ beta
+    resid = y - y_hat
+
+    sse = float(np.sum(resid ** 2))
+    sst = float(np.sum((y - float(np.mean(y))) ** 2))
+    r2 = 1.0 - (sse / sst) if sst > 0 else 0.0
+
+    df_resid = n - p
+    sigma2 = sse / df_resid if df_resid > 0 else float("nan")
+
+    # Covariance of beta
+    try:
+        xtx_inv = np.linalg.inv(X.T @ X)
+        cov = sigma2 * xtx_inv
+        se = np.sqrt(np.diag(cov))
+    except Exception:
+        se = np.full((p,), float("nan"), dtype=float)
+
+    coeffs: List[Dict[str, Any]] = []
+    for i, name in enumerate(req.columns):
+        b = float(beta[i])
+        s = float(se[i])
+        t = float(b / s) if s and math.isfinite(s) and s != 0 else float("nan")
+        pval = float(2.0 * (1.0 - stats.t.cdf(abs(t), df=df_resid))) if math.isfinite(t) and df_resid > 0 else float("nan")
+        coeffs.append({"name": str(name), "beta": b, "se": s, "t": t, "p": pval})
+
+    sh_p: Optional[float] = None
+    try:
+        if 3 <= resid.size <= 5000:
+            _, sh_p = stats.shapiro(resid)
+            sh_p = float(sh_p)
+    except Exception:
+        sh_p = None
+
+    return {
+        "n": n,
+        "df_resid": int(df_resid),
+        "r2": float(r2),
+        "residual_shapiro_p": sh_p,
+        "coefficients": coeffs,
+    }
 
 
 @app.get("/subjects/{subject_id}")

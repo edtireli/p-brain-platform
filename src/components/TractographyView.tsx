@@ -101,6 +101,8 @@ export function TractographyView({ subjectId }: TractographyViewProps) {
     const container = containerRef.current;
     if (!container) return;
 
+    const timeoutIds: number[] = [];
+
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100000);
 
@@ -158,7 +160,7 @@ export function TractographyView({ subjectId }: TractographyViewProps) {
     resize();
     // Best-effort: re-measure after layout settles (tab switches can delay sizing).
     window.requestAnimationFrame(resize);
-    window.setTimeout(resize, 120);
+    timeoutIds.push(window.setTimeout(resize, 120));
 
     const raycaster = new THREE.Raycaster();
     const restartIdle = () => {
@@ -244,6 +246,8 @@ export function TractographyView({ subjectId }: TractographyViewProps) {
       document.removeEventListener('webkitfullscreenchange', onFullscreenChange as any, { capture: true } as any);
       ro.disconnect();
 
+      for (const id of timeoutIds) window.clearTimeout(id);
+
       if (group) disposeObject(group);
       baseMaterial.dispose();
       selectedMaterial.dispose();
@@ -283,8 +287,12 @@ export function TractographyView({ subjectId }: TractographyViewProps) {
       camera.updateProjectionMatrix();
     };
     resize();
-    window.setTimeout(resize, 30);
-    window.setTimeout(resize, 120);
+    const t1 = window.setTimeout(resize, 30);
+    const t2 = window.setTimeout(resize, 120);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [isFullscreen]);
 
   useEffect(() => {

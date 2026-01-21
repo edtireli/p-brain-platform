@@ -465,13 +465,17 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   };
 
   const handleDeleteProject = async (project: Project) => {
-    const ok = window.confirm(`Delete project "${project.name}"? This removes it from the app, not from disk.`);
-    if (!ok) return;
+    // In packaged shells (Tauri), `window.confirm` can be unreliable.
+    // Deleting a project here only removes it from the app DB (not from disk),
+    // so we do an optimistic UI update and keep the backend as source of truth.
+    const snapshot = projects;
+    setProjects((prev) => prev.filter((p) => p.id !== project.id));
     try {
       await engine.deleteProject(project.id);
       toast.success('Project deleted');
       loadProjects();
     } catch (error) {
+      setProjects(snapshot);
       toast.error('Failed to delete project');
       console.error(error);
     }
@@ -975,11 +979,22 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenuItem onSelect={() => openEditDialog(project)}>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditDialog(project);
+                          }}
+                        >
                           <PencilSimple size={16} />
                           Edit
                         </DropdownMenuItem>
-                        <DropdownMenuItem variant="destructive" onSelect={() => handleDeleteProject(project)}>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDeleteProject(project);
+                          }}
+                        >
                           <Trash size={16} />
                           Delete
                         </DropdownMenuItem>

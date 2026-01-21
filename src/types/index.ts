@@ -7,7 +7,8 @@ export type StageId =
   | 'tissue_ctc'
   | 'modelling'
   | 'diffusion'
-  | 'tractography';
+  | 'tractography'
+  | 'connectome';
 
 export type StageStatus = 'not_run' | 'running' | 'done' | 'failed';
 
@@ -262,6 +263,18 @@ export interface MetricsTable {
   }>;
 }
 
+export interface ConnectomeData {
+  available: boolean;
+  files: {
+    matrix: string | null;
+    labels: string | null;
+    metrics: string | null;
+    image?: string | null;
+  };
+  metrics: any | null;
+  error?: string;
+}
+
 export interface TractographyData {
   path: string;
   // Array of streamlines, each a list of [x,y,z] points.
@@ -270,6 +283,19 @@ export interface TractographyData {
   colors?: number[][];
   totalStreamlines?: number;
   returned?: number;
+  error?: string;
+}
+
+export interface ConnectomeData {
+  available: boolean;
+  // Absolute paths (backend-side) for debugging/inspection.
+  files: {
+    matrix: string | null;
+    labels: string | null;
+    metrics: string | null;
+  };
+  // Parsed JSON content from connectome_metrics.json
+  metrics: Record<string, any> | null;
   error?: string;
 }
 
@@ -283,6 +309,7 @@ export const STAGE_NAMES: Record<StageId, string> = {
   modelling: 'Pharmacokinetic Modelling',
   diffusion: 'Diffusion Analysis',
   tractography: 'Tractography',
+  connectome: 'Network Connectome',
 };
 
 export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
@@ -295,6 +322,7 @@ export const STAGE_DEPENDENCIES: Record<StageId, StageId[]> = {
   modelling: ['tissue_ctc'],
   diffusion: ['import'],
   tractography: ['diffusion'],
+  connectome: ['tractography'],
 };
 
 export const DEFAULT_FOLDER_STRUCTURE: FolderStructureConfig = {
@@ -335,3 +363,55 @@ export const DEFAULT_CONFIG: PipelineConfig = {
   aiModels: {},
   folderStructure: DEFAULT_FOLDER_STRUCTURE,
 };
+
+export type ProjectAnalysisView = 'total' | 'atlas';
+
+export interface ProjectAnalysisDatasetRow {
+  subjectId: string;
+  subjectName: string;
+  region: string;
+  [key: string]: any;
+}
+
+export interface ProjectAnalysisDataset {
+  view: ProjectAnalysisView;
+  rows: ProjectAnalysisDatasetRow[];
+  regions: string[];
+  metrics: string[];
+}
+
+export interface ProjectAnalysisPearsonResponse {
+  n: number;
+  r: number;
+  p: number;
+}
+
+export interface ProjectAnalysisGroupCompareResponse {
+  na: number;
+  nb: number;
+  meanA: number;
+  meanB: number;
+  t: number;
+  t_p: number;
+  mw_u: number;
+  mw_p: number;
+  cohen_d: number;
+  shapiroA_p: number | null;
+  shapiroB_p: number | null;
+}
+
+export interface ProjectAnalysisOlsCoefficient {
+  name: string;
+  beta: number;
+  se: number;
+  t: number;
+  p: number;
+}
+
+export interface ProjectAnalysisOlsResponse {
+  n: number;
+  df_resid: number;
+  r2: number;
+  residual_shapiro_p: number | null;
+  coefficients: ProjectAnalysisOlsCoefficient[];
+}

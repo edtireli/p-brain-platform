@@ -14,6 +14,8 @@ This is a sophisticated neuroimaging analysis suite with multiple computational 
 
 ## Essential Features
 
+Note: project-wide cohort analysis (cross-subject statistics) is currently documented as an out-of-app workflow in `docs/COHORT_ANALYSIS.md`.
+
 ### 1. Project Management
 - **Functionality**: Create, list, and manage analysis projects with local storage paths
 - **Purpose**: Organize multi-subject neuroimaging studies with persistent configuration

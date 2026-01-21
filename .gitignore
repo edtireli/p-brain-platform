@@ -46,6 +46,10 @@ backend/.pbrain-web/
 backend/certs/
 backend/.venv/
 
+# Generated analysis artifacts
+backend/*.png
+backend/agreement_metrics.json
+
 # AI models are huge; keep scripts in git, copy models locally.
 backend/AI/**
 !backend/AI/.gitkeep

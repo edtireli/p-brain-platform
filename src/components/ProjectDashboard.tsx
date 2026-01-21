@@ -30,6 +30,7 @@ interface ProjectDashboardProps {
   projectId: string;
   onBack: () => void;
   onSelectSubject: (subjectId: string) => void;
+  onOpenAnalysis: () => void;
 }
 
 const STAGES: StageId[] = [
@@ -42,6 +43,7 @@ const STAGES: StageId[] = [
   'modelling',
   'diffusion',
   'tractography',
+  'connectome',
 ];
 
 function normalizeStageStatuses(stageStatuses: Partial<Record<StageId, StageStatus>> | undefined | null) {
@@ -109,7 +111,7 @@ function mergeStageStatusesFromJobs(
   return next;
 }
 
-export function ProjectDashboard({ projectId, onBack, onSelectSubject }: ProjectDashboardProps) {
+export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAnalysis }: ProjectDashboardProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -650,6 +652,13 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject }: Project
                     </motion.span>
                   </motion.span>
                 )}
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={onOpenAnalysis}
+              >
+                Analysis
               </Button>
 
               <FolderStructureConfigComponent 
