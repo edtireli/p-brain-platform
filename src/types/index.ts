@@ -99,12 +99,21 @@ export interface FolderStructureConfig {
   aiModelsPath: string;
 }
 
+export type CtcModel = 'saturation' | 'turboflash';
+
+export interface CtcConfig {
+  model: CtcModel;
+  turboNph: number;
+  numberOfPeaks: number;
+}
+
 export interface PipelineConfig {
   physiological: {
     r1: number;
     hematocrit: number;
     tissueDensity: number;
   };
+  ctc: CtcConfig;
   model: {
     lambdaTikhonov: number;
     autoLambda: boolean;
@@ -344,6 +353,10 @@ export const DEFAULT_CONFIG: PipelineConfig = {
     r1: 4.39,
     hematocrit: 0.42,
     tissueDensity: 1.04,
+  },
+  ctc: {
+    model: 'saturation',
+    turboNph: 1,
   },
   model: {
     lambdaTikhonov: 0.1,

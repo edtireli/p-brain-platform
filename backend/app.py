@@ -308,6 +308,9 @@ class AppSettings(BaseModel):
     pbrainMainPy: str = ""  # absolute path to p-brain/main.py
     fastsurferDir: str = ""  # absolute path to FastSurfer repo root
     freesurferHome: str = ""  # absolute path to FREESURFER_HOME
+    # Optional p-brain configuration overrides (forwarded as env vars).
+    pbrainT1Fit: str = ""  # auto|ir|vfa|none
+    pbrainVfaGlob: str = ""  # comma-separated glob(s), e.g. "*VFA*.nii*,*flip*.nii*"
 
 
 class UpdateAppSettingsRequest(BaseModel):
@@ -316,6 +319,8 @@ class UpdateAppSettingsRequest(BaseModel):
     pbrainMainPy: Optional[str] = None
     fastsurferDir: Optional[str] = None
     freesurferHome: Optional[str] = None
+    pbrainT1Fit: Optional[str] = None
+    pbrainVfaGlob: Optional[str] = None
 
 
 class SystemDepsResponse(BaseModel):
@@ -493,6 +498,45 @@ def _python_env_for_pbrain() -> Dict[str, str]:
     if main_py:
         pbrain_root = str(Path(main_py).expanduser().resolve().parent)
         env["PYTHONPATH"] = pbrain_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
+    # Forward optional p-brain tuning knobs from app settings.
+    try:
+        s = _get_settings()
+        t1_fit = str(s.get("pbrainT1Fit") or "").strip().lower()
+        if t1_fit in {"auto", "ir", "vfa", "none"}:
+            env.setdefault("P_BRAIN_T1_FIT", t1_fit)
+        vfa_glob = str(s.get("pbrainVfaGlob") or "").strip()
+        if vfa_glob:
+            env.setdefault("P_BRAIN_VFA_GLOB", vfa_glob)
+    except Exception:
+        pass
+    return env
+
+
+def _apply_project_pbrain_env_overrides(env: Dict[str, str], project: Project) -> Dict[str, str]:
+    cfg = project.config if isinstance(getattr(project, "config", None), dict) else {}
+    ctc = cfg.get("ctc") if isinstance(cfg.get("ctc"), dict) else {}
+
+    model = str(ctc.get("model") or "").strip().lower()
+    if model in {"saturation", "turboflash"}:
+        env["P_BRAIN_CTC_MODEL"] = model
+
+    nph_raw = ctc.get("turboNph")
+    try:
+        nph = int(nph_raw)
+        if nph >= 1:
+            env["P_BRAIN_TURBO_NPH"] = str(nph)
+    except Exception:
+        pass
+
+    peaks_raw = ctc.get("numberOfPeaks")
+    try:
+        peaks = int(peaks_raw)
+        if peaks >= 1:
+            env["P_BRAIN_NUMBER_OF_PEAKS"] = str(peaks)
+    except Exception:
+        pass
+
     return env
 
 
@@ -2484,7 +2528,7 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=pbrain_cwd,
-                env=_python_env_for_pbrain(),
+                env=_apply_project_pbrain_env_overrides(_python_env_for_pbrain(), project),
             )
             db._job_processes[job.id] = proc
 
@@ -4151,6 +4195,8 @@ def _get_settings() -> Dict[str, Any]:
         "pbrainMainPy": str(s.get("pbrainMainPy") or ""),
         "fastsurferDir": str(s.get("fastsurferDir") or ""),
         "freesurferHome": str(s.get("freesurferHome") or ""),
+        "pbrainT1Fit": str(s.get("pbrainT1Fit") or ""),
+        "pbrainVfaGlob": str(s.get("pbrainVfaGlob") or ""),
     }
 
 
@@ -4162,8 +4208,21 @@ def _set_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
         if k in current:
             current[k] = v
     # normalize strings
-    for k in ["firstName", "pbrainMainPy", "fastsurferDir", "freesurferHome"]:
+    for k in [
+        "firstName",
+        "pbrainMainPy",
+        "fastsurferDir",
+        "freesurferHome",
+        "pbrainT1Fit",
+        "pbrainVfaGlob",
+    ]:
         current[k] = str(current.get(k) or "").strip()
+    # normalize enumerations
+    if current.get("pbrainT1Fit"):
+        v = str(current.get("pbrainT1Fit") or "").strip().lower()
+        if v not in {"auto", "ir", "vfa", "none"}:
+            v = ""
+        current["pbrainT1Fit"] = v
     current["onboardingCompleted"] = bool(current.get("onboardingCompleted") or False)
     db.settings = current
     db.save()

@@ -10,9 +10,10 @@ import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
-import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig } from '@/types';
+import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig, CtcModel } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
@@ -117,6 +118,10 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isJobMonitorOpen, setIsJobMonitorOpen] = useState(false);
+  const [isCtcDialogOpen, setIsCtcDialogOpen] = useState(false);
+  const [draftCtcModel, setDraftCtcModel] = useState<CtcModel>('saturation');
+  const [draftTurboNph, setDraftTurboNph] = useState<number>(1);
+  const [draftNumberOfPeaks, setDraftNumberOfPeaks] = useState<number>(2);
   const [activeJobsCount, setActiveJobsCount] = useState(0);
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
@@ -227,6 +232,20 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   }, [projectId]);
 
   useEffect(() => {
+    if (!project) return;
+    const cfg: any = project.config || {};
+    const ctc: any = cfg?.ctc || {};
+    const model = String(ctc?.model || 'saturation').toLowerCase();
+    setDraftCtcModel(model === 'turboflash' ? 'turboflash' : 'saturation');
+    const rawNph = Number(ctc?.turboNph);
+    const nph = Number.isFinite(rawNph) && rawNph >= 1 ? Math.floor(rawNph) : 1;
+    setDraftTurboNph(nph);
+    const rawPeaks = Number(ctc?.numberOfPeaks);
+    const peaks = Number.isFinite(rawPeaks) && rawPeaks >= 1 ? Math.floor(rawPeaks) : 2;
+    setDraftNumberOfPeaks(peaks);
+  }, [project?.id, project?.updatedAt]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
         const target = e.target as HTMLElement;
@@ -265,6 +284,28 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
       }
     } catch (error) {
       toast.error('Failed to save folder configuration');
+      console.error(error);
+    }
+  };
+
+  const handleSaveCtcConfig = async () => {
+    try {
+      const nextNph = Number.isFinite(draftTurboNph) && draftTurboNph >= 1 ? Math.floor(draftTurboNph) : 1;
+      const nextPeaks = Number.isFinite(draftNumberOfPeaks) && draftNumberOfPeaks >= 1 ? Math.floor(draftNumberOfPeaks) : 2;
+      const updated = await engine.updateProjectConfig(projectId, {
+        ctc: {
+          model: draftCtcModel,
+          turboNph: nextNph,
+          numberOfPeaks: nextPeaks,
+        },
+      });
+      if (updated) {
+        setProject(updated);
+      }
+      toast.success('Saved CTC settings');
+      setIsCtcDialogOpen(false);
+    } catch (error) {
+      toast.error('Failed to save CTC settings');
       console.error(error);
     }
   };
@@ -660,6 +701,75 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
               >
                 Analysis
               </Button>
+
+              <Dialog open={isCtcDialogOpen} onOpenChange={setIsCtcDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    CTC
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>CTC settings</DialogTitle>
+                    <DialogDescription>
+                      Select the signalconcentration conversion model.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-xs">CTC model</Label>
+                      <Select value={draftCtcModel} onValueChange={(v) => setDraftCtcModel((v === 'turboflash' ? 'turboflash' : 'saturation') as CtcModel)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="saturation">saturation</SelectItem>
+                          <SelectItem value="turboflash">turboflash</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-xs">TurboFLASH nph</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={Number.isFinite(draftTurboNph) ? String(draftTurboNph) : '1'}
+                        onChange={(e) => setDraftTurboNph(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                        disabled={draftCtcModel !== 'turboflash'}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Used only when model is turboflash.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-xs">Number of peaks</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={Number.isFinite(draftNumberOfPeaks) ? String(draftNumberOfPeaks) : '2'}
+                        onChange={(e) => setDraftNumberOfPeaks(Math.max(1, Math.floor(Number(e.target.value) || 2)))}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Used for peak-based alignment and choosing the TSCC “Max” curve.
+                      </p>
+                    </div>
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => setIsCtcDialogOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button onClick={handleSaveCtcConfig}>
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
 
               <FolderStructureConfigComponent 
                 project={project}
