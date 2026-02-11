@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -13,7 +14,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
-import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig, CtcModel } from '@/types';
+import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig, CtcModel, PkModel, T1FitMode } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
@@ -91,6 +92,12 @@ function mergeStageStatusesFromJobs(
       continue;
     }
 
+    // If p-brain signaled that this stage is waiting for user interaction,
+    // keep that persisted state regardless of historical job outcomes.
+    if (next[stageId] === 'waiting') {
+      continue;
+    }
+
     const isPersistedDone = next[stageId] === 'done';
     if (!isPersistedDone) {
       if (arr.some(j => j.status === 'failed')) {
@@ -119,9 +126,32 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   const [isRunning, setIsRunning] = useState(false);
   const [isJobMonitorOpen, setIsJobMonitorOpen] = useState(false);
   const [isCtcDialogOpen, setIsCtcDialogOpen] = useState(false);
-  const [draftCtcModel, setDraftCtcModel] = useState<CtcModel>('saturation');
+  const [draftCtcModel, setDraftCtcModel] = useState<CtcModel>('advanced');
+  const [draftTurboNphAuto, setDraftTurboNphAuto] = useState<boolean>(true);
   const [draftTurboNph, setDraftTurboNph] = useState<number>(1);
   const [draftNumberOfPeaks, setDraftNumberOfPeaks] = useState<number>(2);
+  const [draftPeakRescaleThreshold, setDraftPeakRescaleThreshold] = useState<number>(4.0);
+  const [draftSkipForkedMaxCtcPeaks, setDraftSkipForkedMaxCtcPeaks] = useState<boolean>(true);
+  const [draftWriteCtcMaps, setDraftWriteCtcMaps] = useState<boolean>(true);
+  const [draftWriteCtc4d, setDraftWriteCtc4d] = useState<boolean>(true);
+  const [draftCtcMapSlice, setDraftCtcMapSlice] = useState<number>(5);
+  const [draftStrictMetadata, setDraftStrictMetadata] = useState<boolean>(false);
+  const [draftMultiprocessing, setDraftMultiprocessing] = useState<boolean>(true);
+  const [draftCoresAuto, setDraftCoresAuto] = useState<boolean>(true);
+  const [draftCoresPercent, setDraftCoresPercent] = useState<number>(80);
+  const [draftFlipAngleAuto, setDraftFlipAngleAuto] = useState<boolean>(true);
+  const [draftFlipAngleDeg, setDraftFlipAngleDeg] = useState<number>(30);
+  const [draftT1FitMode, setDraftT1FitMode] = useState<T1FitMode>('auto');
+  const [draftAiSliceConfStartPct, setDraftAiSliceConfStartPct] = useState<number>(50);
+  const [draftAiSliceConfMinPct, setDraftAiSliceConfMinPct] = useState<number>(10);
+  const [draftAiSliceConfStepPct, setDraftAiSliceConfStepPct] = useState<number>(5);
+  const [draftAiMissingFallback, setDraftAiMissingFallback] = useState<'deterministic' | 'roi'>('deterministic');
+  const [draftInputFunctionSource, setDraftInputFunctionSource] = useState<'aif' | 'vif' | 'adjusted_vif'>('adjusted_vif');
+  const [draftVascularRoiCurveMethod, setDraftVascularRoiCurveMethod] = useState<'max' | 'mean' | 'median'>('max');
+  const [draftVascularRoiAdaptiveMax, setDraftVascularRoiAdaptiveMax] = useState<boolean>(true);
+  const [draftTissueRoiAggregation, setDraftTissueRoiAggregation] = useState<'mean' | 'median'>('median');
+  const [draftAutoLambda, setDraftAutoLambda] = useState<boolean>(false);
+  const [draftPkModel, setDraftPkModel] = useState<PkModel>('both');
   const [activeJobsCount, setActiveJobsCount] = useState(0);
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
@@ -163,11 +193,9 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
       jobs.forEach(job => {
         previousJobStatusesRef.current.set(job.id, job.status);
       });
+
     };
-
-    refreshActiveJobs();
-
-    const unsubscribeStatus = engine.onStatusUpdate(update => {
+    const unsubscribeStatus = engine.onStatusUpdate((update: { subjectId: string; stageId: any; status: any }) => {
       setSubjects(prev =>
         prev.map(s =>
           s.id === update.subjectId
@@ -176,7 +204,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
         )
       );
     });
-
     const unsubscribeJob = engine.onJobUpdate((job: Job) => {
       const previousStatus = previousJobStatusesRef.current.get(job.id);
       
@@ -224,6 +251,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
       refreshActiveJobs();
     }, 20000);
 
+    refreshActiveJobs();
+
     return () => {
       unsubscribeStatus();
       unsubscribeJob();
@@ -235,14 +264,160 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
     if (!project) return;
     const cfg: any = project.config || {};
     const ctc: any = cfg?.ctc || {};
-    const model = String(ctc?.model || 'saturation').toLowerCase();
-    setDraftCtcModel(model === 'turboflash' ? 'turboflash' : 'saturation');
-    const rawNph = Number(ctc?.turboNph);
-    const nph = Number.isFinite(rawNph) && rawNph >= 1 ? Math.floor(rawNph) : 1;
-    setDraftTurboNph(nph);
+    const modelCfg: any = cfg?.model || {};
+    const inputFn: any = cfg?.inputFunction || {};
+
+    {
+      const raw = String(inputFn?.source || 'adjusted_vif').trim().toLowerCase();
+      if (raw === 'aif') setDraftInputFunctionSource('aif');
+      else if (raw === 'vif') setDraftInputFunctionSource('vif');
+      else setDraftInputFunctionSource('adjusted_vif');
+    }
+
+    {
+      const rawMethod = String(inputFn?.vascularRoiCurveMethod || 'max').trim().toLowerCase();
+      if (rawMethod === 'mean') setDraftVascularRoiCurveMethod('mean');
+      else if (rawMethod === 'median') setDraftVascularRoiCurveMethod('median');
+      else setDraftVascularRoiCurveMethod('max');
+      // Default true (matches p-brain default).
+      setDraftVascularRoiAdaptiveMax(Boolean(inputFn?.vascularRoiAdaptiveMax ?? true));
+    }
+    const model = String(ctc?.model || 'advanced').toLowerCase();
+    if (model === 'turboflash') setDraftCtcModel('turboflash');
+    else if (model === 'advanced') setDraftCtcModel('advanced');
+    else setDraftCtcModel('saturation');
+    {
+      // Auto when the override is missing/null/empty.
+      const hasOverride = ctc && Object.prototype.hasOwnProperty.call(ctc, 'turboNph') && ctc.turboNph !== null && String(ctc.turboNph).trim() !== '';
+      if (!hasOverride) {
+        setDraftTurboNphAuto(true);
+        setDraftTurboNph(1);
+      } else {
+        const rawNph = Number(ctc?.turboNph);
+        const nph = Number.isFinite(rawNph) && rawNph >= 1 ? Math.floor(rawNph) : 1;
+        setDraftTurboNphAuto(false);
+        setDraftTurboNph(nph);
+      }
+    }
     const rawPeaks = Number(ctc?.numberOfPeaks);
     const peaks = Number.isFinite(rawPeaks) && rawPeaks >= 1 ? Math.floor(rawPeaks) : 2;
     setDraftNumberOfPeaks(peaks);
+
+    const rawPeakThresh = Number(ctc?.peakRescaleThreshold);
+    setDraftPeakRescaleThreshold(Number.isFinite(rawPeakThresh) && rawPeakThresh >= 0 ? rawPeakThresh : 4.0);
+
+    // Default true (matches p-brain default).
+    setDraftSkipForkedMaxCtcPeaks(Boolean(ctc?.skipForkedMaxCtcPeaks ?? true));
+    setDraftWriteCtcMaps(Boolean(ctc?.writeCtcMaps ?? true));
+    setDraftWriteCtc4d(Boolean(ctc?.writeCtc4d ?? true));
+    {
+      const rawSlice = Number(ctc?.ctcMapSlice);
+      const slice = Number.isFinite(rawSlice) && rawSlice >= 1 ? Math.floor(rawSlice) : 5;
+      setDraftCtcMapSlice(slice);
+    }
+
+    const pb = (project as any)?.config?.pbrain;
+    setDraftStrictMetadata(Boolean(pb?.strictMetadata ?? false));
+    setDraftMultiprocessing(Boolean(pb?.multiprocessing ?? true));
+    {
+      const raw = String(pb?.t1Fit ?? 'auto').trim().toLowerCase();
+      if (raw === 'ir') setDraftT1FitMode('ir');
+      else if (raw === 'vfa') setDraftT1FitMode('vfa');
+      else if (raw === 'none') setDraftT1FitMode('none');
+      else setDraftT1FitMode('auto');
+    }
+    {
+      const raw = String(pb?.cores ?? 'auto').trim().toLowerCase();
+      if (!raw || raw === 'auto') {
+        setDraftCoresAuto(true);
+        setDraftCoresPercent(80);
+      } else {
+        const v = Number(raw);
+        setDraftCoresAuto(false);
+        if (Number.isFinite(v)) {
+          if (v > 0 && v <= 1) setDraftCoresPercent(Math.max(1, Math.min(100, Math.round(v * 100))));
+          else if (v > 1 && v <= 100) setDraftCoresPercent(Math.max(1, Math.min(100, Math.round(v))));
+          else setDraftCoresPercent(100);
+        } else {
+          setDraftCoresPercent(80);
+        }
+      }
+    }
+    {
+      const raw = pb?.flipAngle;
+      if (raw === undefined || raw === null || String(raw).trim() === '' || String(raw).trim().toLowerCase() === 'auto') {
+        setDraftFlipAngleAuto(true);
+      } else {
+        const v = Number(raw);
+        if (Number.isFinite(v) && v > 0) {
+          setDraftFlipAngleAuto(false);
+          setDraftFlipAngleDeg(v);
+        } else {
+          setDraftFlipAngleAuto(true);
+        }
+      }
+    }
+
+    setDraftAutoLambda(Boolean(modelCfg?.autoLambda ?? false));
+    {
+      const pkRaw = String(modelCfg?.pkModel ?? 'both').trim().toLowerCase();
+      // Map legacy/removed options onto the single validated set.
+      if (
+        pkRaw === 'all' ||
+        pkRaw === 'both' ||
+        pkRaw === 'patlak_tikhonov' ||
+        pkRaw === 'patlak_tikhonov_fast' ||
+        pkRaw === 'patlak-then-tikhonov' ||
+        pkRaw === 'patlak-then-tikhonov-fast' ||
+        pkRaw === 'patlak_then_tikhonov' ||
+        pkRaw === 'patlak_then_tikhonov_fast'
+      ) {
+        setDraftPkModel('both');
+      } else if (pkRaw === 'patlak') {
+        setDraftPkModel('patlak');
+      } else if (
+        pkRaw === 'tikhonov' ||
+        pkRaw === 'tikhonov_only' ||
+        pkRaw === 'tikhonov-only' ||
+        pkRaw === 'tikhonov_fast' ||
+        pkRaw === 'tikhonov-only-fast' ||
+        pkRaw === 'tikhonov_only_fast' ||
+        pkRaw === 'tik_fast' ||
+        pkRaw === 'tik-fast' ||
+        pkRaw === 'tikfast' ||
+        pkRaw === 'tikh-fast'
+      ) {
+        setDraftPkModel('tikhonov');
+      } else if (pkRaw === 'two_compartment' || pkRaw === '2comp' || pkRaw === 'two-comp' || pkRaw === 'two-compartment') {
+        // Removed; keep behaviour deterministic.
+        setDraftPkModel('tikhonov');
+      } else {
+        setDraftPkModel('both');
+      }
+    }
+
+    {
+      const ai: any = inputFn?.ai || {};
+      const toPct = (v: any, fallback: number) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return fallback;
+        // Accept either 0-1 fractions or 0-100 percentages.
+        const pct = n <= 1 ? n * 100 : n;
+        return Math.max(1, Math.min(100, Math.round(pct * 100) / 100));
+      };
+      setDraftAiSliceConfStartPct(toPct(ai?.sliceConfStart, 50));
+      setDraftAiSliceConfMinPct(toPct(ai?.sliceConfMin, 10));
+      setDraftAiSliceConfStepPct(toPct(ai?.sliceConfStep, 5));
+
+      const fb = String(ai?.missingFallback || 'deterministic').trim().toLowerCase();
+      setDraftAiMissingFallback(fb === 'roi' ? 'roi' : 'deterministic');
+    }
+
+    {
+      const tissue: any = (project?.config as any)?.tissue || {};
+      const agg = String(tissue?.roiAggregation || 'median').trim().toLowerCase();
+      setDraftTissueRoiAggregation(agg === 'mean' ? 'mean' : 'median');
+    }
   }, [project?.id, project?.updatedAt]);
 
   useEffect(() => {
@@ -276,9 +451,17 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
     setSubjects(data.map(s => ({ ...s, stageStatuses: normalizeStageStatuses(s.stageStatuses) })));
   };
 
-  const handleSaveFolderConfig = async (config: FolderStructureConfig) => {
+  const handleSaveFolderConfig = async (
+    config: FolderStructureConfig,
+    pbrainOverrides?: { vfaGlob?: string; irPrefixes?: string; irTi?: string }
+  ) => {
     try {
-      const updated = await engine.updateProjectConfig(projectId, { folderStructure: config });
+      const patch: any = { folderStructure: config };
+      if (pbrainOverrides && typeof pbrainOverrides === 'object') {
+        const existing = (project as any)?.config?.pbrain || {};
+        patch.pbrain = { ...existing, ...pbrainOverrides };
+      }
+      const updated = await engine.updateProjectConfig(projectId, patch);
       if (updated) {
         setProject(updated);
       }
@@ -290,22 +473,68 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
 
   const handleSaveCtcConfig = async () => {
     try {
-      const nextNph = Number.isFinite(draftTurboNph) && draftTurboNph >= 1 ? Math.floor(draftTurboNph) : 1;
+      const nextNph = draftTurboNphAuto
+        ? null
+        : (Number.isFinite(draftTurboNph) && draftTurboNph >= 1 ? Math.floor(draftTurboNph) : 1);
       const nextPeaks = Number.isFinite(draftNumberOfPeaks) && draftNumberOfPeaks >= 1 ? Math.floor(draftNumberOfPeaks) : 2;
+      const nextPeakRescaleThreshold = Number.isFinite(draftPeakRescaleThreshold) && draftPeakRescaleThreshold >= 0
+        ? draftPeakRescaleThreshold
+        : 4.0;
+      const cores = (() => {
+        if (!draftMultiprocessing) return '1';
+        if (draftCoresAuto) return 'auto';
+        const pct = Number(draftCoresPercent);
+        const clamped = Number.isFinite(pct) ? Math.max(1, Math.min(100, pct)) : 80;
+        const frac = clamped / 100;
+        const rounded = Math.round(frac * 1000) / 1000;
+        return String(rounded);
+      })();
+
       const updated = await engine.updateProjectConfig(projectId, {
         ctc: {
           model: draftCtcModel,
           turboNph: nextNph,
           numberOfPeaks: nextPeaks,
+          peakRescaleThreshold: nextPeakRescaleThreshold,
+          skipForkedMaxCtcPeaks: Boolean(draftSkipForkedMaxCtcPeaks),
+          writeCtcMaps: Boolean(draftWriteCtcMaps),
+          writeCtc4d: Boolean(draftWriteCtc4d),
+          ctcMapSlice: Math.max(1, Math.floor(Number(draftCtcMapSlice) || 5)),
+        },
+        pbrain: {
+          strictMetadata: Boolean(draftStrictMetadata),
+          multiprocessing: Boolean(draftMultiprocessing),
+          cores,
+          flipAngle: draftFlipAngleAuto ? 'auto' : Math.max(0.0001, Number(draftFlipAngleDeg) || 30),
+          t1Fit: draftT1FitMode,
+        },
+        model: {
+          pkModel: draftPkModel,
+          autoLambda: Boolean(draftAutoLambda),
+          tikhonovPenalty: 'derivative',
+        },
+        inputFunction: {
+          source: (draftInputFunctionSource || 'adjusted_vif') as any,
+          vascularRoiCurveMethod: (draftVascularRoiCurveMethod || 'max') as any,
+          vascularRoiAdaptiveMax: Boolean(draftVascularRoiAdaptiveMax),
+          ai: {
+            sliceConfStart: Math.max(0.01, Math.min(1.0, (Number(draftAiSliceConfStartPct) || 50) / 100)),
+            sliceConfMin: Math.max(0.01, Math.min(1.0, (Number(draftAiSliceConfMinPct) || 10) / 100)),
+            sliceConfStep: Math.max(0.01, Math.min(0.5, (Number(draftAiSliceConfStepPct) || 5) / 100)),
+            missingFallback: draftAiMissingFallback,
+          },
+        },
+        tissue: {
+          roiAggregation: draftTissueRoiAggregation,
         },
       });
       if (updated) {
         setProject(updated);
       }
-      toast.success('Saved CTC settings');
+      toast.success('Saved Defaults');
       setIsCtcDialogOpen(false);
     } catch (error) {
-      toast.error('Failed to save CTC settings');
+      toast.error('Failed to save Defaults');
       console.error(error);
     }
   };
@@ -586,6 +815,12 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
             <div className="h-2 w-2 rounded-full bg-success" />
           </div>
         );
+      case 'waiting':
+        return (
+          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-warning/10">
+            <div className="h-2 w-2 rounded-full bg-warning" />
+          </div>
+        );
       case 'failed':
         return (
           <div className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive/10">
@@ -705,69 +940,453 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
               <Dialog open={isCtcDialogOpen} onOpenChange={setIsCtcDialogOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline">
-                    CTC
+                    Defaults
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="max-w-md">
+                <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh]">
                   <DialogHeader>
-                    <DialogTitle>CTC settings</DialogTitle>
+                    <DialogTitle>Defaults</DialogTitle>
                     <DialogDescription>
-                      Select the signalconcentration conversion model.
+                      Project-level defaults applied to p-brain runs.
                     </DialogDescription>
                   </DialogHeader>
 
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label className="text-xs">CTC model</Label>
-                      <Select value={draftCtcModel} onValueChange={(v) => setDraftCtcModel((v === 'turboflash' ? 'turboflash' : 'saturation') as CtcModel)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="saturation">saturation</SelectItem>
-                          <SelectItem value="turboflash">turboflash</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                  <ScrollArea className="max-h-[70vh] pr-4">
+                    <div className="space-y-5 pb-2">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">PK model</Label>
+                          <div className="text-xs text-muted-foreground">Choose which pharmacokinetic model(s) to run.</div>
+                        </div>
+                        <Select value={draftPkModel} onValueChange={(v) => setDraftPkModel((v as PkModel) || 'both')}>
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="both">Patlak + Tikhonov</SelectItem>
+                            <SelectItem value="patlak">Patlak</SelectItem>
+                            <SelectItem value="tikhonov">Tikhonov</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-xs">TurboFLASH nph</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={Number.isFinite(draftTurboNph) ? String(draftTurboNph) : '1'}
-                        onChange={(e) => setDraftTurboNph(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
-                        disabled={draftCtcModel !== 'turboflash'}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Used only when model is turboflash.
-                      </p>
-                    </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Auto lambda (L-curve)</Label>
+                          <div className="text-xs text-muted-foreground">Automatically pick the Tikhonov lambda using an L-curve sweep.</div>
+                        </div>
+                        <Switch checked={draftAutoLambda} onCheckedChange={setDraftAutoLambda} />
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-xs">Number of peaks</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={Number.isFinite(draftNumberOfPeaks) ? String(draftNumberOfPeaks) : '2'}
-                        onChange={(e) => setDraftNumberOfPeaks(Math.max(1, Math.floor(Number(e.target.value) || 2)))}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Used for peak-based alignment and choosing the TSCC “Max” curve.
-                      </p>
-                    </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Strict metadata</Label>
+                          <div className="text-xs text-muted-foreground">Error when acquisition metadata is missing (no silent defaults).</div>
+                        </div>
+                        <Switch checked={draftStrictMetadata} onCheckedChange={setDraftStrictMetadata} />
+                      </div>
 
-                    <div className="flex justify-end gap-2">
-                      <Button variant="outline" onClick={() => setIsCtcDialogOpen(false)}>
-                        Cancel
-                      </Button>
-                      <Button onClick={handleSaveCtcConfig}>
-                        Save
-                      </Button>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Multiprocessing</Label>
+                          <div className="text-xs text-muted-foreground">Enable multiprocessing in p-brain runs.</div>
+                        </div>
+                        <Switch checked={draftMultiprocessing} onCheckedChange={setDraftMultiprocessing} />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Cores</Label>
+                          <div className="text-xs text-muted-foreground">Use Auto or set a percent of CPU cores.</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Auto</Label>
+                            <Switch
+                              checked={draftCoresAuto}
+                              onCheckedChange={(v) => setDraftCoresAuto(Boolean(v))}
+                              disabled={!draftMultiprocessing}
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Slider
+                              value={[Number.isFinite(draftCoresPercent) ? draftCoresPercent : 80]}
+                              onValueChange={([v]) => {
+                                const n = Number(v);
+                                if (!Number.isFinite(n)) return;
+                                setDraftCoresPercent(Math.max(1, Math.min(100, Math.round(n))));
+                                setDraftCoresAuto(false);
+                              }}
+                              min={1}
+                              max={100}
+                              step={1}
+                              className="w-[140px]"
+                              disabled={!draftMultiprocessing || draftCoresAuto}
+                            />
+                            <div className="flex items-center gap-1">
+                              <Input
+                                type="number"
+                                min={1}
+                                max={100}
+                                step={1}
+                                value={String(Number.isFinite(draftCoresPercent) ? draftCoresPercent : 80)}
+                                onChange={(e) => {
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n)) return;
+                                  setDraftCoresPercent(Math.max(1, Math.min(100, Math.round(n))));
+                                  setDraftCoresAuto(false);
+                                }}
+                                className="h-9 w-[72px] text-right"
+                                disabled={!draftMultiprocessing || draftCoresAuto}
+                              />
+                              <div className="text-xs text-muted-foreground">%</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Flip angle</Label>
+                          <div className="text-xs text-muted-foreground">Auto reads FlipAngle from the NIfTI JSON sidecar.</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Auto</Label>
+                            <Switch checked={draftFlipAngleAuto} onCheckedChange={(v) => setDraftFlipAngleAuto(Boolean(v))} />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={String(Number.isFinite(draftFlipAngleDeg) ? draftFlipAngleDeg : 30)}
+                              onChange={(e) => setDraftFlipAngleDeg(Number(e.target.value) || 0)}
+                              className="h-9 w-[120px] text-right"
+                              disabled={draftFlipAngleAuto}
+                            />
+                            <div className="text-xs text-muted-foreground">deg</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">T1/M0 fit method</Label>
+                          <div className="text-xs text-muted-foreground">Auto prefers IR if present, otherwise tries VFA.</div>
+                        </div>
+                        <Select value={draftT1FitMode} onValueChange={(v) => setDraftT1FitMode(((v as any) || 'auto') as T1FitMode)}>
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">auto</SelectItem>
+                            <SelectItem value="ir">ir</SelectItem>
+                            <SelectItem value="vfa">vfa</SelectItem>
+                            <SelectItem value="none">none</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">AIF/VIF AI confidence sweep</Label>
+                          <div className="text-xs text-muted-foreground">If AI can’t find AIF/VIF, lower the confidence threshold down to 10% (default).</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Start</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={100}
+                              step={1}
+                              value={String(Number.isFinite(draftAiSliceConfStartPct) ? draftAiSliceConfStartPct : 50)}
+                              onChange={(e) => setDraftAiSliceConfStartPct(Math.max(1, Math.min(100, Math.round(Number(e.target.value) || 50))))}
+                              className="h-9 w-[72px] text-right"
+                            />
+                            <div className="text-xs text-muted-foreground">%</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Min</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={100}
+                              step={1}
+                              value={String(Number.isFinite(draftAiSliceConfMinPct) ? draftAiSliceConfMinPct : 10)}
+                              onChange={(e) => setDraftAiSliceConfMinPct(Math.max(1, Math.min(100, Math.round(Number(e.target.value) || 10))))}
+                              className="h-9 w-[72px] text-right"
+                            />
+                            <div className="text-xs text-muted-foreground">%</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Step</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={50}
+                              step={1}
+                              value={String(Number.isFinite(draftAiSliceConfStepPct) ? draftAiSliceConfStepPct : 5)}
+                              onChange={(e) => setDraftAiSliceConfStepPct(Math.max(1, Math.min(50, Math.round(Number(e.target.value) || 5))))}
+                              className="h-9 w-[72px] text-right"
+                            />
+                            <div className="text-xs text-muted-foreground">%</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Missing AIF/VIF fallback</Label>
+                          <div className="text-xs text-muted-foreground">If AI still can’t find AIF/VIF after the sweep.</div>
+                        </div>
+                        <Select value={draftAiMissingFallback} onValueChange={(v) => setDraftAiMissingFallback((v === 'roi' ? 'roi' : 'deterministic') as any)}>
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="deterministic">deterministic</SelectItem>
+                            <SelectItem value="roi">user ROI (wait)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Input function source</Label>
+                          <div className="text-xs text-muted-foreground">Choose which curve p-brain uses as the modelling input.</div>
+                        </div>
+                        <Select
+                          value={draftInputFunctionSource}
+                          onValueChange={(v) => {
+                            const raw = String(v || '').trim().toLowerCase();
+                            if (raw === 'aif') setDraftInputFunctionSource('aif');
+                            else if (raw === 'vif') setDraftInputFunctionSource('vif');
+                            else setDraftInputFunctionSource('adjusted_vif');
+                          }}
+                        >
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="aif">aif (arterial)</SelectItem>
+                            <SelectItem value="vif">vif (venous)</SelectItem>
+                              <SelectItem value="adjusted_vif">advanced VIF (TSCC)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Vascular ROI curve</Label>
+                          <div className="text-xs text-muted-foreground">How to summarize the vascular ROI mask into a single curve.</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <Select
+                            value={draftVascularRoiCurveMethod}
+                            onValueChange={(v) => {
+                              const raw = String(v || '').trim().toLowerCase();
+                              if (raw === 'mean') setDraftVascularRoiCurveMethod('mean');
+                              else if (raw === 'median') setDraftVascularRoiCurveMethod('median');
+                              else setDraftVascularRoiCurveMethod('max');
+                            }}
+                          >
+                            <SelectTrigger className="h-9 w-[140px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="max">max</SelectItem>
+                              <SelectItem value="mean">mean</SelectItem>
+                              <SelectItem value="median">median</SelectItem>
+                            </SelectContent>
+                          </Select>
+
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Adaptive max</Label>
+                            <Switch
+                              checked={draftVascularRoiAdaptiveMax}
+                              onCheckedChange={(v) => setDraftVascularRoiAdaptiveMax(Boolean(v))}
+                              disabled={draftVascularRoiCurveMethod !== 'max'}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Tissue/parcel aggregation</Label>
+                          <div className="text-xs text-muted-foreground">Mean or median of normalized tissue/atlas ROI curves and values.</div>
+                        </div>
+                        <Select
+                          value={draftTissueRoiAggregation}
+                          onValueChange={(v) => setDraftTissueRoiAggregation((String(v).toLowerCase() === 'mean' ? 'mean' : 'median') as any)}
+                        >
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="median">median</SelectItem>
+                            <SelectItem value="mean">mean</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">CTC model</Label>
+                          <div className="text-xs text-muted-foreground">Signal-to-concentration conversion model.</div>
+                        </div>
+                        <Select
+                          value={draftCtcModel}
+                          onValueChange={(v) => {
+                            const raw = String(v || '').toLowerCase();
+                            if (raw === 'turboflash') setDraftCtcModel('turboflash');
+                            else if (raw === 'advanced') setDraftCtcModel('advanced');
+                            else setDraftCtcModel('saturation');
+                          }}
+                        >
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="advanced">advanced (TurboFLASH case12)</SelectItem>
+                            <SelectItem value="turboflash">turboflash</SelectItem>
+                            <SelectItem value="saturation">saturation</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">TurboFLASH nph</Label>
+                          <div className="text-xs text-muted-foreground">Auto reads nph from the NIfTI JSON sidecar (fallback 1).</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Auto</Label>
+                            <Switch
+                              checked={draftTurboNphAuto}
+                              onCheckedChange={(v) => {
+                                const nextAuto = Boolean(v);
+                                setDraftTurboNphAuto(nextAuto);
+                                if (!nextAuto) {
+                                  setDraftTurboNph(prev => (Number.isFinite(prev) && prev >= 1 ? Math.floor(prev) : 1));
+                                }
+                              }}
+                              disabled={!['turboflash', 'advanced'].includes(draftCtcModel)}
+                            />
+                          </div>
+                          <Input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={Number.isFinite(draftTurboNph) ? String(draftTurboNph) : '1'}
+                            onChange={(e) => setDraftTurboNph(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                            disabled={!['turboflash', 'advanced'].includes(draftCtcModel) || draftTurboNphAuto}
+                            className="h-9 w-[120px]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Number of peaks</Label>
+                          <div className="text-xs text-muted-foreground">Used for peak-based alignment and choosing the TSCC “Max” curve.</div>
+                        </div>
+                        <Input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={Number.isFinite(draftNumberOfPeaks) ? String(draftNumberOfPeaks) : '2'}
+                          onChange={(e) => setDraftNumberOfPeaks(Math.max(1, Math.floor(Number(e.target.value) || 2)))}
+                          className="h-9 w-[200px]"
+                        />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Skip forked Max TSCC/CTC peaks</Label>
+                          <div className="text-xs text-muted-foreground">Exclude split/forked apex curves when selecting the “Max” TSCC/CTC curve.</div>
+                        </div>
+                        <Switch checked={draftSkipForkedMaxCtcPeaks} onCheckedChange={(v) => setDraftSkipForkedMaxCtcPeaks(Boolean(v))} />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Write CTC maps</Label>
+                          <div className="text-xs text-muted-foreground">Export CTC peak/AUC maps (NIfTI/PNG/NPY) during tissue CTC stage.</div>
+                        </div>
+                        <Switch checked={draftWriteCtcMaps} onCheckedChange={(v) => setDraftWriteCtcMaps(Boolean(v))} />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Write CTC 4D</Label>
+                          <div className="text-xs text-muted-foreground">Export full 4D concentration time-series as NIfTI/NPY during tissue CTC stage.</div>
+                        </div>
+                        <Switch checked={draftWriteCtc4d} onCheckedChange={(v) => setDraftWriteCtc4d(Boolean(v))} />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">CTC map slice</Label>
+                          <div className="text-xs text-muted-foreground">1-based slice index used for map PNG exports.</div>
+                        </div>
+                        <Input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={String(Number.isFinite(draftCtcMapSlice) ? draftCtcMapSlice : 5)}
+                          onChange={(e) => setDraftCtcMapSlice(Math.max(1, Math.floor(Number(e.target.value) || 5)))}
+                          className="h-9 w-[200px]"
+                          disabled={!draftWriteCtcMaps}
+                        />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Peak rescale threshold</Label>
+                          <div className="text-xs text-muted-foreground">If peak exceeds this, p-brain rescales the curve.</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Slider
+                            value={[Number.isFinite(draftPeakRescaleThreshold) ? draftPeakRescaleThreshold : 4.0]}
+                            onValueChange={([v]) => {
+                              const n = Number(v);
+                              if (!Number.isFinite(n)) return;
+                              setDraftPeakRescaleThreshold(Math.max(0, Math.min(10, n)));
+                            }}
+                            min={0}
+                            max={10}
+                            step={0.1}
+                            className="w-[140px]"
+                          />
+                          <Input
+                            type="number"
+                            min={0}
+                            step={0.1}
+                            value={Number.isFinite(draftPeakRescaleThreshold) ? String(draftPeakRescaleThreshold) : '4.0'}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              if (!Number.isFinite(n)) return;
+                              setDraftPeakRescaleThreshold(Math.max(0, Math.min(10, n)));
+                            }}
+                            className="h-9 w-[72px] text-right"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="outline" onClick={() => setIsCtcDialogOpen(false)}>
+                          Cancel
+                        </Button>
+                        <Button onClick={handleSaveCtcConfig}>
+                          Save
+                        </Button>
+                      </div>
                     </div>
-                  </div>
+                  </ScrollArea>
                 </DialogContent>
               </Dialog>
 
@@ -1085,7 +1704,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
                       {subjects.map((subject, index) => {
                         const isSubjectRunning = runningSubjectIds.has(subject.id) ||
                           Object.values(subject.stageStatuses || {}).some(s => s === 'running');
-                        const hasEverRun = Object.values(subject.stageStatuses || {}).some(s => s === 'done' || s === 'failed');
+                        const hasEverRun = Object.values(subject.stageStatuses || {}).some(s => s === 'done' || s === 'failed' || s === 'waiting');
                         const isSelected = selectedSubjectIds.has(subject.id);
                         
                         return (

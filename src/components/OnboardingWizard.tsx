@@ -71,6 +71,51 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
     }
   };
 
+  const refreshStageRunners = async () => {
+    const ok = await checkLocalBackendHealth();
+    if (!ok) {
+      toast.error('Local backend is not running');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await engine.refreshStageRunners();
+      const n = (res?.refreshed || []).length;
+      toast.success(n > 0 ? `Updated stage runners (${n})` : 'No stage runners updated');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to refresh stage runners');
+      console.error(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restartBackend = async () => {
+    const ok = await checkLocalBackendHealth();
+    if (!ok) {
+      toast.error('Local backend is not running');
+      return;
+    }
+    setBusy(true);
+    try {
+      await engine.restartBackend();
+      toast.message('Restarting backend…');
+      // In dev, this will stop uvicorn and you must restart it manually.
+      // In the packaged app, the launcher should bring it back up.
+      window.setTimeout(() => {
+        try {
+          window.location.reload();
+        } catch {
+          // ignore
+        }
+      }, 800);
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to restart backend');
+      console.error(e);
+      setBusy(false);
+    }
+  };
+
   const refreshDeps = async () => {
     try {
       const d = await engine.getSystemDeps();
@@ -588,6 +633,24 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <div>3) Run the full pipeline and monitor progress in Jobs.</div>
             <div>4) Open a subject to view volumes, maps, curves, and the statistics table.</div>
           </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="text-xs text-muted-foreground">Advanced</div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="secondary" disabled={busy} onClick={refreshStageRunners}>
+                Update stage runners
+              </Button>
+              <Button type="button" variant="secondary" disabled={busy} onClick={restartBackend}>
+                Restart backend
+              </Button>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              If you’re running the backend manually, restart it in Terminal after clicking restart.
+            </div>
+          </div>
+
           <div className="flex items-center justify-end">
             <Button onClick={finish} disabled={busy}>Finish</Button>
           </div>

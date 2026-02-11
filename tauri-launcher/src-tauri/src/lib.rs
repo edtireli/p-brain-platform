@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use std::fs;
 
 use tauri::Manager;
@@ -80,6 +80,23 @@ fn ensure_executable(path: &PathBuf) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn clear_quarantine(path: &PathBuf) {
+    // If the extracted backend retains the quarantine attribute, macOS can
+    // perform slow Gatekeeper verification on every launch.
+    // Best-effort: remove it recursively. Ignore failures (xattr may be absent).
+    let _ = Command::new("/usr/bin/xattr")
+        .arg("-dr")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_quarantine(_path: &PathBuf) {}
+
 fn kill_stale_backends(backend_path: &PathBuf) {
     // When the app is force-quit, the backend process can be orphaned.
     // Multiple concurrent PyInstaller onefile instances can also behave poorly.
@@ -95,16 +112,124 @@ fn kill_stale_backends(backend_path: &PathBuf) {
     }
 }
 
-fn start_backend(app: &tauri::AppHandle) -> Result<u16, String> {
-    let backend_path = app
+fn backend_zip_signature(zip_path: &PathBuf) -> Result<String, String> {
+    let meta = fs::metadata(zip_path)
+        .map_err(|e| format!("Failed to stat backend zip {}: {e}", zip_path.display()))?;
+    let len = meta.len();
+    let modified_s = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(format!("{len}:{modified_s}"))
+}
+
+fn ensure_backend_extracted(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let zip_path = app
         .path()
         .resolve(
-            "resources/backend/pbrain-web-backend",
+            "resources/backend/pbrain-web-backend.zip",
             tauri::path::BaseDirectory::Resource,
         )
-        .map_err(|e| format!("Failed to resolve backend binary: {e}"))?;
+        .map_err(|e| format!("Failed to resolve backend zip resource: {e}"))?;
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+
+    let backend_root = app_data_dir.join("backend");
+    let extracted_dir = backend_root.join("pbrain-web-backend");
+
+    let exe_name = if cfg!(windows) {
+        "pbrain-web-backend.exe"
+    } else {
+        "pbrain-web-backend"
+    };
+    let exe_path = extracted_dir.join(exe_name);
+
+    let sig_path = backend_root.join("pbrain-web-backend.signature");
+    let sig = backend_zip_signature(&zip_path)?;
+    let existing_sig = fs::read_to_string(&sig_path).ok();
+    let needs_extract = !exe_path.exists() || existing_sig.as_deref().map(|s| s.trim()) != Some(sig.as_str());
+
+    if !needs_extract {
+        return Ok(exe_path);
+    }
+
+    let _ = fs::remove_dir_all(&extracted_dir);
+    fs::create_dir_all(&backend_root)
+        .map_err(|e| format!("Failed to create backend directory {}: {e}", backend_root.display()))?;
+
+    #[cfg(windows)]
+    {
+        let status = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
+                zip_path.display(),
+                backend_root.display()
+            ))
+            .status()
+            .map_err(|e| format!("Failed to run PowerShell Expand-Archive: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "Failed to extract backend zip (exit: {status}). Zip: {}",
+                zip_path.display()
+            ));
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let unzip_candidates = ["/usr/bin/unzip", "unzip"];
+        let mut extracted = false;
+        for unzip in unzip_candidates {
+            let status = Command::new(unzip)
+                .arg("-o")
+                .arg("-qq")
+                .arg(&zip_path)
+                .arg("-d")
+                .arg(&backend_root)
+                .status();
+            if let Ok(status) = status {
+                if status.success() {
+                    extracted = true;
+                    break;
+                }
+            }
+        }
+        if !extracted {
+            return Err(format!(
+                "Failed to extract backend zip using unzip. Zip: {}",
+                zip_path.display()
+            ));
+        }
+    }
+
+    if !exe_path.exists() {
+        return Err(format!(
+            "Backend executable missing after extraction (expected {}).",
+            exe_path.display()
+        ));
+    }
+
+    let _ = fs::write(&sig_path, format!("{sig}\n"));
+
+    Ok(exe_path)
+}
+
+fn start_backend(app: &tauri::AppHandle) -> Result<u16, String> {
+    let backend_path = ensure_backend_extracted(app)?;
 
     ensure_executable(&backend_path);
+    // Remove macOS quarantine if present to avoid slow verification.
+    // Apply to the whole extracted directory (contains shared libs in onedir mode).
+    if let Some(parent) = backend_path.parent() {
+        clear_quarantine(&parent.to_path_buf());
+    }
 
     kill_stale_backends(&backend_path);
 

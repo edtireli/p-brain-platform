@@ -24,6 +24,8 @@ import type {
   ProjectAnalysisPearsonResponse,
   ProjectAnalysisGroupCompareResponse,
   ProjectAnalysisOlsResponse,
+  InputFunctionForces,
+  ForcedRoiRef,
 } from '@/types';
 import type { StageId } from '@/types';
 
@@ -299,6 +301,20 @@ export class BackendEngineAPI {
 
   constructor() {}
 
+  async restartBackend(): Promise<{ ok: boolean; willExit?: boolean; delayMs?: number }> {
+    return api<{ ok: boolean; willExit?: boolean; delayMs?: number }>(`/system/backend/restart`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async refreshStageRunners(): Promise<{ ok: boolean; refreshed: string[]; skipped: string[] }> {
+    return api<{ ok: boolean; refreshed: string[]; skipped: string[] }>(`/system/backend/refresh-runners`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
   async getSubjectConnectome(subjectId: string): Promise<ConnectomeData> {
     return api<ConnectomeData>(`/subjects/${encodeURIComponent(subjectId)}/connectome`);
   }
@@ -533,6 +549,36 @@ export class BackendEngineAPI {
     return Array.isArray(payload?.masks) ? payload.masks : [];
   }
 
+  async getSubjectInputFunctionForces(subjectId: string): Promise<InputFunctionForces> {
+    const payload = await api<InputFunctionForces>(
+      `/subjects/${encodeURIComponent(subjectId)}/input-function-forces`
+    );
+    return {
+      forcedAif: (payload as any)?.forcedAif ?? null,
+      forcedVif: (payload as any)?.forcedVif ?? null,
+    };
+  }
+
+  async setSubjectInputFunctionForces(
+    subjectId: string,
+    forces: { forcedAif: ForcedRoiRef | null; forcedVif: ForcedRoiRef | null }
+  ): Promise<InputFunctionForces> {
+    return api<InputFunctionForces>(`/subjects/${encodeURIComponent(subjectId)}/input-function-forces`, {
+      method: 'PUT',
+      body: JSON.stringify(forces),
+    });
+  }
+
+  async saveSubjectRoiVoxels(
+    subjectId: string,
+    payload: { roiType: string; roiSubType: string; sliceIndex: number; frameIndex: number; voxels: Array<[number, number]> }
+  ): Promise<{ ok: boolean; savedVoxelCount?: number }> {
+    return api<{ ok: boolean; savedVoxelCount?: number }>(`/subjects/${encodeURIComponent(subjectId)}/roi-voxels`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getSubjectTractography(subjectId: string): Promise<TractographyData> {
     return api<TractographyData>(`/subjects/${encodeURIComponent(subjectId)}/tractography`);
   }
@@ -668,10 +714,18 @@ export class BackendEngineAPI {
     });
   }
 
-  async runSubjectStage(subjectId: string, stageId: StageId, opts?: { runDependencies?: boolean }): Promise<Job> {
+  async runSubjectStage(
+    subjectId: string,
+    stageId: StageId,
+    opts?: { runDependencies?: boolean; envOverrides?: Record<string, string> }
+  ): Promise<Job> {
     return api<Job>(`/subjects/${encodeURIComponent(subjectId)}/run-stage`, {
       method: 'POST',
-      body: JSON.stringify({ stageId, ...(opts?.runDependencies === false ? { runDependencies: false } : {}) }),
+      body: JSON.stringify({
+        stageId,
+        ...(opts?.runDependencies === false ? { runDependencies: false } : {}),
+        ...(opts?.envOverrides && Object.keys(opts.envOverrides).length ? { envOverrides: opts.envOverrides } : {}),
+      }),
     });
   }
 
@@ -765,6 +819,25 @@ export class BackendEngineAPI {
   ): Promise<{ started: boolean; jobs: any[]; reason: string }> {
     return api<{ started: boolean; jobs: any[]; reason: string }>(
       `/subjects/${encodeURIComponent(subjectId)}/ensure?kind=${encodeURIComponent(kind)}`,
+      { method: 'POST', body: JSON.stringify({}) }
+    );
+  }
+
+  async clearSubjectData(subjectId: string): Promise<{
+    ok: boolean;
+    cancelledJobs: number;
+    terminatedProcesses: number;
+    deleted: { analysis: boolean; images: boolean; runner: boolean };
+    subject: Subject;
+  }> {
+    return api<{
+      ok: boolean;
+      cancelledJobs: number;
+      terminatedProcesses: number;
+      deleted: { analysis: boolean; images: boolean; runner: boolean };
+      subject: Subject;
+    }>(
+      `/subjects/${encodeURIComponent(subjectId)}/clear-data`,
       { method: 'POST', body: JSON.stringify({}) }
     );
   }

@@ -4,11 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { engine } from '@/lib/engine';
-import type { Job, RoiMaskVolume, RoiOverlay, StageId, Subject } from '@/types';
+import { engine, isBackendEngine } from '@/lib/engine';
+import type { InputFunctionForces, Job, RoiMaskVolume, RoiOverlay, StageId, Subject } from '@/types';
 import { STAGE_DEPENDENCIES, STAGE_NAMES } from '@/types';
 import { VolumeViewer } from './VolumeViewer';
 import { CurvesView } from './CurvesView';
@@ -36,13 +38,34 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   const roiOverlayPollTimerRef = useRef<number | null>(null);
   const roiOverlayPollCancelledRef = useRef(false);
 
+  const [inputFunctionForces, setInputFunctionForces] = useState<InputFunctionForces>({
+    forcedAif: null,
+    forcedVif: null,
+  });
+
   const [logOpen, setLogOpen] = useState(false);
   const [selectedStage, setSelectedStage] = useState<StageId | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobLoading, setJobLoading] = useState(false);
   const [runningStageId, setRunningStageId] = useState<StageId | null>(null);
+  const [clearingSubject, setClearingSubject] = useState(false);
 
   const [jobsById, setJobsById] = useState<Record<string, Job>>({});
+
+  const [manualRoiType, setManualRoiType] = useState<'Artery' | 'Vein'>('Artery');
+  const [manualRoiSubType, setManualRoiSubType] = useState<string>('Left Interior Carotid');
+  const [manualRoiBrushRadius, setManualRoiBrushRadius] = useState<number>(2);
+  const [manualRoiDraft, setManualRoiDraft] = useState<
+    Record<
+      string,
+      {
+        roiType: string;
+        roiSubType: string;
+        slices: Record<number, { frameIndex: number; voxels: Record<string, true> }>;
+      }
+    >
+  >({});
+  const [manualRoiSaving, setManualRoiSaving] = useState(false);
 
   const jobs = useMemo(() => Object.values(jobsById), [jobsById]);
   const hasActiveRun = useMemo(
@@ -53,6 +76,10 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
   useEffect(() => {
     roiOverlayPollCancelledRef.current = false;
     loadSubject();
+    void loadInputFunctionForces();
+    // Load ROI overlays in the background so the Force toggles have data,
+    // without forcing ROI artifact generation unless the user opts in.
+    void ensureRoiOverlaysLoaded({ ensureArtifactsIfEmpty: false });
 
     (async () => {
       try {
@@ -96,7 +123,76 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     if (data) setSubject(data);
   };
 
-  const ensureRoiOverlaysLoaded = async () => {
+  const clearSubjectData = async () => {
+    if (!subject) return;
+    if (hasActiveRun) return;
+    if (runningStageId) return;
+    if (clearingSubject) return;
+    setClearingSubject(true);
+    try {
+      const res = await engine.clearSubjectData(subject.id);
+      setSubject(res.subject);
+      setJobsById({});
+      setSelectedJob(null);
+      setLogOpen(false);
+      setRoiOverlays([]);
+      setRoiMasks([]);
+      setShowRoiOverlays(false);
+      setRoiEnsureAttempted(false);
+    } catch (e) {
+      console.error(e);
+      await loadSubject();
+    } finally {
+      setClearingSubject(false);
+    }
+  };
+
+  const loadInputFunctionForces = async () => {
+    try {
+      const payload = await engine.getSubjectInputFunctionForces(subjectId);
+      setInputFunctionForces({ forcedAif: payload.forcedAif ?? null, forcedVif: payload.forcedVif ?? null });
+    } catch {
+      setInputFunctionForces({ forcedAif: null, forcedVif: null });
+    }
+  };
+
+  const setForces = async (next: InputFunctionForces) => {
+    setInputFunctionForces(next);
+    try {
+      const saved = await engine.setSubjectInputFunctionForces(subjectId, next);
+      setInputFunctionForces({ forcedAif: saved.forcedAif ?? null, forcedVif: saved.forcedVif ?? null });
+    } catch {
+      // Keep optimistic UI.
+    }
+  };
+
+  const aifRois = useMemo(() => {
+    return (roiOverlays || [])
+      .filter(o => String((o as any)?.roiType) === 'Artery')
+      .slice()
+      .sort((a, b) => {
+        const sa = String((a as any)?.roiSubType || '');
+        const sb = String((b as any)?.roiSubType || '');
+        const sc = sa.localeCompare(sb);
+        if (sc) return sc;
+        return Number((a as any)?.sliceIndex) - Number((b as any)?.sliceIndex);
+      });
+  }, [roiOverlays]);
+
+  const vifRois = useMemo(() => {
+    return (roiOverlays || [])
+      .filter(o => String((o as any)?.roiType) === 'Vein')
+      .slice()
+      .sort((a, b) => {
+        const sa = String((a as any)?.roiSubType || '');
+        const sb = String((b as any)?.roiSubType || '');
+        const sc = sa.localeCompare(sb);
+        if (sc) return sc;
+        return Number((a as any)?.sliceIndex) - Number((b as any)?.sliceIndex);
+      });
+  }, [roiOverlays]);
+
+  const ensureRoiOverlaysLoaded = async (opts?: { ensureArtifactsIfEmpty?: boolean }) => {
     if (roiLoading) return;
     setRoiLoading(true);
     try {
@@ -104,7 +200,8 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
       const list = Array.isArray(overlays) ? overlays : [];
       setRoiOverlays(list);
 
-      if (isBackendEngine && list.length === 0 && !roiEnsureAttempted) {
+      const ensureArtifactsIfEmpty = opts?.ensureArtifactsIfEmpty ?? true;
+      if (isBackendEngine && ensureArtifactsIfEmpty && list.length === 0 && !roiEnsureAttempted) {
         setRoiEnsureAttempted(true);
         try {
           await engine.ensureSubjectArtifacts(subjectId, 'roi');
@@ -218,8 +315,10 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     return deps.every(d => statuses[d] === 'done');
   };
 
-  const stageUiStatus = (stageId: StageId): 'not_run' | 'queued' | 'running' | 'done' | 'failed' => {
+  const stageUiStatus = (stageId: StageId): 'not_run' | 'queued' | 'running' | 'done' | 'failed' | 'waiting' => {
     if (!subject) return 'not_run';
+
+    const persisted = normalizedStatuses?.[stageId] ?? 'not_run';
 
     const perStage = jobs.filter(j => j.subjectId === subjectId && j.stageId === stageId);
     if (perStage.length > 0) {
@@ -231,11 +330,9 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
       if (newest.status === 'running') return 'running';
       if (newest.status === 'queued') return 'queued';
-      if (newest.status === 'completed') return 'done';
-      if (newest.status === 'failed' || newest.status === 'cancelled') return 'failed';
+      if (newest.status === 'completed') return persisted === 'waiting' ? 'waiting' : 'done';
+      if (newest.status === 'failed' || newest.status === 'cancelled') return persisted === 'waiting' ? 'waiting' : 'failed';
     }
-
-    const persisted = normalizedStatuses?.[stageId] ?? 'not_run';
 
     // Back-compat: older runs could leak multiple stages as `running`.
     // If no job is actually running for this stage during an active subject run, treat it as queued/not started.
@@ -250,6 +347,119 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     setRunningStageId(stageId);
     try {
       await engine.runSubjectStage(subject.id, stageId);
+    } finally {
+      setRunningStageId(null);
+    }
+  };
+
+  const inputFunctionsStatus = stageUiStatus('input_functions');
+  const inputFunctionsWaiting = inputFunctionsStatus === 'waiting';
+
+  useEffect(() => {
+    if (manualRoiType === 'Vein') {
+      setManualRoiSubType('Sinus Sagittalis');
+    } else if (manualRoiSubType === 'Sinus Sagittalis') {
+      setManualRoiSubType('Left Interior Carotid');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualRoiType]);
+
+  const manualRoiKey = `${manualRoiType}||${manualRoiSubType}`;
+  const manualRoiEntry = manualRoiDraft[manualRoiKey];
+  const manualRoiVoxelCount = useMemo(() => {
+    if (!manualRoiEntry) return 0;
+    let n = 0;
+    for (const s of Object.values(manualRoiEntry.slices || {})) n += Object.keys(s.voxels || {}).length;
+    return n;
+  }, [manualRoiEntry]);
+
+  const manualRoiPaintVoxels = useMemo(() => {
+    if (!manualRoiEntry) return [] as Array<{ row: number; col: number; z: number }>;
+    const out: Array<{ row: number; col: number; z: number }> = [];
+    for (const [zStr, slice] of Object.entries(manualRoiEntry.slices || {})) {
+      const z = Number(zStr);
+      if (!Number.isFinite(z)) continue;
+      for (const k of Object.keys(slice.voxels || {})) {
+        const [rs, cs] = k.split(',');
+        const row = Number(rs);
+        const col = Number(cs);
+        if (!Number.isFinite(row) || !Number.isFinite(col)) continue;
+        out.push({ row, col, z });
+      }
+    }
+    return out;
+  }, [manualRoiEntry]);
+
+  const onManualPaintVoxel = (v: { row: number; col: number; z: number; t: number }) => {
+    if (!inputFunctionsWaiting) return;
+    const z = Math.max(0, Math.floor(v.z));
+    const row = Math.max(0, Math.floor(v.row));
+    const col = Math.max(0, Math.floor(v.col));
+    const t = Math.max(0, Math.floor(v.t || 0));
+    const key = `${manualRoiType}||${manualRoiSubType}`;
+    const voxelKey = `${row},${col}`;
+
+    setManualRoiDraft(prev => {
+      const next = { ...prev };
+      const entry = next[key] || { roiType: manualRoiType, roiSubType: manualRoiSubType, slices: {} };
+      const slices = { ...(entry.slices || {}) };
+      const slice = slices[z] || { frameIndex: t, voxels: {} };
+      slices[z] = { frameIndex: t, voxels: { ...(slice.voxels || {}), [voxelKey]: true } };
+      next[key] = { ...entry, roiType: manualRoiType, roiSubType: manualRoiSubType, slices };
+      return next;
+    });
+  };
+
+  const saveManualRoi = async () => {
+    if (!inputFunctionsWaiting) return;
+    const entry = manualRoiDraft[manualRoiKey];
+    if (!entry || Object.keys(entry.slices || {}).length === 0) return;
+    setManualRoiSaving(true);
+    try {
+      const sliceIndices = Object.keys(entry.slices)
+        .map(z => Number(z))
+        .filter(z => Number.isFinite(z))
+        .sort((a, b) => a - b);
+
+      for (const sliceIndex of sliceIndices) {
+        const slice = entry.slices[sliceIndex];
+        const voxels: Array<[number, number]> = Object.keys(slice.voxels || {}).map(k => {
+          const [rs, cs] = k.split(',');
+          return [Number(rs), Number(cs)];
+        });
+        await engine.saveSubjectRoiVoxels(subjectId, {
+          roiType: entry.roiType,
+          roiSubType: entry.roiSubType,
+          sliceIndex,
+          frameIndex: Math.max(0, Math.floor(slice.frameIndex || 0)),
+          voxels,
+        });
+      }
+
+      void ensureRoiOverlaysLoaded({ ensureArtifactsIfEmpty: false });
+      if (showRoiOverlays) void ensureRoiMasksLoaded();
+    } finally {
+      setManualRoiSaving(false);
+    }
+  };
+
+  const clearManualRoi = () => {
+    setManualRoiDraft(prev => {
+      const next = { ...prev };
+      delete next[manualRoiKey];
+      return next;
+    });
+  };
+
+  const rerunInputFunctionsWithFileRoi = async () => {
+    if (!subject) return;
+    if (!canRunStage('input_functions')) return;
+    setRunningStageId('input_functions');
+    try {
+      await engine.runSubjectStage(subject.id, 'input_functions', {
+        runDependencies: false,
+        envOverrides: { P_BRAIN_ROI_METHOD: 'file' },
+      });
     } finally {
       setRunningStageId(null);
     }
@@ -332,6 +542,15 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                   </div>
                 </div>
               </div>
+
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={clearingSubject || hasActiveRun || !!runningStageId}
+                onClick={clearSubjectData}
+              >
+                Clear data
+              </Button>
             </div>
           </div>
         </div>
@@ -408,6 +627,10 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                         ) : status === 'failed' ? (
                           <div className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive/10">
                             <XCircle size={12} weight="bold" className="text-destructive" />
+                          </div>
+                        ) : status === 'waiting' ? (
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-warning/10">
+                            <div className="h-2 w-2 rounded-full bg-warning" />
                           </div>
                         ) : status === 'running' ? (
                           <div className="relative flex h-6 w-6 items-center justify-center">
@@ -541,7 +764,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                       const next = v === true;
                       setShowRoiOverlays(next);
                       if (next) {
-                        void ensureRoiOverlaysLoaded();
+                        void ensureRoiOverlaysLoaded({ ensureArtifactsIfEmpty: true });
                         void ensureRoiMasksLoaded();
                       }
                     }}
@@ -550,12 +773,160 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                 </div>
               ) : null}
 
+              {viewerKind === 'dce' && roiOverlays.length > 0 ? (
+                <Card className="p-4">
+                  <div className="text-sm font-medium">ROI list</div>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground">AIF (Artery)</div>
+                      <div className="mt-2 space-y-2">
+                        {aifRois.map(o => {
+                          const forced =
+                            !!inputFunctionForces.forcedAif &&
+                            inputFunctionForces.forcedAif.roiSubType === o.roiSubType &&
+                            inputFunctionForces.forcedAif.sliceIndex === o.sliceIndex;
+                          return (
+                            <div key={o.id} className="flex items-center justify-between gap-3">
+                              <div className="text-xs text-muted-foreground">
+                                {o.roiSubType} · slice {o.sliceIndex}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs">Force</Label>
+                                <Checkbox
+                                  checked={forced}
+                                  onCheckedChange={(v) => {
+                                    const nextForcedAif = v === true ? { roiType: 'Artery' as const, roiSubType: o.roiSubType, sliceIndex: o.sliceIndex } : null;
+                                    void setForces({ ...inputFunctionForces, forcedAif: nextForcedAif });
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground">VIF (Vein)</div>
+                      <div className="mt-2 space-y-2">
+                        {vifRois.map(o => {
+                          const forced =
+                            !!inputFunctionForces.forcedVif &&
+                            inputFunctionForces.forcedVif.roiSubType === o.roiSubType &&
+                            inputFunctionForces.forcedVif.sliceIndex === o.sliceIndex;
+                          return (
+                            <div key={o.id} className="flex items-center justify-between gap-3">
+                              <div className="text-xs text-muted-foreground">
+                                {o.roiSubType} · slice {o.sliceIndex}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs">Force</Label>
+                                <Checkbox
+                                  checked={forced}
+                                  onCheckedChange={(v) => {
+                                    const nextForcedVif = v === true ? { roiType: 'Vein' as const, roiSubType: o.roiSubType, sliceIndex: o.sliceIndex } : null;
+                                    void setForces({ ...inputFunctionForces, forcedVif: nextForcedVif });
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              ) : null}
+
+              {inputFunctionsWaiting && viewerKind === 'dce' ? (
+                <Card className="p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Waiting for ROI</div>
+                      <div className="text-xs text-muted-foreground">
+                        Paint voxels in the viewer, save, then rerun input functions.
+                      </div>
+                    </div>
+                    <Badge variant="secondary">Waiting</Badge>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-end gap-3">
+                    <div className="min-w-[180px]">
+                      <Label className="text-xs">ROI</Label>
+                      <Select value={manualRoiType} onValueChange={(v: any) => setManualRoiType(v)}>
+                        <SelectTrigger className="mt-1 w-full">
+                          <SelectValue placeholder="ROI type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Artery">AIF (Artery)</SelectItem>
+                          <SelectItem value="Vein">VIF (Vein)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="min-w-[240px]">
+                      <Label className="text-xs">Subtype</Label>
+                      <Select value={manualRoiSubType} onValueChange={setManualRoiSubType}>
+                        <SelectTrigger className="mt-1 w-full">
+                          <SelectValue placeholder="ROI subtype" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {manualRoiType === 'Vein' ? (
+                            <SelectItem value="Sinus Sagittalis">Sinus Sagittalis</SelectItem>
+                          ) : (
+                            <>
+                              <SelectItem value="Left Interior Carotid">Left Interior Carotid</SelectItem>
+                              <SelectItem value="Right Interior Carotid">Right Interior Carotid</SelectItem>
+                              <SelectItem value="Basilar">Basilar</SelectItem>
+                            </>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="min-w-[180px]">
+                      <Label className="text-xs">Brush radius</Label>
+                      <Input
+                        className="mt-1"
+                        type="number"
+                        min={0}
+                        max={12}
+                        step={1}
+                        value={manualRoiBrushRadius}
+                        onChange={e => setManualRoiBrushRadius(Math.max(0, Math.min(12, Number(e.target.value) || 0)))}
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button type="button" variant="secondary" onClick={clearManualRoi} disabled={manualRoiVoxelCount === 0 || manualRoiSaving}>
+                        Clear
+                      </Button>
+                      <Button type="button" onClick={() => void saveManualRoi()} disabled={manualRoiVoxelCount === 0 || manualRoiSaving}>
+                        {manualRoiSaving ? 'Saving…' : `Save ROI (${manualRoiVoxelCount})`}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void rerunInputFunctionsWithFileRoi()}
+                        disabled={manualRoiSaving || runningStageId === 'input_functions'}
+                      >
+                        Rerun input functions
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              ) : null}
+
               <VolumeViewer
                 subjectId={subjectId}
                 kind={viewerKind}
                 showRoiOverlays={showRoiOverlays}
                 roiOverlays={roiOverlays}
                 roiMasks={roiMasks}
+                paintEnabled={inputFunctionsWaiting && viewerKind === 'dce'}
+                paintRadius={manualRoiBrushRadius}
+                paintVoxels={manualRoiPaintVoxels}
+                onPaintVoxel={onManualPaintVoxel}
               />
             </div>
           </TabsContent>

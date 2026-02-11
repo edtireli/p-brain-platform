@@ -7,6 +7,7 @@ import json
 import os
 import math
 import time
+import threading
 import subprocess
 import signal
 import sys
@@ -34,6 +35,44 @@ np = None  # type: ignore
 # (and so packaged builds don't fail at import time).
 least_squares = None  # type: ignore
 nib = None  # type: ignore
+
+
+def _ensure_stdio_fds_open() -> None:
+    """Ensure file descriptors 0/1/2 exist.
+
+    When the backend is launched from a GUI host on macOS, stdin/stdout/stderr
+    can be closed. Some Python subprocesses then crash at startup with:
+    "init_sys_streams: can't initialize sys standard streams".
+
+    This is safe to call multiple times.
+    """
+
+    if os.name != "posix":
+        return
+
+    try:
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+    except Exception:
+        return
+
+    try:
+        for fd in (0, 1, 2):
+            try:
+                os.fstat(fd)
+            except OSError:
+                try:
+                    os.dup2(devnull_fd, fd)
+                except Exception:
+                    pass
+    finally:
+        try:
+            os.close(devnull_fd)
+        except Exception:
+            pass
+
+
+# Fix stdio for GUI/daemon launches early, before any subprocess calls.
+_ensure_stdio_fds_open()
 
 
 def _load_numpy():
@@ -106,7 +145,12 @@ StageId = Literal[
     "tractography",
     "connectome",
 ]
-StageStatus = Literal["not_run", "running", "done", "failed"]
+StageStatus = Literal["not_run", "running", "done", "failed", "waiting"]
+
+
+# p-brain uses this special exit code to indicate a non-error stop where
+# user interaction (ROI drawing/providing) is required to proceed.
+PBRAIN_WAITING_FOR_ROI_EXIT_CODE = 42
 
 
 def _now_iso() -> str:
@@ -227,6 +271,9 @@ class RunFullPipelineRequest(BaseModel):
 class RunStageRequest(BaseModel):
     stageId: StageId
     runDependencies: bool = True
+    # Optional per-run env overrides for the p-brain subprocess.
+    # Intended for narrowly-scoped toggles (e.g. forcing ROI_METHOD=file after user ROI upload).
+    envOverrides: Optional[Dict[str, str]] = None
 
 
 class AnalysisPearsonRequest(BaseModel):
@@ -248,7 +295,9 @@ class AnalysisOlsRequest(BaseModel):
 STAGE_DEPENDENCIES: Dict[StageId, List[StageId]] = {
     "import": [],
     "t1_fit": ["import"],
-    "input_functions": ["t1_fit"],
+    # AIF/VIF extraction should be runnable without requiring T1/M0 fitting.
+    # (T1 fitting is needed later for tissue CTC/modelling, but not for selecting ROIs.)
+    "input_functions": ["import"],
     "time_shift": ["input_functions"],
     "segmentation": ["time_shift"],
     "tissue_ctc": ["segmentation"],
@@ -309,7 +358,7 @@ class AppSettings(BaseModel):
     fastsurferDir: str = ""  # absolute path to FastSurfer repo root
     freesurferHome: str = ""  # absolute path to FREESURFER_HOME
     # Optional p-brain configuration overrides (forwarded as env vars).
-    pbrainT1Fit: str = ""  # auto|ir|vfa|none
+    pbrainT1Fit: str = "ir"  # auto|ir|vfa|none
     pbrainVfaGlob: str = ""  # comma-separated glob(s), e.g. "*VFA*.nii*,*flip*.nii*"
 
 
@@ -345,6 +394,16 @@ class InstallPBrainRequest(BaseModel):
 class InstallPBrainRequirementsRequest(BaseModel):
     # Optional. If omitted, uses the repo inferred from settings/pbrainMainPy.
     pbrainDir: Optional[str] = None
+
+
+class SaveRoiVoxelsRequest(BaseModel):
+    roiType: str
+    roiSubType: str
+    sliceIndex: int
+    frameIndex: int = 0
+    # Raw nibabel slice coordinates as [row, col] pairs.
+    # These will be converted to p-brain's rotated in-plane ROI coordinate frame on disk.
+    voxels: List[List[int]] = Field(default_factory=list)
 
 
 class DB:
@@ -485,6 +544,40 @@ def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
 def _python_env_for_pbrain() -> Dict[str, str]:
     env = {**os.environ}
     env.setdefault("PBRAIN_TURBO", "1")
+    # Defaults for p-brain execution when project config doesn't override.
+    # The platform focuses on the TurboFLASH pipeline and IR-based T1 fitting.
+    env.setdefault("P_BRAIN_CTC_MODEL", "advanced")
+    # Enforce the platform-standard TurboFLASH signal->concentration conversion.
+    # This is MATLAB `menu_5` case12 method1 (p-brain: turboflash_advanced).
+    env["P_BRAIN_TURBOFLASH_CTC_METHOD"] = "turboflash_advanced"
+    # Do not let a user's shell env (or a prior run) silently change the fit mode.
+    # Explicit overrides should come from app settings or project config only.
+    env.pop("P_BRAIN_T1_FIT", None)
+    # Default to deterministic auto-selection (prefers IR when a complete TI series exists,
+    # otherwise VFA when available).
+    env["P_BRAIN_T1_FIT"] = "auto"
+
+    # Keep defaults aligned with the validated p-brain defaults JSON.
+    # (This ensures a fresh project with no saved overrides still matches expected behavior.)
+    env.pop("P_BRAIN_TURBO_NPH", None)
+    env.pop("P_BRAIN_TURBOFLASH_NPH", None)
+    env.setdefault("P_BRAIN_NUMBER_OF_PEAKS", "2")
+    env.setdefault("P_BRAIN_CTC_PEAK_RESCALE_THRESHOLD", "4.0")
+    env.setdefault("P_BRAIN_VASCULAR_ROI_CURVE_METHOD", "max")
+    env.setdefault("P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX", "1")
+    env.setdefault("P_BRAIN_MODELLING_INPUT_FUNCTION", "tscc")
+    env.setdefault("P_BRAIN_AIF_USE_SSS", "1")
+
+    # Do not let a user's shell env (or a prior run) silently change TSCC/CTC selection
+    # and export behavior. Explicit overrides should come from project config only.
+    env.pop("P_BRAIN_TSCC_SKIP_FORKED_PEAKS", None)
+    env.pop("P_BRAIN_CTC_MAPS", None)
+    env.pop("P_BRAIN_CTC_4D", None)
+    env.pop("P_BRAIN_CTC_MAP_SLICE", None)
+    env["P_BRAIN_TSCC_SKIP_FORKED_PEAKS"] = "1"
+    env["P_BRAIN_CTC_MAPS"] = "1"
+    env["P_BRAIN_CTC_4D"] = "1"
+    env["P_BRAIN_CTC_MAP_SLICE"] = "5"
     # Always run p-brain in non-interactive mode when orchestrated by the app.
     # Some stages prompt via input(), which otherwise EOFs in headless subprocesses.
     env.setdefault("PBRAIN_NONINTERACTIVE", "1")
@@ -504,7 +597,7 @@ def _python_env_for_pbrain() -> Dict[str, str]:
         s = _get_settings()
         t1_fit = str(s.get("pbrainT1Fit") or "").strip().lower()
         if t1_fit in {"auto", "ir", "vfa", "none"}:
-            env.setdefault("P_BRAIN_T1_FIT", t1_fit)
+            env["P_BRAIN_T1_FIT"] = t1_fit
         vfa_glob = str(s.get("pbrainVfaGlob") or "").strip()
         if vfa_glob:
             env.setdefault("P_BRAIN_VFA_GLOB", vfa_glob)
@@ -513,19 +606,430 @@ def _python_env_for_pbrain() -> Dict[str, str]:
     return env
 
 
+_AI_MODEL_ENV_TO_FILENAME: Dict[str, str] = {
+    "SLICE_CLASSIFIER_RICA_MODEL": "slice_classifier_model_rica.keras",
+    "RICA_ROI_MODEL": "rica_roi_model.keras",
+    "SLICE_CLASSIFIER_SS_MODEL": "ss_slice_classifier.keras",
+    "SS_ROI_MODEL": "ss_roi_model.keras",
+}
+
+
+def _candidate_ai_model_dirs(pbrain_root: Optional[Path]) -> List[Path]:
+    """Return ordered directories that may contain AI model binaries."""
+
+    out: List[Path] = []
+
+    def add(p: Optional[Path]) -> None:
+        if not p:
+            return
+        try:
+            pp = p.expanduser().resolve()
+        except Exception:
+            return
+        if pp not in out:
+            out.append(pp)
+
+    # User override (documented in backend/AI/README.md)
+    override = (os.environ.get("PBRAIN_AI_DIR") or "").strip()
+    if override:
+        try:
+            add(Path(override))
+        except Exception:
+            pass
+
+    # Preferred default: models inside the configured p-brain repo.
+    if pbrain_root:
+        add(pbrain_root / "AI")
+
+    # Packaged app convenience: also look next to the frozen backend executable.
+    # (Users often drop the Zenodo model files there.)
+    try:
+        exe_dir = Path(sys.executable).expanduser().resolve().parent
+        add(exe_dir / "AI")
+        # Also consider a sibling of the executable dir.
+        add(exe_dir.parent / "AI")
+    except Exception:
+        pass
+
+    # App-managed persistent location.
+    try:
+        add(_user_data_dir() / "AI")
+    except Exception:
+        pass
+
+    # Dev/local backend folder (useful when running backend from source).
+    try:
+        add(Path(__file__).with_name("AI"))
+    except Exception:
+        pass
+
+    return out
+
+
+def _apply_ai_model_overrides(
+    env: Dict[str, str],
+    *,
+    pbrain_root: Optional[Path],
+    write_line_sync=None,
+) -> Dict[str, str]:
+    """Set SLICE_CLASSIFIER_*/ROI_* env vars to absolute paths when available."""
+
+    dirs = _candidate_ai_model_dirs(pbrain_root)
+    resolved: Dict[str, str] = {}
+
+    for env_key, fname in _AI_MODEL_ENV_TO_FILENAME.items():
+        # Respect explicit per-model overrides.
+        if str(env.get(env_key) or "").strip():
+            continue
+        found: Optional[Path] = None
+        for d in dirs:
+            try:
+                p = d / fname
+                if p.exists() and p.is_file():
+                    found = p
+                    break
+            except Exception:
+                continue
+        if found is not None:
+            resolved[env_key] = str(found)
+
+    if resolved:
+        env.update(resolved)
+        try:
+            if write_line_sync is not None:
+                used = ", ".join(f"{k}={v}" for k, v in sorted(resolved.items()))
+                write_line_sync(f"[{_now_iso()}] AI model overrides: {used}\n")
+        except Exception:
+            pass
+    else:
+        try:
+            if write_line_sync is not None:
+                write_line_sync(f"[{_now_iso()}] AI model overrides: none\n")
+        except Exception:
+            pass
+
+    return env
+
+
+def _preflight_ai_models(
+    env: Dict[str, str],
+    *,
+    pbrain_root: Optional[Path],
+    write_line_sync=None,
+) -> None:
+    """Fail loudly when AI ROI is selected but required model files are missing."""
+
+    roi_method = (env.get("P_BRAIN_ROI_METHOD") or env.get("ROI_METHOD") or "ai").strip().lower()
+    if roi_method in {"geometry", "deterministic"}:
+        return
+    if roi_method == "file":
+        return
+
+    missing: List[str] = []
+    checked: Dict[str, str] = {}
+    for env_key, fname in _AI_MODEL_ENV_TO_FILENAME.items():
+        raw = (env.get(env_key) or "").strip()
+        candidate: Optional[Path] = None
+        if raw:
+            candidate = Path(raw).expanduser()
+        elif pbrain_root:
+            candidate = (pbrain_root / "AI" / fname)
+        else:
+            candidate = None
+        if candidate is None:
+            missing.append(fname)
+            continue
+        try:
+            cand = candidate.resolve()
+        except Exception:
+            cand = candidate
+        checked[env_key] = str(cand)
+        try:
+            if not cand.exists() or not cand.is_file():
+                missing.append(fname)
+        except Exception:
+            missing.append(fname)
+
+    try:
+        if write_line_sync is not None:
+            det = ", ".join(f"{k}={v}" for k, v in sorted(checked.items()))
+            write_line_sync(f"[{_now_iso()}] AI model check: {det}\n")
+    except Exception:
+        pass
+
+    if missing:
+        where: List[str] = []
+        try:
+            if pbrain_root:
+                where.append(str(pbrain_root / "AI"))
+        except Exception:
+            pass
+        try:
+            where.append(str(_user_data_dir() / "AI"))
+        except Exception:
+            pass
+        where.append("(or set PBRAIN_AI_DIR)")
+
+        raise RuntimeError(
+            "Missing AI model file(s): "
+            + ", ".join(sorted(set(missing)))
+            + ". Download the models from Zenodo and place them in one of: "
+            + "; ".join(where)
+        )
+
+
 def _apply_project_pbrain_env_overrides(env: Dict[str, str], project: Project) -> Dict[str, str]:
     cfg = project.config if isinstance(getattr(project, "config", None), dict) else {}
     ctc = cfg.get("ctc") if isinstance(cfg.get("ctc"), dict) else {}
 
-    model = str(ctc.get("model") or "").strip().lower()
-    if model in {"saturation", "turboflash"}:
-        env["P_BRAIN_CTC_MODEL"] = model
+    pbrain = cfg.get("pbrain") if isinstance(cfg.get("pbrain"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    input_fn = cfg.get("inputFunction") if isinstance(cfg.get("inputFunction"), dict) else {}
+    tissue_cfg = cfg.get("tissue") if isinstance(cfg.get("tissue"), dict) else {}
 
-    nph_raw = ctc.get("turboNph")
+    # p-brain execution / metadata strictness
     try:
-        nph = int(nph_raw)
-        if nph >= 1:
-            env["P_BRAIN_TURBO_NPH"] = str(nph)
+        strict = pbrain.get("strictMetadata")
+        if strict is not None:
+            env["P_BRAIN_STRICT_METADATA"] = "1" if bool(strict) else "0"
+    except Exception:
+        pass
+
+    try:
+        mp = pbrain.get("multiprocessing")
+        if mp is not None:
+            env["P_BRAIN_MULTIPROCESSING"] = "1" if bool(mp) else "0"
+    except Exception:
+        pass
+
+    try:
+        cores_raw = pbrain.get("cores")
+        cores = str(cores_raw).strip() if cores_raw is not None else ""
+        if cores:
+            env["P_BRAIN_CORES"] = cores
+    except Exception:
+        pass
+
+    try:
+        fa = pbrain.get("flipAngle")
+        if fa is not None:
+            # Accept either numeric or 'auto'.
+            if isinstance(fa, (int, float)):
+                if math.isfinite(float(fa)) and float(fa) > 0:
+                    env["P_BRAIN_FLIP_ANGLE"] = str(float(fa))
+            else:
+                fa_s = str(fa).strip().lower()
+                if fa_s:
+                    env["P_BRAIN_FLIP_ANGLE"] = fa_s
+    except Exception:
+        pass
+
+    # T1/M0 fit method selection (IR vs VFA vs auto/none)
+    try:
+        if isinstance(pbrain, dict) and "t1Fit" in pbrain:
+            raw = pbrain.get("t1Fit")
+            if raw is None or str(raw).strip() == "":
+                env.pop("P_BRAIN_T1_FIT", None)
+            else:
+                t1_fit = str(raw).strip().lower()
+                if t1_fit in {"auto", "ir", "vfa", "none"}:
+                    env["P_BRAIN_T1_FIT"] = t1_fit
+    except Exception:
+        pass
+
+    # Optional series discovery overrides.
+    try:
+        if isinstance(pbrain, dict):
+            vfa_glob = str(pbrain.get("vfaGlob") or "").strip()
+            if vfa_glob:
+                env["P_BRAIN_VFA_GLOB"] = vfa_glob
+
+            ir_prefixes = str(pbrain.get("irPrefixes") or "").strip()
+            if ir_prefixes:
+                env["P_BRAIN_IR_PREFIXES"] = ir_prefixes
+
+            ir_ti = str(pbrain.get("irTi") or "").strip()
+            if ir_ti:
+                env["P_BRAIN_IR_TI"] = ir_ti
+    except Exception:
+        pass
+
+    model = str(ctc.get("model") or "").strip().lower()
+    if model in {"saturation", "turboflash", "advanced"}:
+        env["P_BRAIN_CTC_MODEL"] = model
+        if model in {"turboflash", "advanced"}:
+            # Enforce platform standard: MATLAB menu_5 case12 method1.
+            env["P_BRAIN_TURBOFLASH_CTC_METHOD"] = "turboflash_advanced"
+
+    # Input-function AI behavior (AIF/VIF detection thresholds and fallback policy)
+    try:
+        ai_cfg = input_fn.get("ai") if isinstance(input_fn.get("ai"), dict) else {}
+        start = ai_cfg.get("sliceConfStart")
+        min_v = ai_cfg.get("sliceConfMin")
+        step = ai_cfg.get("sliceConfStep")
+
+        def _clamp01(v: Any) -> Optional[float]:
+            try:
+                f = float(v)
+                if not math.isfinite(f):
+                    return None
+                return max(0.01, min(1.0, f))
+            except Exception:
+                return None
+
+        s0 = _clamp01(start)
+        smin = _clamp01(min_v)
+        sstep = _clamp01(step)
+        if s0 is not None:
+            env["P_BRAIN_AI_SLICE_CONF_START"] = str(s0)
+        if smin is not None:
+            env["P_BRAIN_AI_SLICE_CONF_MIN"] = str(smin)
+        if sstep is not None:
+            # Step should be reasonable; clamp more tightly.
+            env["P_BRAIN_AI_SLICE_CONF_STEP"] = str(max(0.01, min(0.5, sstep)))
+
+        fallback = str(ai_cfg.get("missingFallback") or "").strip().lower()
+        if fallback in {"deterministic", "roi"}:
+            env["P_BRAIN_AI_INPUT_MISSING_FALLBACK"] = fallback
+    except Exception:
+        pass
+
+    # Input-function selection
+    # - aif: pure arterial curve
+    # - vif: pure venous curve (SSS)
+    # - adjusted_vif: TSCC (SSS-derived time-shifted/rescaled curve)
+    try:
+        src = str(input_fn.get("source") or "").strip().lower()
+        if src == "aif":
+            env["P_BRAIN_MODELLING_INPUT_FUNCTION"] = "aif"
+            env["P_BRAIN_AIF_USE_SSS"] = "0"
+        elif src == "vif":
+            env["P_BRAIN_MODELLING_INPUT_FUNCTION"] = "vif"
+            env["P_BRAIN_AIF_USE_SSS"] = "0"
+        elif src in {"adjusted_vif", "tscc", "sss"}:
+            # Legacy names treated as TSCC.
+            env["P_BRAIN_MODELLING_INPUT_FUNCTION"] = "tscc"
+            env["P_BRAIN_AIF_USE_SSS"] = "1"
+    except Exception:
+        pass
+
+    # Input-function artery preference (RICA vs LICA).
+    # p-brain uses this to select which carotid ROI to extract and (for LICA)
+    # whether to mirror slices for inference.
+    try:
+        artery = str(
+            input_fn.get("artery")
+            or input_fn.get("aifArtery")
+            or input_fn.get("preferredArtery")
+            or ""
+        ).strip().lower()
+        if artery in {"rica", "lica"}:
+            env["P_BRAIN_AIF_ARTERY"] = artery.upper()
+            # Keep noninteractive prompts aligned with the selected artery.
+            env["PBRAIN_AUTO_ARTERY"] = artery
+    except Exception:
+        pass
+
+    # Vascular ROI curve extraction settings
+    try:
+        method = str(input_fn.get("vascularRoiCurveMethod") or "").strip().lower()
+        if method in {"max", "mean", "median"}:
+            env["P_BRAIN_VASCULAR_ROI_CURVE_METHOD"] = method
+
+        if isinstance(input_fn, dict) and "vascularRoiAdaptiveMax" in input_fn:
+            env["P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX"] = "1" if bool(input_fn.get("vascularRoiAdaptiveMax")) else "0"
+    except Exception:
+        pass
+
+    # Tissue/atlas ROI aggregation settings
+    try:
+        agg = str(tissue_cfg.get("roiAggregation") or "").strip().lower()
+        if agg in {"mean", "median"}:
+            env["P_BRAIN_TISSUE_ROI_AGGREGATION"] = agg
+    except Exception:
+        pass
+
+    # Kinetic model selector (validated set only)
+    try:
+        pk_model = model_cfg.get("pkModel")
+        if pk_model is None:
+            # Default to running both validated models.
+            env["P_BRAIN_MODEL"] = "both"
+        else:
+            pk = str(pk_model).strip().lower()
+            # Keep accepting older config values, but always emit canonical validated keys.
+            if pk in {
+                "both",
+                "all",
+                "patlak_tikhonov",
+                "patlak_tikhonov_fast",
+                "patlak-then-tikhonov",
+                "patlak-then-tikhonov-fast",
+                "patlak_then_tikhonov",
+                "patlak_then_tikhonov_fast",
+            }:
+                env["P_BRAIN_MODEL"] = "both"
+            elif pk == "patlak":
+                env["P_BRAIN_MODEL"] = "patlak"
+            elif pk in {
+                "tikhonov",
+                "tikhonov_only",
+                "tikhonov-only",
+                "tikhonov_fast",
+                "tikhonov-only-fast",
+                "tikhonov_only_fast",
+                "tik_fast",
+                "tik-fast",
+                "tikfast",
+                "tikh-fast",
+                "two_compartment",
+                "2comp",
+                "two-comp",
+                "two-compartment",
+            }:
+                env["P_BRAIN_MODEL"] = "tikhonov"
+            else:
+                env["P_BRAIN_MODEL"] = "both"
+    except Exception:
+        pass
+
+    # Deconvolution / residue settings (Tikhonov-based metrics)
+    try:
+        penalty = model_cfg.get("tikhonovPenalty")
+        if penalty is not None:
+            penalty_s = str(penalty).strip().lower()
+            if penalty_s in {"identity", "derivative"}:
+                env["P_BRAIN_TIKHONOV_PENALTY"] = penalty_s
+    except Exception:
+        pass
+
+    try:
+        nonneg = model_cfg.get("residueEnforceNonneg")
+        if nonneg is not None:
+            env["P_BRAIN_RESIDUE_ENFORCE_NONNEG"] = "1" if bool(nonneg) else "0"
+    except Exception:
+        pass
+
+    try:
+        mono = model_cfg.get("residueEnforceMonotone")
+        if mono is not None:
+            env["P_BRAIN_RESIDUE_ENFORCE_MONOTONE"] = "1" if bool(mono) else "0"
+    except Exception:
+        pass
+
+    # TurboFLASH nph override.
+    # - If turboNph is explicitly null/"auto" in project config, clear any override env.
+    # - If turboNph is a positive integer, set override env.
+    try:
+        if isinstance(ctc, dict) and "turboNph" in ctc:
+            nph_raw = ctc.get("turboNph")
+            if nph_raw is None or str(nph_raw).strip().lower() in {"", "auto"}:
+                env.pop("P_BRAIN_TURBO_NPH", None)
+                env.pop("P_BRAIN_TURBOFLASH_NPH", None)
+            else:
+                nph = int(float(nph_raw))
+                if nph >= 1:
+                    env["P_BRAIN_TURBO_NPH"] = str(nph)
     except Exception:
         pass
 
@@ -537,6 +1041,60 @@ def _apply_project_pbrain_env_overrides(env: Dict[str, str], project: Project) -
     except Exception:
         pass
 
+    peak_thresh_raw = ctc.get("peakRescaleThreshold")
+    try:
+        peak_thresh = float(peak_thresh_raw)
+        if math.isfinite(peak_thresh) and peak_thresh >= 0:
+            env["P_BRAIN_CTC_PEAK_RESCALE_THRESHOLD"] = str(peak_thresh)
+    except Exception:
+        pass
+
+    # TSCC Max selection forked-peak skipping
+    try:
+        if isinstance(ctc, dict) and "skipForkedMaxCtcPeaks" in ctc:
+            env["P_BRAIN_TSCC_SKIP_FORKED_PEAKS"] = "1" if bool(ctc.get("skipForkedMaxCtcPeaks")) else "0"
+    except Exception:
+        pass
+
+    # CTC exports (maps + full 4D)
+    try:
+        if isinstance(ctc, dict) and "writeCtcMaps" in ctc:
+            env["P_BRAIN_CTC_MAPS"] = "1" if bool(ctc.get("writeCtcMaps")) else "0"
+    except Exception:
+        pass
+
+    try:
+        if isinstance(ctc, dict) and "writeCtc4d" in ctc:
+            env["P_BRAIN_CTC_4D"] = "1" if bool(ctc.get("writeCtc4d")) else "0"
+    except Exception:
+        pass
+
+    try:
+        if isinstance(ctc, dict) and "ctcMapSlice" in ctc:
+            raw_slice = ctc.get("ctcMapSlice")
+            slice_i = int(float(raw_slice))
+            if slice_i >= 1:
+                env["P_BRAIN_CTC_MAP_SLICE"] = str(slice_i)
+    except Exception:
+        pass
+
+    return env
+
+
+def _apply_pbrain_env_overrides(env: Dict[str, str], overrides: Optional[Dict[str, str]]) -> Dict[str, str]:
+    if not overrides:
+        return env
+    allowed = {"P_BRAIN_ROI_METHOD", "ROI_METHOD"}
+    bad = [k for k in overrides.keys() if k not in allowed]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unsupported env override(s): {', '.join(sorted(bad))}")
+
+    for k, v in overrides.items():
+        vv = "" if v is None else str(v)
+        if vv.strip() == "":
+            env.pop(k, None)
+        else:
+            env[k] = vv
     return env
 
 
@@ -976,7 +1534,6 @@ def _analysis_metrics_table(subject: Subject, view: str = "atlas") -> Dict[str, 
         candidates = [
             analysis_dir / "Ki_values_atlas_patlak.json",
             analysis_dir / "Ki_values_atlas_tikhonov.json",
-            analysis_dir / "Ki_values_atlas_two_compartment.json",
         ]
         p = next((c for c in candidates if c.exists()), None)
         if not p:
@@ -1024,13 +1581,12 @@ def _analysis_metrics_table(subject: Subject, view: str = "atlas") -> Dict[str, 
         rows.sort(key=lambda r: r.get("region") or "")
         return {"rows": rows}
 
-    # Newer pipelines write model-specific files (tikhonov/patlak/two_compartment).
+    # Newer pipelines write model-specific files (tikhonov/patlak).
     # Prefer tikhonov since it contains the CBF/MTT/CTH fields used by the UI.
     candidates = [
         analysis_dir / "AI_values_median_total_tikhonov.json",
         analysis_dir / "AI_values_median_total.json",
         analysis_dir / "AI_values_median_total_patlak.json",
-        analysis_dir / "AI_values_median_total_two_compartment.json",
     ]
     p = next((c for c in candidates if c.exists()), None)
     if not p:
@@ -1066,7 +1622,6 @@ def _analysis_metrics_table_from_dir(subject_dir: Path, view: str = "atlas") -> 
         candidates = [
             analysis_dir / "Ki_values_atlas_patlak.json",
             analysis_dir / "Ki_values_atlas_tikhonov.json",
-            analysis_dir / "Ki_values_atlas_two_compartment.json",
         ]
         p = next((c for c in candidates if c.exists()), None)
         if not p:
@@ -1116,7 +1671,6 @@ def _analysis_metrics_table_from_dir(subject_dir: Path, view: str = "atlas") -> 
         analysis_dir / "AI_values_median_total_tikhonov.json",
         analysis_dir / "AI_values_median_total.json",
         analysis_dir / "AI_values_median_total_patlak.json",
-        analysis_dir / "AI_values_median_total_two_compartment.json",
     ]
     p = next((c for c in candidates if c.exists()), None)
     if not p:
@@ -1397,9 +1951,22 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
     time_path = analysis_dir / "Fitting" / "time_points_s.npy"
     if not time_path.exists():
         return []
-    time_points = np.load(str(time_path)).astype(float).tolist()
+    tp = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
+    time_points = tp.astype(float).tolist()
 
     curves: List[Dict[str, Any]] = []
+
+    def _aligned_time_and_values(values: Any) -> Optional[tuple[List[float], List[float]]]:
+        try:
+            vv = np.asarray(values, dtype=float).reshape(-1)
+        except Exception:
+            return None
+        if vv.size < 3 or tp.size < 3:
+            return None
+        n = int(min(int(tp.size), int(vv.size)))
+        if n < 3:
+            return None
+        return tp[:n].astype(float).tolist(), vv[:n].astype(float).tolist()
 
     def _read_max_artery_type() -> Optional[str]:
         info = analysis_dir / "max_info.json"
@@ -1440,7 +2007,7 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
     tscc = _load_tscc_max_curve()
     if tscc is not None:
         label, arr = tscc
-        n = min(len(time_points), int(arr.size))
+        n = min(int(tp.size), int(arr.size))
         curves.append(
             {
                 "id": "aif_tscc_max",
@@ -1457,8 +2024,11 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
             for subtype_dir in sorted([d for d in artery_dir.iterdir() if d.is_dir()]):
                 pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
                 if pth and pth.exists():
-                    vals = np.load(str(pth)).astype(float).tolist()
-                    curves.append({"id": f"aif_{subtype_dir.name}", "name": f"AIF ({subtype_dir.name})", "timePoints": time_points, "values": vals, "unit": "mM"})
+                    aligned = _aligned_time_and_values(np.load(str(pth)))
+                    if not aligned:
+                        continue
+                    tt, vv = aligned
+                    curves.append({"id": f"aif_{subtype_dir.name}", "name": f"AIF ({subtype_dir.name})", "timePoints": tt, "values": vv, "unit": "mM"})
                     break
 
     # VIF (vein)
@@ -1467,8 +2037,11 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
         for subtype_dir in sorted([d for d in vein_dir.iterdir() if d.is_dir()]):
             pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
-                vals = np.load(str(pth)).astype(float).tolist()
-                curves.append({"id": f"vif_{subtype_dir.name}", "name": f"VIF ({subtype_dir.name})", "timePoints": time_points, "values": vals, "unit": "mM"})
+                aligned = _aligned_time_and_values(np.load(str(pth)))
+                if not aligned:
+                    continue
+                tt, vv = aligned
+                curves.append({"id": f"vif_{subtype_dir.name}", "name": f"VIF ({subtype_dir.name})", "timePoints": tt, "values": vv, "unit": "mM"})
                 break
 
     # Tissue curves: include all available tissue subtypes.
@@ -1477,12 +2050,15 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
         for subtype_dir in sorted([d for d in tissue_dir.iterdir() if d.is_dir()]):
             pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
-                vals = np.load(str(pth)).astype(float).tolist()
+                aligned = _aligned_time_and_values(np.load(str(pth)))
+                if not aligned:
+                    continue
+                tt, vv = aligned
                 curves.append({
                     "id": f"tissue_{subtype_dir.name}",
                     "name": f"Tissue ({subtype_dir.name})",
-                    "timePoints": time_points,
-                    "values": vals,
+                    "timePoints": tt,
+                    "values": vv,
                     "unit": "mM",
                 })
 
@@ -1805,6 +2381,136 @@ def _analysis_roi_mask_volumes(project: Project, subject: Subject) -> List[Dict[
 
     return results
 
+@app.post("/subjects/{subject_id}/roi-voxels")
+def save_subject_roi_voxels(subject_id: str, req: SaveRoiVoxelsRequest) -> Dict[str, Any]:
+    """Persist a user-drawn ROI voxel list for a single slice.
+
+    Writes p-brain compatible artifacts:
+      Analysis/ROI Data/<roiType>/<roiSubType>/ROI_voxels_slice_<N>.npy
+      Analysis/Frame Data/<roiType>/<roiSubType>/frame_index_slice_<N>.npy
+
+    Input voxels are provided in the raw nibabel slice frame as [row, col].
+    p-brain stores ROI coordinates in a rotated in-plane frame (np.rot90(k=-1)).
+    We convert using the DCE volume shape so downstream p-brain stages can consume them.
+    """
+
+    _require_numpy()
+    _require_nibabel()
+    assert np is not None
+    assert nib is not None
+
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    roi_type = str(req.roiType or "").strip()
+    roi_subtype = str(req.roiSubType or "").strip()
+    if not roi_type or not roi_subtype:
+        raise HTTPException(status_code=400, detail="roiType and roiSubType are required")
+
+    if (
+        ".." in roi_type
+        or ".." in roi_subtype
+        or "/" in roi_type
+        or "/" in roi_subtype
+        or "\\" in roi_type
+        or "\\" in roi_subtype
+    ):
+        raise HTTPException(status_code=400, detail="Invalid roiType/roiSubType")
+
+    slice_index = int(req.sliceIndex)
+    if slice_index < 0:
+        raise HTTPException(status_code=400, detail="sliceIndex must be >= 0")
+
+    frame_index = int(req.frameIndex)
+    if frame_index < 0:
+        frame_index = 0
+
+    analysis_dir = _analysis_dir_for_subject(subject)
+    roi_root = analysis_dir / "ROI Data" / roi_type / roi_subtype
+    frame_root = analysis_dir / "Frame Data" / roi_type / roi_subtype
+    roi_root.mkdir(parents=True, exist_ok=True)
+    frame_root.mkdir(parents=True, exist_ok=True)
+
+    # Use DCE volume to validate slice bounds and perform raw->rotated coordinate transform.
+    try:
+        ref_path = _resolve_default_volume_path(project, subject, "dce")
+        ref_img = _load_nifti(str(ref_path))
+        sh = tuple(int(x) for x in getattr(ref_img, "shape", ()) or ())
+        if len(sh) < 3:
+            raise RuntimeError("DCE volume has unexpected shape")
+        x_dim, y_dim, z_dim = int(sh[0]), int(sh[1]), int(sh[2])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve DCE volume shape: {e}")
+
+    if slice_index >= z_dim:
+        raise HTTPException(status_code=400, detail=f"sliceIndex out of bounds (0..{max(0, z_dim-1)})")
+
+    # Convert raw [row, col] -> p-brain saved [x, y] in rotated in-plane frame.
+    # Mapping used elsewhere:
+    #   raw row = X-1-y, raw col = x
+    # Inverse:
+    #   x = raw col, y = X-1-raw row
+    raw_pairs: List[Tuple[int, int]] = []
+    for item in (req.voxels or []):
+        try:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            r = int(item[0])
+            c = int(item[1])
+        except Exception:
+            continue
+        if r < 0 or c < 0 or r >= x_dim or c >= y_dim:
+            continue
+        raw_pairs.append((r, c))
+
+    out_vox_path = roi_root / f"ROI_voxels_slice_{slice_index + 1}.npy"
+    out_frame_path = frame_root / f"frame_index_slice_{slice_index + 1}.npy"
+
+    if len(raw_pairs) == 0:
+        # Treat empty payload as delete for this slice.
+        try:
+            if out_vox_path.exists():
+                out_vox_path.unlink()
+        except Exception:
+            pass
+        try:
+            if out_frame_path.exists():
+                out_frame_path.unlink()
+        except Exception:
+            pass
+    else:
+        arr = np.asarray(raw_pairs, dtype=np.int64)
+        rows = arr[:, 0]
+        cols = arr[:, 1]
+        xs = cols
+        ys = (x_dim - 1 - rows)
+        saved = np.stack([xs, ys], axis=1).astype(np.int16, copy=False)
+        np.save(str(out_vox_path), saved)
+        np.save(str(out_frame_path), np.asarray(int(frame_index), dtype=np.int16))
+
+    # Best-effort: remove stale cached ROI mask so next GET regenerates.
+    try:
+        mask_dir = analysis_dir / "ROI NIfTI"
+        if mask_dir.is_dir():
+            for p in mask_dir.glob(f"{roi_type}__{roi_subtype}__mask.nii*"):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "roiType": roi_type,
+        "roiSubType": roi_subtype,
+        "sliceIndex": slice_index,
+        "frameIndex": int(frame_index),
+        "savedVoxelCount": int(len(raw_pairs)),
+    }
+
 
 def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
     _require_numpy()
@@ -1988,7 +2694,7 @@ def _load_time_points(subject: Subject) -> Any:
 
 def _analysis_map_volumes(subject: Subject) -> List[Dict[str, Any]]:
     # Use the same robust on-disk scan as local-dir mode so we pick up newer
-    # pipeline outputs (e.g. *_patlak / *_tikhonov / *_two_compartment).
+    # pipeline outputs (e.g. *_patlak / *_tikhonov).
     return _analysis_map_volumes_from_dir(Path(subject.sourcePath))
 
 
@@ -2052,6 +2758,18 @@ def _analysis_map_volumes_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
             continue
 
         base = base_no_ext(p.name)
+        base_l = base.lower()
+
+        # Only expose validated model outputs.
+        if (
+            "two_compartment" in base_l
+            or "patlak_tikhonov" in base_l
+            or "patlak_then_tikhonov" in base_l
+            or "tikhonov_fast" in base_l
+            or "tik_fast" in base_l
+            or "tikfast" in base_l
+        ):
+            continue
         key = str(p)
         if key in seen:
             continue
@@ -2419,7 +3137,7 @@ def _pbrain_stage_cli_args(*, data_root: Path, subject: Subject, stage: StageId)
     if not main_py_path.exists():
         raise RuntimeError(f"p-Brain main.py not found: {main_py_path}")
 
-    runner_path = _ensure_stage_runner_script(data_root)
+    runner_path = _ensure_stage_runner_script(data_root, force=True)
     args: List[str] = [
         _pbrain_python_executable(),
         "-u",
@@ -2444,7 +3162,7 @@ def _pbrain_stage_cli_args_with_python(*, python_exe: str, data_root: Path, subj
     if not main_py_path.exists():
         raise RuntimeError(f"p-Brain main.py not found: {main_py_path}")
 
-    runner_path = _ensure_stage_runner_script(data_root)
+    runner_path = _ensure_stage_runner_script(data_root, force=True)
     args: List[str] = [
         python_exe,
         "-u",
@@ -2461,7 +3179,7 @@ def _pbrain_stage_cli_args_with_python(*, python_exe: str, data_root: Path, subj
     return args
 
 
-async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: Job) -> None:
+async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: Job, env_overrides: Optional[Dict[str, str]] = None) -> None:
     async with _RUN_SEMAPHORE:
         data_root = Path(project.storagePath).expanduser().resolve()
         log_fh = None
@@ -2472,8 +3190,14 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                 raise RuntimeError(f"Project storagePath/data root does not exist: {data_root}")
 
             # Log file for this stage run.
-            logs_dir = data_root / ".pbrain-web" / "logs"
-            logs_dir.mkdir(parents=True, exist_ok=True)
+            # Prefer storing logs under the subject folder so artifacts are self-contained.
+            logs_dir: Path
+            try:
+                logs_dir = Path(subject.sourcePath).expanduser().resolve() / ".pbrain-web" / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                logs_dir = data_root / ".pbrain-web" / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = logs_dir / f"stage_{job.stageId}_{subject.id}_{int(datetime.utcnow().timestamp()*1000)}.log"
             job.logPath = str(log_path)
             if not job.startTime:
@@ -2505,13 +3229,21 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                 stage=job.stageId,
             )
 
+            # Respect project-level T1/M0 fit mode selection even if global app
+            # settings/environment differ.
+            try:
+                cfg = project.config if isinstance(project.config, dict) else {}
+                pb = cfg.get("pbrain") if isinstance(cfg.get("pbrain"), dict) else {}
+                t1_fit = str(pb.get("t1Fit") or "").strip().lower()
+                if t1_fit in {"auto", "ir", "vfa", "none"}:
+                    args += ["--t1-fit", t1_fit]
+            except Exception:
+                pass
+
             # Keep stage-runner behavior consistent with the full p-brain CLI.
             # In particular, voxelwise maps can be extremely expensive; only enable when configured.
             if job.stageId == "modelling":
-                cfg = project.config if isinstance(project.config, dict) else {}
-                voxelwise_cfg = cfg.get("voxelwise") if isinstance(cfg.get("voxelwise"), dict) else {}
-                compute_ki = bool(voxelwise_cfg.get("computeKi"))
-                compute_cbf = bool(voxelwise_cfg.get("computeCBF"))
+                compute_ki, compute_cbf = _stage_runner_voxelwise_flags(project)
                 if compute_ki:
                     args.append("--voxelwise")
                 if compute_cbf:
@@ -2523,12 +3255,66 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
             if pbrain_cwd:
                 write_line_sync(f"[{_now_iso()}] CWD: {pbrain_cwd}\n")
 
+            env = _apply_project_pbrain_env_overrides(_python_env_for_pbrain(), project)
+            env = _apply_pbrain_env_overrides(env, env_overrides)
+
+            # Ensure AI model paths are resolved consistently for p-brain runs.
+            # This matters in the packaged app where the p-brain repo clone may not
+            # include the large Zenodo-provided model binaries.
+            try:
+                pbrain_root = Path(pbrain_cwd).expanduser().resolve() if pbrain_cwd else None
+            except Exception:
+                pbrain_root = None
+            env = _apply_ai_model_overrides(env, pbrain_root=pbrain_root, write_line_sync=write_line_sync)
+            if job.stageId == "input_functions":
+                _preflight_ai_models(env, pbrain_root=pbrain_root, write_line_sync=write_line_sync)
+                await _preflight_pbrain_ai_deps(
+                    python_exe,
+                    env=env,
+                    cwd=pbrain_cwd,
+                    write_line_sync=write_line_sync,
+                )
+            if job.stageId in {"diffusion", "tractography", "connectome"}:
+                await _preflight_pbrain_diffusion_deps(
+                    python_exe,
+                    env=env,
+                    cwd=pbrain_cwd,
+                    write_line_sync=write_line_sync,
+                )
+            try:
+                keys = [
+                    "P_BRAIN_CTC_MODEL",
+                    "P_BRAIN_TURBOFLASH_CTC_METHOD",
+                    "P_BRAIN_T1_FIT",
+                    "P_BRAIN_TURBO_NPH",
+                    "P_BRAIN_NUMBER_OF_PEAKS",
+                    "P_BRAIN_CTC_PEAK_RESCALE_THRESHOLD",
+                    "P_BRAIN_MODELLING_INPUT_FUNCTION",
+                    "P_BRAIN_AIF_USE_SSS",
+                    "P_BRAIN_VASCULAR_ROI_CURVE_METHOD",
+                    "P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX",
+                    "P_BRAIN_TSCC_SKIP_FORKED_PEAKS",
+                    "P_BRAIN_CTC_MAPS",
+                    "P_BRAIN_CTC_4D",
+                    "P_BRAIN_CTC_MAP_SLICE",
+                    "P_BRAIN_STRICT_METADATA",
+                    "P_BRAIN_MULTIPROCESSING",
+                    "P_BRAIN_CORES",
+                ]
+                summary = " ".join(f"{k}={env.get(k)!r}" for k in keys if k in env)
+                write_line_sync(f"[{_now_iso()}] ENV: {summary}\n")
+            except Exception:
+                pass
+
             proc = await asyncio.create_subprocess_exec(
                 *args,
+                # In daemonized contexts stdin can be an invalid FD (especially when
+                # launched by a GUI host). Make stdin explicit to keep Python stable.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=pbrain_cwd,
-                env=_apply_project_pbrain_env_overrides(_python_env_for_pbrain(), project),
+                env=env,
             )
             db._job_processes[job.id] = proc
 
@@ -2553,6 +3339,12 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
 
             rc = await proc.wait()
             if job.status == "cancelled":
+                return
+            if rc == PBRAIN_WAITING_FOR_ROI_EXIT_CODE:
+                _set_job(job, status="completed", progress=100, step="Waiting for user ROI")
+                job.endTime = _now_iso()
+                _set_stage_status(subject, job.stageId, "waiting")
+                db.save()
                 return
             if rc != 0:
                 raise RuntimeError(f"Stage '{job.stageId}' exited with code {rc}")
@@ -2641,6 +3433,8 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
         if p not in candidates:
             candidates.append(p)
 
+    managed_fail: Optional[str] = None
+
     if override:
         if os.path.sep in override or override.startswith("/"):
             add_candidate(override)
@@ -2656,6 +3450,7 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
             await _preflight_pbrain_python(venv_python)
             return venv_python
         except Exception as exc:
+            managed_fail = str(exc)
             # In packaged builds, we don't want to silently fall back to a system
             # python that likely lacks numpy/nibabel. Surface the real problem.
             try:
@@ -2671,6 +3466,58 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
                 ) from exc
             # Dev mode: fall back to probing system interpreters.
 
+        def _conda_python_candidates() -> List[str]:
+            out: List[str] = []
+
+            # Common conda roots on macOS (especially when launched from a GUI
+            # host where PATH won't include conda shims).
+            roots = [
+                Path("/opt/homebrew/Caskroom/miniconda/base"),
+                Path("/opt/homebrew/Caskroom/miniforge/base"),
+                Path("/opt/homebrew/anaconda3"),
+                Path.home() / "miniconda3",
+                Path.home() / "miniforge3",
+                Path.home() / "anaconda3",
+            ]
+
+            preferred_envs = [
+                "tf_macos",
+                "pbrain",
+                "p-brain",
+            ]
+
+            for root in roots:
+                try:
+                    # Base python (if present)
+                    for p in [root / "bin" / "python3", root / "bin" / "python"]:
+                        if p.exists():
+                            out.append(str(p))
+
+                    envs_dir = root / "envs"
+                    if envs_dir.exists() and envs_dir.is_dir():
+                        # Preferred envs first.
+                        for name in preferred_envs:
+                            for p in [envs_dir / name / "bin" / "python3", envs_dir / name / "bin" / "python"]:
+                                if p.exists():
+                                    out.append(str(p))
+                        # Then any other env.
+                        for p in envs_dir.glob("*/bin/python3"):
+                            if p.exists():
+                                out.append(str(p))
+                        for p in envs_dir.glob("*/bin/python"):
+                            if p.exists():
+                                out.append(str(p))
+                except Exception:
+                    continue
+
+            # De-dup while preserving order.
+            deduped: List[str] = []
+            for p in out:
+                if p not in deduped:
+                    deduped.append(p)
+            return deduped
+
+
         if bool(getattr(sys, "frozen", False)):
             add_candidate("/opt/homebrew/bin/python3")
             add_candidate("/usr/local/bin/python3")
@@ -2679,6 +3526,8 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
         else:
             add_candidate(sys.executable)
             add_candidate(shutil.which("python3"))
+            for p in _conda_python_candidates():
+                add_candidate(p)
 
     # Filter to existing executables.
     filtered: List[str] = []
@@ -2703,6 +3552,9 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
             return python_exe
         except Exception as exc:
             failures.append(f"- {python_exe}: {exc}")
+
+    if managed_fail:
+        failures.append(f"- managed venv: {managed_fail}")
 
     raise RuntimeError(
         "No available Python interpreter passed dependency preflight.\n"
@@ -2744,6 +3596,9 @@ async def _preflight_pbrain_python(python_exe: str) -> None:
             python_exe,
             "-c",
             probe,
+            # In packaged/daemonized contexts stdin can be an invalid FD, which can
+            # crash Python at startup (init_sys_streams). Make stdin explicit.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=_python_env_for_pbrain(),
@@ -2769,6 +3624,140 @@ async def _preflight_pbrain_python(python_exe: str) -> None:
         raise
 
 
+async def _preflight_pbrain_ai_deps(python_exe: str, *, env: Dict[str, str], cwd: Optional[str], write_line_sync=None) -> None:
+    """Validate AI ROI dependencies (tensorflow + cv2) for input-function extraction.
+
+    If running from the app-managed venv, missing deps are installed on-demand.
+    """
+
+    # If the user explicitly chose deterministic or file-based ROIs, skip.
+    roi_method = (env.get("P_BRAIN_ROI_METHOD") or env.get("ROI_METHOD") or "ai").strip().lower()
+    if roi_method in {"deterministic", "geometry", "file"}:
+        return
+
+    probe = (
+        "import sys; "
+        "import tensorflow as tf; "
+        "import cv2; "
+        "print(sys.version.split()[0]); "
+        "print(getattr(tf, '__version__', 'unknown')); "
+        "print(getattr(cv2, '__version__', 'unknown'))"
+    )
+
+    async def _probe_once() -> str:
+        proc = await asyncio.create_subprocess_exec(
+            python_exe,
+            "-c",
+            probe,
+            # In packaged/daemonized contexts stdin can be an invalid FD, which can
+            # crash Python at startup (init_sys_streams). Make stdin explicit.
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+        out_b, err_b = await proc.communicate()
+        out = (out_b or b"").decode(errors="replace").strip()
+        err = (err_b or b"").decode(errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(err or out or "unknown error")
+        return out
+
+    try:
+        out = await _probe_once()
+        try:
+            if write_line_sync is not None:
+                write_line_sync(f"[{_now_iso()}] AI deps OK: {out.replace(chr(10), ' | ')}\n")
+        except Exception:
+            pass
+        return
+    except Exception as exc:
+        # On-demand install for the managed venv.
+        try:
+            if _is_managed_pbrain_venv_python(python_exe):
+                python_exe2 = await _ensure_managed_pbrain_optional_deps(
+                    kind="ai",
+                    write_line_sync=write_line_sync,
+                )
+                # If the managed venv was recreated with a different Python version,
+                # re-run the probe with the updated interpreter.
+                python_exe = python_exe2
+                out = await _probe_once()
+                try:
+                    if write_line_sync is not None:
+                        write_line_sync(
+                            f"[{_now_iso()}] AI deps OK (after install): {out.replace(chr(10), ' | ')}\n"
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception as install_exc:
+            raise RuntimeError(
+                "AI input-function extraction requires TensorFlow and OpenCV. "
+                f"Automatic install into managed venv failed: {install_exc}"
+            ) from install_exc
+
+        raise RuntimeError(
+            "AI input-function extraction requires TensorFlow and OpenCV in the selected Python environment. "
+            f"Python: {python_exe}. Error: {exc}. "
+            "Fix: run the app's 'Install p-brain requirements' (managed venv) or point PBRAIN_PYTHON at an env with tensorflow-macos/tensorflow-metal + opencv-python installed."
+        )
+
+
+async def _preflight_pbrain_diffusion_deps(python_exe: str, *, cwd: Optional[str], env: Dict[str, str], write_line_sync=None) -> None:
+    """Validate diffusion/tractography deps (dipy) and install on-demand for managed venv."""
+
+    probe = "import dipy; print(getattr(dipy, '__version__', 'unknown'))"
+
+    async def _probe_once() -> str:
+        proc = await asyncio.create_subprocess_exec(
+            python_exe,
+            "-c",
+            probe,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+        out_b, err_b = await proc.communicate()
+        out = (out_b or b"").decode(errors="replace").strip()
+        err = (err_b or b"").decode(errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(err or out or "unknown error")
+        return out
+
+    try:
+        ver = await _probe_once()
+        try:
+            if write_line_sync is not None:
+                write_line_sync(f"[{_now_iso()}] Diffusion deps OK: dipy {ver}\n")
+        except Exception:
+            pass
+        return
+    except Exception as exc:
+        try:
+            if _is_managed_pbrain_venv_python(python_exe):
+                await _ensure_managed_pbrain_optional_deps(kind="diffusion", write_line_sync=write_line_sync)
+                ver = await _probe_once()
+                try:
+                    if write_line_sync is not None:
+                        write_line_sync(f"[{_now_iso()}] Diffusion deps OK (after install): dipy {ver}\n")
+                except Exception:
+                    pass
+                return
+        except Exception as install_exc:
+            raise RuntimeError(
+                "Diffusion/tractography requires dipy. "
+                f"Automatic install into managed venv failed: {install_exc}"
+            ) from install_exc
+        raise RuntimeError(
+            "Diffusion/tractography requires dipy in the selected Python environment. "
+            f"Python: {python_exe}. Error: {exc}."
+        )
+
+
 def _pbrain_root_dir() -> Path:
     main_py = os.environ.get("PBRAIN_MAIN_PY") or _resolve_pbrain_main_py()
     if not main_py:
@@ -2791,6 +3780,18 @@ def _requirements_fingerprint(req_path: Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _managed_venv_python_path() -> Path:
+    return _managed_pbrain_venv_dir() / "bin" / "python3"
+
+
+def _is_managed_pbrain_venv_python(python_exe: str) -> bool:
+    try:
+        p = Path(python_exe).expanduser().resolve()
+        return p == _managed_venv_python_path().expanduser().resolve()
+    except Exception:
+        return False
+
+
 async def _run_cmd_logged(
     args: List[str],
     *,
@@ -2801,6 +3802,9 @@ async def _run_cmd_logged(
     write_line_sync(f"[{_now_iso()}] $ {' '.join(map(str, args))}\n")
     proc = await asyncio.create_subprocess_exec(
         *args,
+        # In packaged/daemonized contexts stdin can be an invalid FD, which can
+        # crash Python at startup (e.g. when creating a venv). Make stdin explicit.
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
@@ -2817,7 +3821,7 @@ async def _run_cmd_logged(
         raise RuntimeError(f"Command failed (exit {rc}): {args!r}")
 
 
-async def _ensure_managed_pbrain_venv(*, write_line_sync) -> str:
+async def _ensure_managed_pbrain_venv(*, write_line_sync, prefer_ai_compatible: bool = False) -> str:
     """Create/update an app-managed venv with p-brain dependencies.
 
     This makes the packaged app self-contained even if the user has not
@@ -2830,22 +3834,44 @@ async def _ensure_managed_pbrain_venv(*, write_line_sync) -> str:
     # Pick a bootstrap python that exists. Prefer versions compatible with
     # scientific wheels (and tensorflow-macos), avoiding bleeding-edge Python.
     bootstrap = None
-    for candidate in [
-        # Homebrew Python versioned binaries (most reliable)
-        "/opt/homebrew/bin/python3.12",
-        "/opt/homebrew/opt/python@3.12/bin/python3.12",
-        "/opt/homebrew/bin/python3.11",
-        "/opt/homebrew/opt/python@3.11/bin/python3.11",
-        shutil.which("python3.11"),
-        "/opt/homebrew/bin/python3.10",
-        "/opt/homebrew/opt/python@3.10/bin/python3.10",
-        shutil.which("python3.10"),
+    if prefer_ai_compatible:
+        candidates = [
+            "/opt/homebrew/bin/python3.11",
+            "/opt/homebrew/opt/python@3.11/bin/python3.11",
+            shutil.which("python3.11"),
+            "/opt/homebrew/bin/python3.10",
+            "/opt/homebrew/opt/python@3.10/bin/python3.10",
+            shutil.which("python3.10"),
+            "/opt/homebrew/bin/python3.12",
+            "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        ]
+    else:
+        candidates = [
+            # Homebrew Python versioned binaries (most reliable)
+            "/opt/homebrew/bin/python3.12",
+            "/opt/homebrew/opt/python@3.12/bin/python3.12",
+            "/opt/homebrew/bin/python3.11",
+            "/opt/homebrew/opt/python@3.11/bin/python3.11",
+            shutil.which("python3.11"),
+            "/opt/homebrew/bin/python3.10",
+            "/opt/homebrew/opt/python@3.10/bin/python3.10",
+            shutil.which("python3.10"),
+        ]
+
+    candidates += [
+        # Homebrew Miniconda (GUI apps often lack the user's shell PATH).
+        "/opt/homebrew/Caskroom/miniconda/base/bin/python3",
+        "/opt/homebrew/Caskroom/miniconda/base/bin/python",
+        "/opt/homebrew/anaconda3/bin/python3",
+        "/opt/homebrew/anaconda3/bin/python",
         "/usr/local/bin/python3.11",
         "/usr/local/bin/python3.10",
         "/opt/homebrew/bin/python3",
         shutil.which("python3"),
         "/usr/bin/python3",
-    ]:
+    ]
+
+    for candidate in candidates:
         if not candidate:
             continue
         if candidate.startswith("/"):
@@ -2916,31 +3942,98 @@ async def _ensure_managed_pbrain_venv(*, write_line_sync) -> str:
     pbrain_root = _pbrain_root_dir()
     req_path = pbrain_root / "requirements.txt"
     marker = venv_dir / ".pbrain_requirements.sha256"
-    want_fp = _requirements_fingerprint(req_path) if req_path.exists() else "missing"
+    # Version the marker so we can change the install strategy without leaving
+    # users with a stale/broken managed venv.
+    want_fp = f"core-v1:{_requirements_fingerprint(req_path) if req_path.exists() else 'missing'}"
     have_fp = marker.read_text(encoding="utf-8", errors="ignore").strip() if marker.exists() else ""
+
+    def _split_core_vs_optional_requirements(lines: List[str]) -> Tuple[List[str], List[str], List[str]]:
+        """Return (core_lines, ai_lines, diffusion_lines) given raw requirements.txt lines.
+
+        Optional packages are installed on-demand for the managed venv.
+        """
+        core: List[str] = []
+        ai: List[str] = []
+        diffusion: List[str] = []
+
+        ai_pkgs = {"tensorflow", "tensorflow-macos", "tensorflow-metal", "opencv-python"}
+        diffusion_pkgs = {"dipy"}
+
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            pkg = line.split("==", 1)[0].split(">=", 1)[0].split("<=", 1)[0].split("<", 1)[0].split(">", 1)[0]
+            pkg = pkg.strip().lower()
+            if pkg in diffusion_pkgs:
+                diffusion.append(line)
+            elif pkg in ai_pkgs:
+                ai.append(line)
+            else:
+                core.append(line)
+
+        # Handle the legacy 'tensorflow' name on macOS by translating it into
+        # tensorflow-macos + tensorflow-metal (but keep it AI-scoped).
+        if sys.platform == "darwin":
+            normalized_ai: List[str] = []
+            saw_tensorflow = any(
+                (l.strip().lower().startswith("tensorflow") and not l.strip().lower().startswith("tensorflow-") )
+                for l in ai
+            )
+            for l in ai:
+                ll = l.strip().lower()
+                if ll == "tensorflow":
+                    continue
+                normalized_ai.append(l)
+            if saw_tensorflow:
+                normalized_ai.append("tensorflow-macos")
+                normalized_ai.append("tensorflow-metal")
+            ai = normalized_ai
+
+        return core, ai, diffusion
+
+
+    def _write_optional_requirement_files() -> None:
+        if not req_path.exists():
+            return
+        try:
+            lines = req_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            core_lines, ai_lines, diffusion_lines = _split_core_vs_optional_requirements(lines)
+
+            core_req = venv_dir / "requirements.core.txt"
+            core_req.write_text("\n".join(core_lines) + "\n", encoding="utf-8")
+
+            ai_req = venv_dir / "requirements.ai.txt"
+            ai_req.write_text("\n".join(ai_lines) + "\n", encoding="utf-8")
+
+            diff_req = venv_dir / "requirements.diffusion.txt"
+            diff_req.write_text("\n".join(diffusion_lines) + "\n", encoding="utf-8")
+        except Exception:
+            # Best-effort; missing optional files will be regenerated during reinstall.
+            return
+
 
     async def _install_deps() -> None:
         if req_path.exists():
-            # Filter/translate requirements for platform compatibility.
+            # Install a CORE subset first (numpy/nibabel/scipy/etc) so early
+            # stages can run even if AI packages are not available for the
+            # user's Python version. AI deps are installed on-demand.
             lines = req_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            out_lines: List[str] = []
-            for raw in lines:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if line.lower() == "tensorflow" and sys.platform == "darwin":
-                    out_lines.append("tensorflow-macos")
-                    out_lines.append("tensorflow-metal")
-                    continue
-                out_lines.append(line)
+            core_lines, ai_lines, diffusion_lines = _split_core_vs_optional_requirements(lines)
 
-            filtered_req = venv_dir / "requirements.filtered.txt"
-            filtered_req.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+            core_req = venv_dir / "requirements.core.txt"
+            core_req.write_text("\n".join(core_lines) + "\n", encoding="utf-8")
+
+            ai_req = venv_dir / "requirements.ai.txt"
+            ai_req.write_text("\n".join(ai_lines) + "\n", encoding="utf-8")
+
+            diff_req = venv_dir / "requirements.diffusion.txt"
+            diff_req.write_text("\n".join(diffusion_lines) + "\n", encoding="utf-8")
 
             # On macOS, pip can backtrack into very old scikit-image versions
             # that require building from source with build tooling incompatible
             # with Python 3.12+. Force a known wheel-available version.
-            pip_args: List[str] = [str(venv_python), "-m", "pip", "install", "--prefer-binary", "-r", str(filtered_req)]
+            pip_args: List[str] = [str(venv_python), "-m", "pip", "install", "--prefer-binary", "-r", str(core_req)]
             if sys.platform == "darwin":
                 constraints = venv_dir / "constraints.darwin.txt"
                 constraints.write_text(
@@ -2974,9 +4067,22 @@ async def _ensure_managed_pbrain_venv(*, write_line_sync) -> str:
     if want_fp != have_fp:
         await _install_deps()
 
+        # We just changed the environment; clear any cached negative preflight.
+        try:
+            _PYTHON_PREFLIGHT.pop(str(venv_python), None)
+        except Exception:
+            pass
+
+    # Keep the optional requirement files present even if core deps are already up-to-date.
+    _write_optional_requirement_files()
+
     # Validate that the managed env actually imports what we need.
     # If the venv was partially installed or corrupted, force one reinstall.
     try:
+        try:
+            _PYTHON_PREFLIGHT.pop(str(venv_python), None)
+        except Exception:
+            pass
         await _preflight_pbrain_python(str(venv_python))
     except Exception as exc:
         write_line_sync(f"[{_now_iso()}] Managed venv preflight failed; reinstalling deps once: {exc}\n")
@@ -2986,9 +4092,84 @@ async def _ensure_managed_pbrain_venv(*, write_line_sync) -> str:
         except Exception:
             pass
         await _install_deps()
+        try:
+            _PYTHON_PREFLIGHT.pop(str(venv_python), None)
+        except Exception:
+            pass
         await _preflight_pbrain_python(str(venv_python))
 
     return str(venv_python)
+
+
+async def _ensure_managed_pbrain_optional_deps(*, kind: Literal["ai", "diffusion"], write_line_sync=None) -> str:
+    """Install optional managed-venv deps on-demand and return the venv python.
+
+    For AI deps we prefer creating the venv with a TensorFlow-compatible Python.
+    """
+
+    if write_line_sync is None:
+        def write_line_sync(_line: str) -> None:
+            return
+
+    prefer_ai = bool(kind == "ai")
+    venv_python = await _ensure_managed_pbrain_venv(write_line_sync=write_line_sync, prefer_ai_compatible=prefer_ai)
+    venv_dir = _managed_pbrain_venv_dir()
+    pbrain_root = _pbrain_root_dir()
+
+    if kind == "ai":
+        req_file = venv_dir / "requirements.ai.txt"
+        marker = venv_dir / ".pbrain_requirements.ai.sha256"
+        label = "AI"
+    else:
+        req_file = venv_dir / "requirements.diffusion.txt"
+        marker = venv_dir / ".pbrain_requirements.diffusion.sha256"
+        label = "diffusion"
+
+    # If we don't have the split files (older venv), regenerate by forcing a core ensure.
+    if not req_file.exists():
+        await _ensure_managed_pbrain_venv(write_line_sync=write_line_sync)
+
+    # Nothing to do if there are no optional deps.
+    try:
+        lines = req_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+        has_any = any(l.strip() and not l.strip().startswith("#") for l in lines)
+    except Exception:
+        has_any = False
+    if not has_any:
+        return venv_python
+
+    try:
+        fp = hashlib.sha256(req_file.read_bytes()).hexdigest()
+    except Exception:
+        fp = "missing"
+    want = f"{kind}-v1:{fp}"
+    have = marker.read_text(encoding="utf-8", errors="ignore").strip() if marker.exists() else ""
+    if want == have:
+        return venv_python
+
+    pip_args: List[str] = [venv_python, "-m", "pip", "install", "--prefer-binary", "-r", str(req_file)]
+    if sys.platform == "darwin":
+        constraints = venv_dir / "constraints.darwin.txt"
+        if constraints.exists():
+            pip_args += ["-c", str(constraints)]
+
+    try:
+        write_line_sync(f"[{_now_iso()}] Installing optional {label} deps into managed venv...\n")
+    except Exception:
+        pass
+    await _run_cmd_logged(
+        pip_args,
+        cwd=str(pbrain_root),
+        env=_python_env_for_pbrain(),
+        write_line_sync=write_line_sync,
+    )
+    try:
+        # Optional installs can change import availability; clear cached preflight.
+        _PYTHON_PREFLIGHT.pop(str(_managed_venv_python_path()), None)
+    except Exception:
+        pass
+    marker.write_text(want, encoding="utf-8")
+    return venv_python
 
 
 def _pbrain_cli_args(project: Project, subject: Subject) -> List[str]:
@@ -3016,10 +4197,22 @@ def _pbrain_cli_args(project: Project, subject: Subject) -> List[str]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model", {}), dict) else {}
     voxel_cfg = cfg.get("voxelwise", {}) if isinstance(cfg.get("voxelwise", {}), dict) else {}
 
+    # Project-level T1/M0 fit selection.
+    try:
+        pb = cfg.get("pbrain") if isinstance(cfg.get("pbrain"), dict) else {}
+        t1_fit = str(pb.get("t1Fit") or "").strip().lower()
+        if t1_fit in {"auto", "ir", "vfa", "none"}:
+            args += ["--t1-fit", t1_fit]
+    except Exception:
+        pass
+
     # Keep behaviour aligned with p-brain CLI flags.
     lambd = model_cfg.get("lambdaTikhonov")
     if isinstance(lambd, (int, float)):
         args += ["--lambda", str(float(lambd))]
+    else:
+        # Default to L-curve auto lambda when user has not pinned a value.
+        args.append("--enable-lcurve")
     if model_cfg.get("autoLambda") is True:
         args.append("--enable-lcurve")
 
@@ -3028,11 +4221,6 @@ def _pbrain_cli_args(project: Project, subject: Subject) -> List[str]:
         args += ["--write-mtt", str(bool(voxel_cfg.get("writeMTT"))).lower()]
     if "writeCTH" in voxel_cfg:
         args += ["--write-cth", str(bool(voxel_cfg.get("writeCTH"))).lower()]
-
-    if voxel_cfg.get("computeKi") is True:
-        args.append("--voxelwise")
-    if voxel_cfg.get("computeCBF") is True:
-        args.append("--cbf")
 
     # Diffusion: only request when the subject has diffusion.
     if subject.hasDiffusion:
@@ -3066,9 +4254,20 @@ def _pbrain_cli_args_with_python(python_exe: str, project: Project, subject: Sub
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model", {}), dict) else {}
     voxel_cfg = cfg.get("voxelwise", {}) if isinstance(cfg.get("voxelwise", {}), dict) else {}
 
+    # Project-level T1/M0 fit selection.
+    try:
+        pb = cfg.get("pbrain") if isinstance(cfg.get("pbrain"), dict) else {}
+        t1_fit = str(pb.get("t1Fit") or "").strip().lower()
+        if t1_fit in {"auto", "ir", "vfa", "none"}:
+            args += ["--t1-fit", t1_fit]
+    except Exception:
+        pass
+
     lambd = model_cfg.get("lambdaTikhonov")
     if isinstance(lambd, (int, float)):
         args += ["--lambda", str(float(lambd))]
+    else:
+        args.append("--enable-lcurve")
     if model_cfg.get("autoLambda") is True:
         args.append("--enable-lcurve")
 
@@ -3077,25 +4276,74 @@ def _pbrain_cli_args_with_python(python_exe: str, project: Project, subject: Sub
     if "writeCTH" in voxel_cfg:
         args += ["--write-cth", str(bool(voxel_cfg.get("writeCTH"))).lower()]
 
-    if voxel_cfg.get("computeKi") is True:
-        args.append("--voxelwise")
-    if voxel_cfg.get("computeCBF") is True:
-        args.append("--cbf")
-
     if subject.hasDiffusion:
         args.append("--diffusion")
 
     return args
 
 
-_STAGE_RUNNER_VERSION = "16"
+_STAGE_RUNNER_VERSION = "32"
+
+
+_STAGE_RUNNER_VERSION_RE = re.compile(r"stage runner \(version:\s*([0-9]+)\)")
+
+
+def _read_stage_runner_version(text: str | None) -> str | None:
+    if not text:
+        return None
+    try:
+        m = _STAGE_RUNNER_VERSION_RE.search(text)
+        if not m:
+            return None
+        v = (m.group(1) or "").strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def _stage_runner_voxelwise_flags(project: Project) -> tuple[bool, bool]:
+    """Translate project voxelwise config into stage-runner flags.
+
+    p-brain's main CLI does not expose --voxelwise/--cbf, but the generated
+    stage runner does. Historically, p-brain-web stored voxelwise settings as:
+      voxelwise.enabled, voxelwise.writeMTT, voxelwise.writeCTH
+
+    Backwards compatibility: also accept legacy keys computeKi/computeCBF.
+    """
+
+    cfg = project.config if isinstance(getattr(project, "config", None), dict) else {}
+    voxel = cfg.get("voxelwise") if isinstance(cfg.get("voxelwise"), dict) else {}
+
+    # Default to parity with p-brain auto runs: produce voxelwise outputs unless
+    # explicitly disabled per-project.
+    enabled_raw = voxel.get("enabled")
+    enabled = True if enabled_raw is None else bool(enabled_raw)
+
+    compute_ki = bool(voxel.get("computeKi")) if "computeKi" in voxel else bool(enabled)
+
+    if "computeCBF" in voxel:
+        compute_cbf = bool(voxel.get("computeCBF"))
+    else:
+        # Only compute residue-based perfusion maps when voxelwise is enabled.
+        write_mtt_raw = voxel.get("writeMTT")
+        write_cth_raw = voxel.get("writeCTH")
+        write_mtt = True if write_mtt_raw is None else bool(write_mtt_raw)
+        write_cth = True if write_cth_raw is None else bool(write_cth_raw)
+        compute_cbf = bool(enabled) and (write_mtt or write_cth)
+
+    # If we request voxelwise Ki, default to also computing CBF/MTT/CTH unless
+    # computeCBF was explicitly provided.
+    if compute_ki and "computeCBF" not in voxel:
+        compute_cbf = True
+
+    return bool(compute_ki), bool(compute_cbf)
 
 
 def _stage_runner_path(data_root: Path) -> Path:
     return data_root / ".pbrain-web" / "runner" / "pbrain_stage_runner.py"
 
 
-def _ensure_stage_runner_script(data_root: Path) -> Path:
+def _ensure_stage_runner_script(data_root: Path, *, force: bool = False) -> Path:
     runner_path = _stage_runner_path(data_root)
     # Be robust in packaged builds: avoid referencing exception variables outside
     # their except-block scope (can raise UnboundLocalError in some Python versions).
@@ -3109,13 +4357,14 @@ def _ensure_stage_runner_script(data_root: Path) -> Path:
         # We'll still try to proceed; the write below will surface a clearer error.
         pass
 
-    content = f"""#!/usr/bin/env python3
-# pbrain-web stage runner (version: {_STAGE_RUNNER_VERSION})
+    content = """#!/usr/bin/env python3
+# pbrain-web stage runner (version: __STAGE_RUNNER_VERSION__)
 
 import argparse
 import os
 import shutil
 import sys
+import subprocess
 import builtins
 import time
 import threading
@@ -3125,6 +4374,21 @@ import functools
 # When running in batch/headless mode, ensure matplotlib uses a non-GUI backend.
 if os.environ.get('PBRAIN_TURBO') == '1':
     os.environ.setdefault('MPLBACKEND', 'Agg')
+
+try:
+    # Helpful for debugging stale runner issues in the field.
+    print('[runner] pbrain-web stage runner version: __STAGE_RUNNER_VERSION__', flush=True)
+except Exception:
+    pass
+
+# Ensure p-brain repo imports resolve even though this runner lives outside it.
+# p-brain-web typically sets cwd to the repo root when invoking this script.
+try:
+    _cwd = os.path.abspath(os.getcwd())
+    if _cwd and _cwd not in sys.path:
+        sys.path.insert(0, _cwd)
+except Exception:
+    pass
 
 from utils.settings import setup_directories
 from utils.parameters import global_filenames, global_parameters, refresh_nifti_directory
@@ -3138,7 +4402,9 @@ import numpy as np
 import nibabel as nib
 
 import utils.settings as settings
+from utils.loading import discover_ir_series, discover_vfa_series
 import modules.AI_tissue_functions as AIT
+from utils.compare_matlab import compare_t1m0_to_matlab
 from utils.cli_logging import (
     install_auto_logging_hooks,
     uninstall_auto_logging_hooks,
@@ -3360,11 +4626,38 @@ def _preamble(subject_id: str, data_root: str):
     return data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters
 
 
+def _maybe_force_delete_t1m0_outputs(analysis_directory: str) -> None:
+    fitting_dir = os.path.join(analysis_directory, 'Fitting')
+    if not os.path.isdir(fitting_dir):
+        return
+    names = [
+        'voxel_matrix.pkl',
+        'voxel_T1_matrix.pkl',
+        'voxel_M0_matrix.pkl',
+        't1_map.nii.gz',
+        'm0_map.nii.gz',
+        't1_map_in_dce.nii.gz',
+        'm0_map_in_dce.nii.gz',
+    ]
+    for name in names:
+        for candidate in (name, f'._{name}'):
+            path = os.path.join(fitting_dir, candidate)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description='Run a single p-brain stage (invoked by p-brain-web)')
     p.add_argument('--stage', required=True)
     p.add_argument('--id', required=True)
     p.add_argument('--data-dir', required=True)
+    p.add_argument('--t1-fit', dest='t1_fit', type=str, default=None)
+    p.add_argument('--t1m0-force', dest='t1m0_force', action='store_true')
+    p.add_argument('--compare-matlab', dest='compare_matlab', action='store_true')
+    p.add_argument('--compare-matlab-path', dest='compare_matlab_path', type=str, default=None)
     p.add_argument('--diffusion', action='store_true')
     p.add_argument('--voxelwise', action='store_true')
     p.add_argument('--cbf', action='store_true')
@@ -3373,6 +4666,54 @@ def main() -> int:
     stage = str(args.stage).strip().lower()
     subject_id = str(args.id)
     data_root = str(args.data_dir)
+
+    # Emit a concise config summary for reproducibility.
+    try:
+        keys = [
+            'P_BRAIN_CTC_MODEL',
+            'P_BRAIN_TURBOFLASH_CTC_METHOD',
+            'P_BRAIN_T1_FIT',
+            'P_BRAIN_TURBO_NPH',
+            'P_BRAIN_NUMBER_OF_PEAKS',
+            'P_BRAIN_CTC_PEAK_RESCALE_THRESHOLD',
+            'P_BRAIN_MODELLING_INPUT_FUNCTION',
+            'P_BRAIN_AIF_USE_SSS',
+            'P_BRAIN_VASCULAR_ROI_CURVE_METHOD',
+            'P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX',
+            'P_BRAIN_TSCC_SKIP_FORKED_PEAKS',
+            'P_BRAIN_CTC_MAPS',
+            'P_BRAIN_CTC_4D',
+            'P_BRAIN_CTC_MAP_SLICE',
+        ]
+        summary = ' '.join([f"{k}={os.environ.get(k)!r}" for k in keys if os.environ.get(k) is not None])
+        print(f"[runner] stage={stage} id={subject_id} data_dir={data_root} {summary}", flush=True)
+    except Exception:
+        pass
+
+    # Project-level override: make sure T1/M0 fit selection is applied even when
+    # the runner was launched with inherited env vars.
+    try:
+        if args.t1_fit is not None:
+            v = str(args.t1_fit).strip().lower()
+            if v in ('auto', 'ir', 'vfa', 'none'):
+                settings.T1_FIT_MODE = v
+                os.environ['P_BRAIN_T1_FIT'] = v
+    except Exception:
+        pass
+
+    # Mirror p-brain main.py behaviour: when running TurboFLASH CTC, default the
+    # T1 recovery model to the matching TurboFLASH TI-series fit unless explicitly
+    # overridden.
+    try:
+        ctc_model = (os.environ.get('P_BRAIN_CTC_MODEL') or getattr(settings, 'CTC_MODEL', '') or '').strip().lower()
+        if ctc_model in {'turboflash', 'advanced'} and (os.environ.get('P_BRAIN_T1_RECOVERY_MODEL') or '').strip() == '':
+            try:
+                settings.T1_RECOVERY_MODEL = 'turboflash'
+            except Exception:
+                pass
+            os.environ['P_BRAIN_T1_RECOVERY_MODEL'] = 'turboflash'
+    except Exception:
+        pass
 
     turbo_env = os.environ.get('PBRAIN_TURBO') == '1'
     _set_turbo_mode(turbo_env)
@@ -3399,15 +4740,137 @@ def main() -> int:
             pass
 
         if stage == 't1_fit':
-            log_process_start('T1 fitting')
-            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            log_process_end('T1 fitting')
+            # User requirement: T1/M0 fitting must follow p-brain's CLI semantics.
+            # Delegate to `main.py --t1m0-only` and forward relevant flags.
+            cmd = [sys.executable, '-u', 'main.py', '--id', subject_id, '--data-dir', data_root, '--t1m0-only']
+            if getattr(args, 't1_fit', None):
+                cmd += ['--t1-fit', str(args.t1_fit)]
+            if getattr(args, 't1m0_force', False):
+                cmd += ['--t1m0-force']
+            if getattr(args, 'compare_matlab', False):
+                cmd += ['--compare-matlab']
+                if getattr(args, 'compare_matlab_path', None):
+                    cmd += ['--compare-matlab-path', str(args.compare_matlab_path)]
+
+            env = dict(os.environ)
+            # Ensure headless behaviour for spawned p-brain process.
+            env.setdefault('PBRAIN_TURBO', '1')
+            env.setdefault('PBRAIN_NONINTERACTIVE', '1')
+
+            print(f"[t1_fit] Delegating to p-brain: {cmd}", flush=True)
+            rc = subprocess.call(cmd, env=env)
+            if int(rc) != 0:
+                print(f"[t1_fit] p-brain exited with code {rc}", flush=True)
+                return int(rc)
             return 0
 
         if stage == 'input_functions':
-            log_process_start('AI input function extraction')
-            input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            log_process_end('AI input function extraction')
+            log_process_start('Input function extraction')
+
+            def _debug_dce_sanity():
+                try:
+                    dce_filename = None
+                    try:
+                        dce_filename = filenames[8]
+                    except Exception:
+                        dce_filename = None
+                    dce_path = os.path.join(nifti_directory, dce_filename) if dce_filename else None
+                    if not dce_path or not os.path.exists(dce_path):
+                        print(f"[input_functions] DCE missing or not found: {dce_path}", flush=True)
+                        return
+                    try:
+                        img = nib.load(dce_path)
+                        sh = tuple(int(x) for x in (getattr(img, 'shape', None) or ()))
+                        print(f"[input_functions] DCE: {dce_filename} shape={sh}", flush=True)
+                    except Exception as e:
+                        print(f"[input_functions] DCE load failed: {dce_path} err={e}", flush=True)
+                except Exception:
+                    pass
+
+            def _maybe_repair_deterministic_tmp(missing_path: str) -> bool:
+                '''If deterministic fallback writes into a tmp analysis dir, ensure it has T1/M0-in-DCE maps.
+
+                p-brain's deterministic ROI path can call plotting which looks for:
+                    <tmp>/Fitting/t1_map_in_dce.nii.gz and m0_map_in_dce.nii.gz
+                If those are only present in the main Analysis/Fitting, copy them in.
+                '''
+
+                try:
+                    if not missing_path:
+                        return False
+                    mp = str(missing_path)
+                    if '.pbrain_tmp_deterministic_roi' not in mp:
+                        return False
+                    if not mp.replace('\\\\', '/').endswith('/Fitting/voxel_T1_matrix.pkl'):
+                        return False
+
+                    tmp_fit = os.path.dirname(mp)
+                    tmp_analysis = os.path.dirname(tmp_fit)
+                    main_fit = os.path.join(analysis_directory, 'Fitting')
+                    if not os.path.isdir(main_fit):
+                        return False
+
+                    os.makedirs(tmp_fit, exist_ok=True)
+                    copied = 0
+                    for name in ('t1_map_in_dce.nii.gz', 'm0_map_in_dce.nii.gz', 't1_map_in_dce.nii', 'm0_map_in_dce.nii'):
+                        src = os.path.join(main_fit, name)
+                        dst = os.path.join(tmp_fit, name)
+                        try:
+                            if os.path.exists(src) and not os.path.exists(dst):
+                                shutil.copy2(src, dst)
+                                copied += 1
+                        except Exception:
+                            pass
+                    if copied > 0:
+                        print(f"[input_functions] Repaired deterministic tmp fitting dir: {tmp_analysis} (copied {copied} map(s))", flush=True)
+                        return True
+                except Exception:
+                    return False
+                return False
+
+            try:
+                from modules.input_function_dispatch import (
+                    PBRAIN_WAITING_FOR_ROI_EXIT_CODE,
+                    InputFunctionUserInteractionRequired,
+                    run_input_function,
+                )
+
+                _debug_dce_sanity()
+
+                # One retry to handle deterministic tmp-dir missing T1/M0 maps.
+                for attempt in range(2):
+                    try:
+                        run_input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+                        break
+                    except InputFunctionUserInteractionRequired as e:
+                        raise
+                    except FileNotFoundError as e:
+                        msg = str(e)
+                        missing_path = getattr(e, 'filename', None) or ''
+
+                        # ROI-file mode: treat missing ROI root as "waiting".
+                        if 'Missing ROI Data directory' in msg or msg.replace('\\\\', '/').endswith('/Analysis/ROI Data'):
+                            print('PBRAIN_WAITING_STAGE=input_functions missing=roi_data')
+                            log_process_end('Input function extraction')
+                            return int(PBRAIN_WAITING_FOR_ROI_EXIT_CODE)
+
+                        # Deterministic fallback can fail during plotting if tmp dir lacks maps.
+                        if 'voxel_T1_matrix.pkl' in msg and _maybe_repair_deterministic_tmp(missing_path or msg):
+                            if attempt == 0:
+                                continue
+
+                        raise
+
+            except InputFunctionUserInteractionRequired as e:
+                try:
+                    missing = getattr(e, 'missing', None) or []
+                    print(f"PBRAIN_WAITING_STAGE=input_functions missing={','.join(missing)}")
+                except Exception:
+                    pass
+                log_process_end('Input function extraction')
+                return int(PBRAIN_WAITING_FOR_ROI_EXIT_CODE)
+
+            log_process_end('Input function extraction')
             return 0
 
         if stage == 'time_shift':
@@ -3455,8 +4918,8 @@ def main() -> int:
 
         IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
 
-        t1_path = os.path.join(nifti_directory, t1_3D_filename)
-        t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
+        t1_path = os.path.join(nifti_directory, t1_3D_filename) if t1_3D_filename else None
+        t2_path = os.path.join(nifti_directory, axial_t2_2D_filename) if axial_t2_2D_filename else None
         dce_path = os.path.join(nifti_directory, dce_filename) if dce_filename else None
 
         flip_angle_deg = None
@@ -3524,6 +4987,15 @@ def main() -> int:
             )
 
         if stage == 'segmentation':
+            if not t1_path or not os.path.exists(t1_path):
+                print('[segmentation] Missing T1 structural input; skipping segmentation')
+                return 0
+            if not t2_path or not os.path.exists(t2_path):
+                print('[segmentation] Missing T2 structural input; skipping segmentation')
+                return 0
+            if not dce_path or not os.path.exists(dce_path):
+                print('[segmentation] Missing DCE NIfTI; skipping segmentation')
+                return 0
             fastsurfer_path = _fastsurfer_run_sh()
             os.makedirs(seg_dir, exist_ok=True)
             print('[segmentation] Running FastSurfer + mask generation')
@@ -3537,13 +5009,17 @@ def main() -> int:
                 RERUN_SEGMENTATION,
                 SEGMENTATION_METHOD,
             )
-            if not dce_path or not os.path.exists(dce_path):
-                raise RuntimeError('Missing DCE NIfTI; cannot coregister masks without DCE.')
             print('[segmentation] Coregistering masks into T2/DCE space')
             AIT.coregistration(seg_mgz_path=seg_mgz_path, dce_path=dce_path, t2_path=t2_path)
             return 0
 
         if stage == 'tissue_ctc':
+            if not os.path.exists(seg_mgz_path):
+                print('[tissue_ctc] Missing segmentation output; skipping tissue curves')
+                return 0
+            if not t2_path or not os.path.exists(t2_path):
+                print('[tissue_ctc] Missing T2 structural input; skipping tissue curves')
+                return 0
             print('[tissue_ctc] Computing tissue curves (no modelling)')
             (
                 t2_img, ref_img, data_4d,
@@ -3592,7 +5068,85 @@ def main() -> int:
 
         if stage == 'modelling':
             model_setting = settings.KINETIC_MODEL.lower()
-            models = ['patlak', 'two_compartment'] if model_setting == 'both' else [model_setting]
+            models = ['patlak', 'tikhonov'] if model_setting == 'both' else [model_setting]
+
+            compute_ki = bool(getattr(args, 'voxelwise', False))
+            compute_cbf = bool(getattr(args, 'cbf', False))
+
+            def _is_missing_input_curves_error(exc: FileNotFoundError) -> bool:
+                try:
+                    msg = str(exc).lower()
+                except Exception:
+                    msg = ''
+                return (
+                    ('ctc data/artery' in msg)
+                    or ('tscc data/max' in msg)
+                    or ('arterial concentration' in msg)
+                    or ('no .npy files found' in msg)
+                )
+
+            # If segmentation isn't available, still allow voxelwise-only modelling.
+            if not os.path.exists(seg_mgz_path) or not t2_path or not os.path.exists(t2_path):
+                if not dce_path or not os.path.exists(dce_path):
+                    raise RuntimeError('Missing DCE NIfTI. Ensure DCE is present and imported.')
+                if not compute_ki and not compute_cbf:
+                    print('[modelling] Missing segmentation and voxelwise outputs not requested; skipping modelling')
+                    return 0
+
+                print('[modelling] Segmentation missing; running voxelwise-only modelling')
+                ref_img = nib.load(dce_path)
+                data_4d = np.array(ref_img.get_fdata())
+                T1_matrix, M0_matrix = _load_t1m0()
+                time_points_s = _load_timepoints(data_4d, ref_img)
+
+                watch = [analysis_directory, image_directory]
+                hb = float(os.environ.get('PBRAIN_HEARTBEAT_S') or 30.0)
+                for m in models:
+                    settings.KINETIC_MODEL = m
+                    print(f'[modelling] Running {{m}} model (voxelwise-only)')
+
+                    try:
+                        _run_with_heartbeat(
+                            "modelling/%s: compute_and_plot_ctcs_median (voxelwise-only ki=%s cbf=%s)" % (m, str(compute_ki).lower(), str(compute_cbf).lower()),
+                            lambda: AIT.compute_and_plot_ctcs_median(
+                                data_4d,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                T1_matrix,
+                                M0_matrix,
+                                analysis_directory,
+                                time_points_s,
+                                image_directory,
+                                dce_path=dce_path,
+                                ref_affine=ref_img.affine,
+                                ref_header=ref_img.header.copy(),
+                                boundary=False,
+                                compute_per_voxel_Ki=compute_ki,
+                                compute_per_voxel_CBF=compute_cbf,
+                                flip_angle_deg=flip_angle_deg,
+                                voxelwise_only=True,
+                            ),
+                            heartbeat_s=hb,
+                            watch_paths=watch,
+                        )
+                    except FileNotFoundError as exc:
+                        if _is_missing_input_curves_error(exc):
+                            print(f"[modelling] Missing arterial/input-function curves; skipping modelling ({{exc}})")
+                            return 0
+                        raise
+
+                    try:
+                        suffix = '_patlak' if m == 'patlak' else '_tikhonov'
+                        AIT._rename_model_outputs(analysis_directory, image_directory, suffix, boundary=False)
+                    except Exception:
+                        pass
+
+                return 0
 
             ai_base = os.path.join(image_directory, 'AI')
             screenshot_name = 'AI_input_function_ROIs.png'
@@ -3624,7 +5178,13 @@ def main() -> int:
             if not os.path.exists(atlas_path):
                 raise RuntimeError('Missing atlas segmentation in DCE space. Run Segmentation first.')
 
-            C_a_full, _ = AIT.get_input_function_curve(analysis_directory)
+            try:
+                C_a_full, _ = AIT.get_input_function_curve(analysis_directory)
+            except FileNotFoundError as exc:
+                if _is_missing_input_curves_error(exc):
+                    print(f"[modelling] Missing arterial/input-function curves; skipping modelling ({{exc}})")
+                    return 0
+                raise
             if C_a_full is None or len(C_a_full) == 0:
                 raise RuntimeError('Missing input function curve. Run AIF/VIF extraction first.')
 
@@ -3639,8 +5199,6 @@ def main() -> int:
 
             watch = [analysis_directory, image_directory]
             hb = float(os.environ.get('PBRAIN_HEARTBEAT_S') or 30.0)
-            compute_ki = bool(getattr(args, 'voxelwise', False))
-            compute_cbf = bool(getattr(args, 'cbf', False))
             try:
                 print(
                     "[modelling] Options: voxelwise=%s cbf=%s" % (str(compute_ki).lower(), str(compute_cbf).lower()),
@@ -3659,41 +5217,47 @@ def main() -> int:
                 if os.path.exists(screenshot_backup):
                     shutil.copy2(screenshot_backup, os.path.join(ai_base, screenshot_name))
 
-                _run_with_heartbeat(
-                    "modelling/%s: compute_and_plot_ctcs_median (voxelwise=%s cbf=%s)" % (m, str(compute_ki).lower(), str(compute_cbf).lower()),
-                    lambda: AIT.compute_and_plot_ctcs_median(
-                        data_4d,
-                        t2_img,
-                        wm_mask_t2,
-                        cortical_gm_mask_t2,
-                        subcortical_gm_mask_t2,
-                        wm_mask_dce,
-                        cortical_gm_mask_dce,
-                        subcortical_gm_mask_dce,
-                        T1_matrix,
-                        M0_matrix,
-                        analysis_directory,
-                        time_points_s,
-                        image_directory,
-                        dce_path=dce_path,
-                        ref_affine=ref_img.affine,
-                        ref_header=ref_img.header.copy(),
-                        boundary=boundary,
-                        compute_per_voxel_Ki=compute_ki,
-                        compute_per_voxel_CBF=compute_cbf,
-                        gm_brainstem_mask_t2=gm_brainstem_mask_t2,
-                        gm_brainstem_mask_dce=gm_brainstem_mask_dce,
-                        gm_cerebellum_mask_t2=gm_cerebellum_mask_t2,
-                        gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
-                        wm_cerebellum_mask_t2=wm_cerebellum_mask_t2,
-                        wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
-                        wm_cc_mask_t2=wm_cc_mask_t2,
-                        wm_cc_mask_dce=wm_cc_mask_dce,
-                        flip_angle_deg=flip_angle_deg,
-                    ),
-                    heartbeat_s=hb,
-                    watch_paths=watch,
-                )
+                try:
+                    _run_with_heartbeat(
+                        "modelling/%s: compute_and_plot_ctcs_median (voxelwise=%s cbf=%s)" % (m, str(compute_ki).lower(), str(compute_cbf).lower()),
+                        lambda: AIT.compute_and_plot_ctcs_median(
+                            data_4d,
+                            t2_img,
+                            wm_mask_t2,
+                            cortical_gm_mask_t2,
+                            subcortical_gm_mask_t2,
+                            wm_mask_dce,
+                            cortical_gm_mask_dce,
+                            subcortical_gm_mask_dce,
+                            T1_matrix,
+                            M0_matrix,
+                            analysis_directory,
+                            time_points_s,
+                            image_directory,
+                            dce_path=dce_path,
+                            ref_affine=ref_img.affine,
+                            ref_header=ref_img.header.copy(),
+                            boundary=boundary,
+                            compute_per_voxel_Ki=compute_ki,
+                            compute_per_voxel_CBF=compute_cbf,
+                            gm_brainstem_mask_t2=gm_brainstem_mask_t2,
+                            gm_brainstem_mask_dce=gm_brainstem_mask_dce,
+                            gm_cerebellum_mask_t2=gm_cerebellum_mask_t2,
+                            gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
+                            wm_cerebellum_mask_t2=wm_cerebellum_mask_t2,
+                            wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
+                            wm_cc_mask_t2=wm_cc_mask_t2,
+                            wm_cc_mask_dce=wm_cc_mask_dce,
+                            flip_angle_deg=flip_angle_deg,
+                        ),
+                        heartbeat_s=hb,
+                        watch_paths=watch,
+                    )
+                except FileNotFoundError as exc:
+                    if _is_missing_input_curves_error(exc):
+                        print(f"[modelling] Missing arterial/input-function curves; skipping modelling ({{exc}})")
+                        return 0
+                    raise
 
                 compute_CTC_meta = (
                     functools.partial(AIT.compute_CTC, flip_angle_deg=flip_angle_deg)
@@ -3820,12 +5384,35 @@ if __name__ == '__main__':
     raise SystemExit(main())
 """
 
+    content = content.replace("__STAGE_RUNNER_VERSION__", _STAGE_RUNNER_VERSION)
+
     try:
-        existing = None
-        if runner_path.exists():
-            existing = runner_path.read_text(encoding="utf-8", errors="ignore")
-        if existing and f"version: {_STAGE_RUNNER_VERSION}" in existing:
-            return runner_path
+        if force:
+            try:
+                runner_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        else:
+            existing = None
+            if runner_path.exists():
+                existing = runner_path.read_text(encoding="utf-8", errors="ignore")
+            existing_version = _read_stage_runner_version(existing)
+            # Only skip rewriting when the file is both:
+            # - the expected version, and
+            # - contains key features (guards against partial/manual edits or older templates).
+            if (
+                existing
+                and existing_version == _STAGE_RUNNER_VERSION
+                and "[t1_fit] Delegating to p-brain" in existing
+            ):
+                return runner_path
+            # If we detect a stale runner version, try to remove it first so we
+            # never accidentally execute an old script due to partial writes.
+            if existing_version and existing_version != _STAGE_RUNNER_VERSION:
+                try:
+                    runner_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -3861,8 +5448,14 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                 raise RuntimeError("No stage jobs registered for subject run")
 
             # Shared log file per run.
-            logs_dir = data_root / ".pbrain-web" / "logs"
-            logs_dir.mkdir(parents=True, exist_ok=True)
+            # Prefer storing logs under the subject folder so artifacts are self-contained.
+            logs_dir: Path
+            try:
+                logs_dir = Path(subject.sourcePath).expanduser().resolve() / ".pbrain-web" / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                logs_dir = data_root / ".pbrain-web" / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = logs_dir / f"run_{subject.id}_{int(datetime.utcnow().timestamp()*1000)}.log"
 
             for job in jobs.values():
@@ -4005,6 +5598,30 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
             rc = await proc.wait()
             if any(j.status == "cancelled" for j in jobs.values()):
                 return
+            if rc == PBRAIN_WAITING_FOR_ROI_EXIT_CODE:
+                # Stop without error: input-functions require a user-provided ROI.
+                wait_stage: StageId = "input_functions"
+                try:
+                    _set_job(jobs[wait_stage], status="completed", progress=100, step="Waiting for user ROI")
+                    jobs[wait_stage].endTime = _now_iso()
+                    _set_stage_status(subject, wait_stage, "waiting")
+                except Exception:
+                    pass
+
+                # Everything after input-functions remains not_run.
+                try:
+                    idx = stage_order.index(wait_stage)
+                except Exception:
+                    idx = -1
+                if idx >= 0:
+                    for st in stage_order[idx + 1 :]:
+                        if st in jobs and jobs[st].status in {"queued", "running"}:
+                            _set_job(jobs[st], status="completed", progress=0, step="Not run (waiting for ROI)")
+                            jobs[st].endTime = _now_iso()
+                            _set_stage_status(subject, st, "not_run")
+                db.save()
+                return
+
             if rc != 0:
                 raise RuntimeError(f"p-brain exited with code {rc}")
 
@@ -4016,7 +5633,7 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                     begin_stage("tractography", "Tractography", 10)
                     db.save()
                     try:
-                        runner_path = _ensure_stage_runner_script(data_root)
+                        runner_path = _ensure_stage_runner_script(data_root, force=True)
                         stage_args = [
                             python_exe,
                             "-u",
@@ -4050,7 +5667,7 @@ async def _run_pbrain_auto(*, project: Project, subject: Subject) -> None:
                     begin_stage("connectome", "Connectome", 10)
                     db.save()
                     try:
-                        runner_path = _ensure_stage_runner_script(data_root)
+                        runner_path = _ensure_stage_runner_script(data_root, force=True)
                         stage_args = [
                             python_exe,
                             "-u",
@@ -4234,7 +5851,28 @@ def _resolve_pbrain_main_py() -> str:
     if env and env.strip():
         return env.strip()
     s = _get_settings().get("pbrainMainPy")
-    return str(s or "").strip()
+    configured = str(s or "").strip()
+    if configured:
+        return configured
+
+    # Fresh installs commonly have neither PBRAIN_MAIN_PY nor settings configured.
+    # Try a one-time auto-discovery using the existing deps scanner and persist it.
+    global _AUTO_SCANNED_PBRAIN_MAIN
+    try:
+        if not _AUTO_SCANNED_PBRAIN_MAIN:
+            _AUTO_SCANNED_PBRAIN_MAIN = True
+            res = _scan_system_deps(apply=True)
+            found = (res.get("found") or {}).get("pbrainMainPy")
+            found_s = str(found or "").strip()
+            if found_s:
+                return found_s
+    except Exception:
+        pass
+
+    return ""
+
+
+_AUTO_SCANNED_PBRAIN_MAIN = False
 
 
 def _system_deps() -> Dict[str, Any]:
@@ -4717,6 +6355,63 @@ def health() -> Dict[str, Any]:
     return {"ok": True, "time": _now_iso()}
 
 
+@app.post("/system/backend/restart")
+def system_backend_restart(request: Request) -> Dict[str, Any]:
+    """Request the backend process to exit so the launcher can restart it.
+
+    Note: in dev (uvicorn launched manually), this will stop the server but will
+    not automatically restart it unless an external supervisor is running.
+    """
+
+    if not _is_local_origin(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    delay_ms = 250
+
+    def _exit_soon() -> None:
+        try:
+            time.sleep(delay_ms / 1000.0)
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        t = threading.Thread(target=_exit_soon, daemon=True)
+        t.start()
+    except Exception:
+        # Worst-case: still return OK; user can restart manually.
+        pass
+
+    return {"ok": True, "willExit": True, "delayMs": delay_ms}
+
+
+@app.post("/system/backend/refresh-runners")
+def system_backend_refresh_runners(request: Request) -> Dict[str, Any]:
+    """Rewrite stage-runner scripts for all known projects."""
+
+    if not _is_local_origin(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    refreshed: List[str] = []
+    skipped: List[str] = []
+
+    for p in list(db.projects or []):
+        try:
+            root = Path(str(p.storagePath)).expanduser().resolve()
+            if not root.exists():
+                skipped.append(str(root))
+                continue
+            runner = _ensure_stage_runner_script(root, force=True)
+            refreshed.append(str(runner))
+        except Exception:
+            try:
+                skipped.append(str(getattr(p, "storagePath", "")) or "")
+            except Exception:
+                skipped.append("")
+
+    return {"ok": True, "refreshed": refreshed, "skipped": skipped}
+
+
 @app.post("/system/warm")
 async def warm_backend() -> Dict[str, Any]:
     started = _schedule_warmup()
@@ -5106,7 +6801,16 @@ def create_project(req: CreateProjectRequest) -> Dict[str, Any]:
         createdAt=_now_iso(),
         updatedAt=_now_iso(),
         copyDataIntoProject=req.copyDataIntoProject,
-        config={},
+        config={
+            "ctc": {
+                "model": "advanced",
+                "turboNph": None,
+            },
+            "pbrain": {
+                "t1Fit": "ir",
+                "flipAngle": "auto",
+            },
+        },
     )
     db.projects.append(project)
     db.save()
@@ -5464,6 +7168,95 @@ def get_subject_roi_masks(subject_id: str) -> Dict[str, Any]:
     return {"masks": masks}
 
 
+class ForcedRoiRef(BaseModel):
+    roiType: str
+    roiSubType: str
+    sliceIndex: int
+
+
+class InputFunctionForcesRequest(BaseModel):
+    forcedAif: Optional[ForcedRoiRef] = None
+    forcedVif: Optional[ForcedRoiRef] = None
+
+
+@app.get("/subjects/{subject_id}/input-function-forces")
+def get_subject_input_function_forces(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    analysis_dir = _analysis_dir_for_subject(subject)
+    p = analysis_dir / "input_function_forces.json"
+    if not p.exists() or not p.is_file():
+        return {"forcedAif": None, "forcedVif": None}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return {"forcedAif": None, "forcedVif": None}
+        forced_aif = raw.get("forcedAif")
+        forced_vif = raw.get("forcedVif")
+        return {"forcedAif": forced_aif if isinstance(forced_aif, dict) else None, "forcedVif": forced_vif if isinstance(forced_vif, dict) else None}
+    except Exception:
+        return {"forcedAif": None, "forcedVif": None}
+
+
+@app.put("/subjects/{subject_id}/input-function-forces")
+def set_subject_input_function_forces(subject_id: str, req: InputFunctionForcesRequest) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    analysis_dir = _analysis_dir_for_subject(subject)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    def _valid_part(s: str) -> bool:
+        ss = str(s or "").strip()
+        if not ss:
+            return False
+        if ".." in ss or "/" in ss or "\\" in ss:
+            return False
+        return True
+
+    forced_aif = req.forcedAif.dict() if req.forcedAif is not None else None
+    forced_vif = req.forcedVif.dict() if req.forcedVif is not None else None
+
+    if forced_aif is not None:
+        if str(forced_aif.get("roiType") or "") != "Artery":
+            raise HTTPException(status_code=400, detail="forcedAif.roiType must be 'Artery'")
+        if not _valid_part(str(forced_aif.get("roiSubType") or "")):
+            raise HTTPException(status_code=400, detail="forcedAif.roiSubType is required")
+        try:
+            forced_aif["sliceIndex"] = int(forced_aif.get("sliceIndex"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="forcedAif.sliceIndex must be an integer")
+        if int(forced_aif["sliceIndex"]) < 0:
+            raise HTTPException(status_code=400, detail="forcedAif.sliceIndex must be >= 0")
+
+    if forced_vif is not None:
+        if str(forced_vif.get("roiType") or "") != "Vein":
+            raise HTTPException(status_code=400, detail="forcedVif.roiType must be 'Vein'")
+        if not _valid_part(str(forced_vif.get("roiSubType") or "")):
+            raise HTTPException(status_code=400, detail="forcedVif.roiSubType is required")
+        try:
+            forced_vif["sliceIndex"] = int(forced_vif.get("sliceIndex"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="forcedVif.sliceIndex must be an integer")
+        if int(forced_vif["sliceIndex"]) < 0:
+            raise HTTPException(status_code=400, detail="forcedVif.sliceIndex must be >= 0")
+
+    out = {"forcedAif": forced_aif, "forcedVif": forced_vif}
+    p = analysis_dir / "input_function_forces.json"
+    tmp = analysis_dir / "input_function_forces.json.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, p)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+    return out
+
+
 @app.get("/subjects/{subject_id}/tractography")
 def get_subject_tractography(subject_id: str, path: Optional[str] = None) -> Dict[str, Any]:
     subject = _find_subject(subject_id)
@@ -5707,7 +7500,13 @@ async def run_stage(subject_id: str, req: RunStageRequest) -> Dict[str, Any]:
     if stage not in STAGES:
         raise HTTPException(status_code=400, detail="Invalid stage")
 
-    job = await _start_subject_stage_run(project=project, subject=subject, stage=stage, run_dependencies=req.runDependencies)
+    job = await _start_subject_stage_run(
+        project=project,
+        subject=subject,
+        stage=stage,
+        run_dependencies=req.runDependencies,
+        env_overrides=req.envOverrides,
+    )
     db.save()
     return asdict(job)
 
@@ -5770,12 +7569,12 @@ def _stage_chain_for_request(subject: Subject, stage: StageId) -> List[StageId]:
     return ordered
 
 
-async def _run_pbrain_stage_chain(*, project: Project, subject: Subject, jobs: List[Job]) -> None:
+async def _run_pbrain_stage_chain(*, project: Project, subject: Subject, jobs: List[Job], env_overrides: Optional[Dict[str, str]] = None) -> None:
     try:
         for j in jobs:
             if j.status == "cancelled":
                 return
-            await _run_pbrain_single_stage(project=project, subject=subject, job=j)
+            await _run_pbrain_single_stage(project=project, subject=subject, job=j, env_overrides=env_overrides)
     except asyncio.CancelledError:
         now = _now_iso()
         for j in jobs:
@@ -5811,6 +7610,7 @@ async def _start_subject_stage_run(
     subject: Subject,
     stage: StageId,
     run_dependencies: bool,
+    env_overrides: Optional[Dict[str, str]] = None,
 ) -> Job:
     # Disallow starting if there is an active run for this subject.
     if any(j.subjectId == subject.id and j.status in {"queued", "running"} for j in db.jobs):
@@ -5851,12 +7651,16 @@ async def _start_subject_stage_run(
     db._touch_jobs()
 
     if len(created) == 1:
-        task = asyncio.create_task(_run_pbrain_single_stage(project=project, subject=subject, job=created[0]))
+        task = asyncio.create_task(
+            _run_pbrain_single_stage(project=project, subject=subject, job=created[0], env_overrides=env_overrides)
+        )
         db._job_tasks[created[0].id] = task
         await asyncio.sleep(0)
         return created[0]
 
-    task = asyncio.create_task(_run_pbrain_stage_chain(project=project, subject=subject, jobs=created))
+    task = asyncio.create_task(
+        _run_pbrain_stage_chain(project=project, subject=subject, jobs=created, env_overrides=env_overrides)
+    )
     for jid in job_ids:
         db._job_tasks[jid] = task
     await asyncio.sleep(0)
@@ -5908,6 +7712,125 @@ async def ensure_subject_artifacts(subject_id: str, kind: str = "all") -> Dict[s
     created = await _start_subject_run(project=project, subject=subject)
     db.save()
     return {"started": True, "jobs": [asdict(j) for j in created], "reason": f"Missing: {', '.join(missing)}"}
+
+
+def _cancel_jobs_for_subject(subject_id: str) -> tuple[int, int]:
+    targets = [j for j in db.jobs if j.subjectId == subject_id and j.status in {"queued", "running"}]
+    if not targets:
+        return 0, 0
+
+    now = _now_iso()
+    subject = next((s for s in db.subjects if s.id == subject_id), None)
+
+    for j in targets:
+        j.status = "cancelled"
+        j.endTime = now
+        j.currentStep = "Cancelled"
+        if subject is not None:
+            if subject.stageStatuses.get(str(j.stageId)) == "running":
+                subject.stageStatuses[str(j.stageId)] = "failed"
+                subject.updatedAt = now
+
+    db._touch_jobs()
+
+    terminated = 0
+    seen: set[int] = set()
+    for j in targets:
+        proc = db._job_processes.get(j.id)
+        if not proc or proc.returncode is not None:
+            continue
+        key = getattr(proc, "pid", None) or id(proc)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            proc.send_signal(signal.SIGTERM)
+            terminated += 1
+        except ProcessLookupError:
+            pass
+
+    tasks: set[asyncio.Task] = set()
+    for j in targets:
+        task = db._job_tasks.get(j.id)
+        if task and not task.done():
+            tasks.add(task)
+    for task in tasks:
+        task.cancel()
+
+    for j in targets:
+        db._job_processes.pop(j.id, None)
+        db._job_tasks.pop(j.id, None)
+
+    return len(targets), terminated
+
+
+@app.post("/subjects/{subject_id}/clear-data")
+async def clear_subject_data(subject_id: str) -> Dict[str, Any]:
+    """Clear a subject's derived outputs so the next run starts fresh.
+
+    Deletes:
+      - <subject>/Analysis
+      - <subject>/Images
+    Keeps:
+      - <subject>/NIfTI and all source data
+
+    Also:
+      - cancels any queued/running jobs for the subject
+      - clears cached stage runner under <project storage>/.pbrain-web/runner
+      - resets stage statuses to not_run and removes job history for the subject
+    """
+
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    cancelled, terminated = _cancel_jobs_for_subject(subject_id)
+
+    subject_path = Path(subject.sourcePath).expanduser().resolve()
+    analysis_dir = subject_path / "Analysis"
+    images_dir = subject_path / "Images"
+
+    def _rm_tree(p: Path) -> bool:
+        try:
+            if p.exists():
+                shutil.rmtree(p)
+                return True
+        except Exception:
+            return False
+        return False
+
+    deleted_analysis = _rm_tree(analysis_dir)
+    deleted_images = _rm_tree(images_dir)
+
+    data_root = Path(project.storagePath).expanduser().resolve()
+    runner_dir = data_root / ".pbrain-web" / "runner"
+    deleted_runner = _rm_tree(runner_dir)
+
+    # Reset stage statuses.
+    subject.stageStatuses = _default_stage_statuses()
+    subject.updatedAt = _now_iso()
+
+    # Clear job history for this subject so the UI doesn't show stale done/failed stages.
+    to_remove = [j for j in db.jobs if j.subjectId == subject_id]
+    for j in to_remove:
+        db._job_by_id.pop(j.id, None)
+        db._job_processes.pop(j.id, None)
+        db._job_tasks.pop(j.id, None)
+    db.jobs = [j for j in db.jobs if j.subjectId != subject_id]
+    db._subject_job_ids.pop(subject_id, None)
+    db._touch_jobs()
+    db.save()
+
+    return {
+        "ok": True,
+        "cancelledJobs": cancelled,
+        "terminatedProcesses": terminated,
+        "deleted": {
+            "analysis": deleted_analysis,
+            "images": deleted_images,
+            "runner": deleted_runner,
+        },
+        "subject": asdict(subject),
+    }
 
 
 @app.post("/jobs/{job_id}/cancel")

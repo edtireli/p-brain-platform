@@ -114,10 +114,16 @@ interface PatternInputProps {
   patternType: 'file' | 'folder';
   label: string;
   colorIndicator?: string;
+  optional?: boolean;
 }
 
-function PatternInput({ id, value, onChange, placeholder, patternType, label, colorIndicator }: PatternInputProps) {
-  const validation = useMemo(() => validateGlobPattern(value, patternType), [value, patternType]);
+function PatternInput({ id, value, onChange, placeholder, patternType, label, colorIndicator, optional }: PatternInputProps) {
+  const validation = useMemo(() => {
+    if (optional && (!value || String(value).trim() === '')) {
+      return { isValid: true, warnings: [], suggestions: [] };
+    }
+    return validateGlobPattern(value, patternType);
+  }, [value, patternType, optional]);
   
   return (
     <div className="space-y-2">
@@ -207,7 +213,10 @@ function PatternInput({ id, value, onChange, placeholder, patternType, label, co
 
 interface FolderStructureConfigProps {
   project: Project;
-  onSave: (config: FolderConfig) => void;
+  onSave: (
+    config: FolderConfig,
+    pbrainOverrides?: { vfaGlob?: string; irPrefixes?: string; irTi?: string }
+  ) => void;
 }
 
 const PRESET_STRUCTURES = [
@@ -405,6 +414,9 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   const [config, setConfig] = useState<FolderConfig>(
     { ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) }
   );
+  const [pbrainVfaGlob, setPbrainVfaGlob] = useState<string>('*VFA*.nii*');
+  const [pbrainIrPrefixes, setPbrainIrPrefixes] = useState<string>('WIPTI_,WIPDelRec-TI_');
+  const [pbrainIrTi, setPbrainIrTi] = useState<string>('00120,00300,00600,01000,02000,04000,10000');
   const [selectedPreset, setSelectedPreset] = useState<string>('custom');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     new Set(['root', 'subject', 'nifti', 'anat', 'perf', 'dwi'])
@@ -412,18 +424,29 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
 
   const validationState = useMemo(() => {
     const subjectValidation = validateGlobPattern(config.subjectFolderPattern, 'folder');
-    const t1Validation = validateGlobPattern(config.t1Pattern, 'file');
-    const dceValidation = validateGlobPattern(config.dcePattern, 'file');
-    const diffusionValidation = validateGlobPattern(config.diffusionPattern, 'file');
+    const t1Validation = config.t1Pattern?.trim() ? validateGlobPattern(config.t1Pattern, 'file') : { isValid: true, warnings: [], suggestions: [] };
+    const t2Validation = (config as any).t2Pattern?.trim() ? validateGlobPattern((config as any).t2Pattern, 'file') : { isValid: true, warnings: [], suggestions: [] };
+    const dceValidation = config.dcePattern?.trim() ? validateGlobPattern(config.dcePattern, 'file') : { isValid: true, warnings: [], suggestions: [] };
+    const diffusionValidation = config.diffusionPattern?.trim() ? validateGlobPattern(config.diffusionPattern, 'file') : { isValid: true, warnings: [], suggestions: [] };
     
-    const allValid = subjectValidation.isValid && t1Validation.isValid && 
+    const allValid = subjectValidation.isValid && t1Validation.isValid && t2Validation.isValid &&
                      dceValidation.isValid && diffusionValidation.isValid;
     
-    const totalWarnings = subjectValidation.warnings.length + t1Validation.warnings.length +
+    const totalWarnings = subjectValidation.warnings.length + t1Validation.warnings.length + t2Validation.warnings.length +
                           dceValidation.warnings.length + diffusionValidation.warnings.length;
     
     return { allValid, totalWarnings };
   }, [config]);
+
+  useEffect(() => {
+    const pb: any = (project as any)?.config?.pbrain || {};
+    const vfa = String(pb?.vfaGlob ?? '*VFA*.nii*').trim();
+    setPbrainVfaGlob(vfa || '*VFA*.nii*');
+    const pref = String(pb?.irPrefixes ?? 'WIPTI_,WIPDelRec-TI_').trim();
+    setPbrainIrPrefixes(pref || 'WIPTI_,WIPDelRec-TI_');
+    const ti = String(pb?.irTi ?? '00120,00300,00600,01000,02000,04000,10000').trim();
+    setPbrainIrTi(ti || '00120,00300,00600,01000,02000,04000,10000');
+  }, [project?.id, project?.updatedAt]);
 
   useEffect(() => {
     const comparable = { ...config, aiModelsPath: '' };
@@ -457,7 +480,11 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
     } else {
       toast.success('Folder structure configuration saved');
     }
-    onSave(config);
+    onSave(config, {
+      vfaGlob: String(pbrainVfaGlob || '').trim(),
+      irPrefixes: String(pbrainIrPrefixes || '').trim(),
+      irTi: String(pbrainIrTi || '').trim(),
+    });
     setIsOpen(false);
   };
 
@@ -698,57 +725,60 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
               <TabsTrigger value="preview">Preview</TabsTrigger>
             </TabsList>
 
-            <div className="flex-1 overflow-auto mt-4">
+            <div className="flex-1 overflow-hidden mt-4">
               <TabsContent value="presets" className="mt-0 h-full">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {PRESET_STRUCTURES.map((preset) => (
-                    <Card 
-                      key={preset.id}
-                      className={`cursor-pointer transition-all hover:shadow-md ${
-                        selectedPreset === preset.id 
-                          ? 'border-accent ring-2 ring-accent/20' 
-                          : 'hover:border-muted-foreground/30'
-                      }`}
-                      onClick={() => handlePresetChange(preset.id)}
-                    >
-                      <CardHeader className="pb-2">
-                        <CardTitle className="flex items-center justify-between text-sm font-medium">
-                          <span>{preset.name}</span>
-                          {selectedPreset === preset.id && (
-                            <Badge className="bg-accent text-accent-foreground text-[10px]">
-                              Selected
-                            </Badge>
-                          )}
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <p className="text-xs text-muted-foreground mb-3">
-                          {preset.description}
-                        </p>
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 text-xs">
-                            <Folder size={12} className="text-accent" />
-                            <span className="mono text-muted-foreground">
-                              {preset.config.subjectFolderPattern}
-                            </span>
-                          </div>
-                          {preset.config.niftiSubfolder && (
+                <ScrollArea className="h-full pr-4">
+                  <div className="grid gap-4 sm:grid-cols-2 pb-4">
+                    {PRESET_STRUCTURES.map((preset) => (
+                      <Card 
+                        key={preset.id}
+                        className={`cursor-pointer transition-all hover:shadow-md ${
+                          selectedPreset === preset.id 
+                            ? 'border-accent ring-2 ring-accent/20' 
+                            : 'hover:border-muted-foreground/30'
+                        }`}
+                        onClick={() => handlePresetChange(preset.id)}
+                      >
+                        <CardHeader className="pb-2">
+                          <CardTitle className="flex items-center justify-between text-sm font-medium">
+                            <span>{preset.name}</span>
+                            {selectedPreset === preset.id && (
+                              <Badge className="bg-accent text-accent-foreground text-[10px]">
+                                Selected
+                              </Badge>
+                            )}
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-xs text-muted-foreground mb-3">
+                            {preset.description}
+                          </p>
+                          <div className="space-y-1">
                             <div className="flex items-center gap-2 text-xs">
-                              <FolderOpen size={12} className="text-accent" />
+                              <Folder size={12} className="text-accent" />
                               <span className="mono text-muted-foreground">
-                                /{preset.config.niftiSubfolder}/
+                                {preset.config.subjectFolderPattern}
                               </span>
                             </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
+                            {preset.config.niftiSubfolder && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <FolderOpen size={12} className="text-accent" />
+                                <span className="mono text-muted-foreground">
+                                  /{preset.config.niftiSubfolder}/
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </ScrollArea>
               </TabsContent>
 
-              <TabsContent value="patterns" className="mt-0">
-                <div className="space-y-6">
+              <TabsContent value="patterns" className="mt-0 h-full">
+                <ScrollArea className="h-full pr-4">
+                  <div className="space-y-6 pb-4">
                   <Card>
                     <CardHeader className="pb-3">
                       <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -883,6 +913,17 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                           patternType="file"
                           label="T1/Anatomical Pattern"
                           colorIndicator="bg-success"
+                          optional
+                        />
+
+                        <PatternInput
+                          id="t2Pattern"
+                          value={(config as any).t2Pattern || ''}
+                          onChange={(value) => setConfig(prev => ({ ...(prev as any), t2Pattern: value }))}
+                          placeholder="*T2*.nii.gz"
+                          patternType="file"
+                          label="T2 Pattern"
+                          optional
                         />
 
                         <PatternInput
@@ -893,6 +934,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                           patternType="file"
                           label="DCE Pattern"
                           colorIndicator="bg-accent"
+                          optional
                         />
 
                         <PatternInput
@@ -903,6 +945,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                           patternType="file"
                           label="Diffusion Pattern"
                           colorIndicator="bg-warning"
+                          optional
                         />
                       </div>
 
@@ -914,13 +957,61 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                           recursive matching.
                         </p>
                       </div>
+
+                      <div className="border-t border-border pt-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FileCode size={14} className="text-accent" />
+                          <span className="text-sm font-medium">T1/M0 Series Naming (Optional)</span>
+                        </div>
+                        <div className="grid gap-4 sm:grid-cols-3">
+                          <div className="space-y-2">
+                            <Label htmlFor="irPrefixes" className="text-xs">TI series prefixes (comma-separated)</Label>
+                            <Input
+                              id="irPrefixes"
+                              value={pbrainIrPrefixes}
+                              onChange={(e) => setPbrainIrPrefixes(e.target.value)}
+                              placeholder="WIPTI_,WIPDelRec-TI_"
+                              className="mono text-sm"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="irTi" className="text-xs">TI values (comma-separated, ms codes)</Label>
+                            <Input
+                              id="irTi"
+                              value={pbrainIrTi}
+                              onChange={(e) => setPbrainIrTi(e.target.value)}
+                              placeholder="00120,00300,00600,01000,02000,04000,10000"
+                              className="mono text-sm"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="vfaGlob" className="text-xs">VFA series glob(s) (comma-separated)</Label>
+                            <Input
+                              id="vfaGlob"
+                              value={pbrainVfaGlob}
+                              onChange={(e) => setPbrainVfaGlob(e.target.value)}
+                              placeholder="*VFA*.nii*"
+                              className="mono text-sm"
+                            />
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-muted/50 p-3 mt-4">
+                          <p className="text-xs text-muted-foreground">
+                            These map to p-brain discovery env vars: <code className="mono bg-background px-1 rounded">P_BRAIN_IR_PREFIXES</code>,{' '}
+                            <code className="mono bg-background px-1 rounded">P_BRAIN_IR_TI</code>,{' '}
+                            <code className="mono bg-background px-1 rounded">P_BRAIN_VFA_GLOB</code>.
+                          </p>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
-                </div>
+                  </div>
+                </ScrollArea>
               </TabsContent>
 
               <TabsContent value="preview" className="mt-0 h-full">
-                <div className="grid gap-4 lg:grid-cols-2 h-full">
+                <ScrollArea className="h-full pr-4">
+                  <div className="grid gap-4 lg:grid-cols-2 h-full pb-4">
                   <Card className="h-full">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-sm font-medium">
@@ -991,7 +1082,8 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                       </div>
                     </CardContent>
                   </Card>
-                </div>
+                  </div>
+                </ScrollArea>
               </TabsContent>
             </div>
           </Tabs>

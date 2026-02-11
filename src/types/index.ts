@@ -10,7 +10,7 @@ export type StageId =
   | 'tractography'
   | 'connectome';
 
-export type StageStatus = 'not_run' | 'running' | 'done' | 'failed';
+export type StageStatus = 'not_run' | 'running' | 'done' | 'failed' | 'waiting';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -99,12 +99,67 @@ export interface FolderStructureConfig {
   aiModelsPath: string;
 }
 
-export type CtcModel = 'saturation' | 'turboflash';
+export type CtcModel = 'saturation' | 'turboflash' | 'advanced';
+
+export type PkModel =
+  | 'patlak'
+  | 'tikhonov'
+  | 'both';
+
+export type T1FitMode = 'auto' | 'ir' | 'vfa' | 'none';
 
 export interface CtcConfig {
   model: CtcModel;
-  turboNph: number;
+  // TurboFLASH ky=0 index / turbo factor.
+  // Use null/undefined to rely on NIfTI JSON sidecar metadata (auto).
+  turboNph?: number | null;
   numberOfPeaks: number;
+
+  // When selecting the TSCC/CTC "Max" curve, skip curves that have a forked/split apex.
+  // Maps to p-brain Defaults JSON key: skipForkedMaxCtcPeaks
+  skipForkedMaxCtcPeaks?: boolean;
+
+  // Controls whether p-brain writes CTC peak/AUC maps and full 4D CTC exports.
+  // Maps to p-brain Defaults JSON keys: writeCtcMaps, writeCtc4d, ctcMapSlice
+  writeCtcMaps?: boolean;
+  writeCtc4d?: boolean;
+  ctcMapSlice?: number;
+
+  // Global peak-rescale threshold for concentration curves.
+  // When peak concentration exceeds this value, p-brain rescales the curve.
+  peakRescaleThreshold?: number | null;
+}
+
+export type FlipAngleSetting = 'auto' | number;
+
+export interface PBrainExecutionConfig {
+  // Enforce metadata-first behavior and error when critical acquisition
+  // metadata is missing (instead of silently defaulting).
+  strictMetadata: boolean;
+
+  // Multiprocessing toggle for p-brain subprocess runs.
+  multiprocessing: boolean;
+
+  // Core selection policy. Supports "auto" (80% cores), integer counts, or
+  // a fraction in (0,1] (e.g. 0.8).
+  cores: string;
+
+  // Optional flip angle override for signal->concentration conversion.
+  // Use 'auto' to rely on NIfTI sidecar metadata.
+  flipAngle: FlipAngleSetting;
+
+  // T1/M0 fit method selection.
+  // Matches p-brain env: P_BRAIN_T1_FIT=auto|ir|vfa|none
+  t1Fit?: T1FitMode;
+
+  // Optional discovery overrides for non-standard acquisition naming.
+  // These map to p-brain env vars used by series discovery:
+  // - P_BRAIN_VFA_GLOB (comma-separated glob(s) relative to NIfTI dir)
+  // - P_BRAIN_IR_PREFIXES (comma-separated filename prefixes)
+  // - P_BRAIN_IR_TI (comma-separated TI values)
+  vfaGlob?: string;
+  irPrefixes?: string;
+  irTi?: string;
 }
 
 export interface PipelineConfig {
@@ -114,14 +169,48 @@ export interface PipelineConfig {
     tissueDensity: number;
   };
   ctc: CtcConfig;
+  pbrain: PBrainExecutionConfig;
   model: {
+    pkModel?: PkModel;
     lambdaTikhonov: number;
     autoLambda: boolean;
+    tikhonovPenalty?: 'identity' | 'derivative';
+    residueEnforceNonneg?: boolean;
+    residueEnforceMonotone?: boolean;
     patlakWindowStartFraction: number;
     patlakMinR2: number;
   };
   inputFunction: {
-    source: 'aif' | 'adjusted_vif';
+    // Which input-function curve to use for modelling.
+    // - aif: pure arterial curve
+    // - vif: pure venous curve (SSS)
+    // - adjusted_vif: SSS-derived TSCC (time-shifted/rescaled)
+    source: 'aif' | 'vif' | 'adjusted_vif';
+
+    // How to summarize a vascular ROI mask into a representative curve.
+    // Matches p-brain env vars:
+    // - P_BRAIN_VASCULAR_ROI_CURVE_METHOD=max|mean
+    // - P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX=1|0
+    vascularRoiCurveMethod?: 'max' | 'mean' | 'median';
+    vascularRoiAdaptiveMax?: boolean;
+
+    ai?: {
+      // AI confidence thresholds for slice selection.
+      // Values are fractions in [0,1] (e.g. 0.5 = 50%).
+      sliceConfStart?: number;
+      sliceConfMin?: number;
+      sliceConfStep?: number;
+
+      // If AI fails to find AIF/VIF after the threshold sweep:
+      // - 'deterministic': fall back automatically
+      // - 'roi': require user interaction (stage becomes 'waiting')
+      missingFallback?: 'deterministic' | 'roi';
+    };
+  };
+  tissue?: {
+    // How to summarize tissue/segmentation ROI voxels into representative curves/values.
+    // Matches p-brain env: P_BRAIN_TISSUE_ROI_AGGREGATION=mean|median
+    roiAggregation?: 'mean' | 'median';
   };
   voxelwise: {
     enabled: boolean;
@@ -202,6 +291,17 @@ export interface RoiOverlay {
   row1: number;
   col0: number;
   col1: number;
+}
+
+export interface ForcedRoiRef {
+  roiType: 'Artery' | 'Vein';
+  roiSubType: string;
+  sliceIndex: number;
+}
+
+export interface InputFunctionForces {
+  forcedAif: ForcedRoiRef | null;
+  forcedVif: ForcedRoiRef | null;
 }
 
 export interface RoiMaskVolume {
@@ -355,17 +455,42 @@ export const DEFAULT_CONFIG: PipelineConfig = {
     tissueDensity: 1.04,
   },
   ctc: {
-    model: 'saturation',
-    turboNph: 1,
+    model: 'turboflash',
+    turboNph: null,
+    numberOfPeaks: 2,
+    peakRescaleThreshold: 4.0,
+  },
+  pbrain: {
+    strictMetadata: false,
+    multiprocessing: true,
+    cores: 'auto',
+    flipAngle: 'auto',
+    t1Fit: 'ir',
+    vfaGlob: '*VFA*.nii*',
+    irPrefixes: 'WIPTI_,WIPDelRec-TI_',
+    irTi: '00120,00300,00600,01000,02000,04000,10000',
   },
   model: {
+    pkModel: 'both',
     lambdaTikhonov: 0.1,
-    autoLambda: false,
+    autoLambda: true,
+    tikhonovPenalty: 'derivative',
+    residueEnforceNonneg: true,
+    residueEnforceMonotone: true,
     patlakWindowStartFraction: 0.4,
     patlakMinR2: 0.85,
   },
   inputFunction: {
-    source: 'aif',
+    source: 'adjusted_vif',
+    ai: {
+      sliceConfStart: 0.5,
+      sliceConfMin: 0.1,
+      sliceConfStep: 0.05,
+      missingFallback: 'deterministic',
+    },
+  },
+  tissue: {
+    roiAggregation: 'median',
   },
   voxelwise: {
     enabled: false,

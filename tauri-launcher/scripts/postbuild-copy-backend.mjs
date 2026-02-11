@@ -22,12 +22,20 @@ function ensureDir(dir) {
 
 const cwd = process.cwd();
 
-const srcBackendPath = path.join(
+const srcBackendDirPath = path.join(
   cwd,
   "src-tauri",
   "resources",
   "backend",
   "pbrain-web-backend"
+);
+
+const srcBackendZipPath = path.join(
+  cwd,
+  "src-tauri",
+  "resources",
+  "backend",
+  "pbrain-web-backend.zip"
 );
 
 const macosBundleDir = path.join(
@@ -39,9 +47,12 @@ const macosBundleDir = path.join(
   "macos"
 );
 
-if (!fs.existsSync(srcBackendPath)) {
+const hasZip = fs.existsSync(srcBackendZipPath);
+const hasDir = fs.existsSync(srcBackendDirPath);
+
+if (!hasZip && !hasDir) {
   console.error(
-    `Backend not found: ${srcBackendPath}\nDid prepare.mjs run successfully?`
+    `Backend not found:\n- ${srcBackendZipPath}\n- ${srcBackendDirPath}\nDid prepare.mjs run successfully?`
   );
   process.exit(1);
 }
@@ -52,37 +63,53 @@ if (!appPath) {
   process.exit(1);
 }
 
-const destBackendPath = path.join(
-  appPath,
-  "Contents",
-  "Resources",
-  "resources",
-  "backend",
-  "pbrain-web-backend"
-);
+if (hasZip) {
+  const destZipPath = path.join(
+    appPath,
+    "Contents",
+    "Resources",
+    "resources",
+    "backend",
+    "pbrain-web-backend.zip"
+  );
 
-ensureDir(path.dirname(destBackendPath));
+  ensureDir(path.dirname(destZipPath));
 
-const srcStat = fs.lstatSync(srcBackendPath);
-if (srcStat.isDirectory()) {
-  // Use rsync to preserve symlinks/perms and keep updates fast.
-  const src = srcBackendPath.endsWith(path.sep) ? srcBackendPath : srcBackendPath + path.sep;
-  const dest = destBackendPath.endsWith(path.sep) ? destBackendPath : destBackendPath + path.sep;
+  try {
+    fs.copyFileSync(srcBackendZipPath, destZipPath);
+  } catch (e) {
+    console.error("Failed to copy backend zip into app bundle.");
+    throw e;
+  }
+
+  console.log(`Bundled backend zip into: ${destZipPath}`);
+} else {
+  // Legacy fallback: directory exists but zip does not.
+  // Copy the directory into the app bundle so older builds still work.
+  const destBackendPath = path.join(
+    appPath,
+    "Contents",
+    "Resources",
+    "resources",
+    "backend",
+    "pbrain-web-backend"
+  );
+
+  ensureDir(path.dirname(destBackendPath));
+
+  const src = srcBackendDirPath.endsWith(path.sep)
+    ? srcBackendDirPath
+    : srcBackendDirPath + path.sep;
+  const dest = destBackendPath.endsWith(path.sep)
+    ? destBackendPath
+    : destBackendPath + path.sep;
+
   try {
     execFileSync("rsync", ["-a", "--delete", src, dest], { stdio: "inherit" });
   } catch (e) {
-    console.error("Failed to rsync backend into app bundle.");
+    console.error("Failed to rsync backend directory into app bundle.");
     throw e;
   }
+
   console.log(`Bundled backend directory into: ${destBackendPath}`);
-} else {
-  try {
-    fs.copyFileSync(srcBackendPath, destBackendPath);
-    // Ensure executable bit is set (PyInstaller produces an executable).
-    fs.chmodSync(destBackendPath, 0o755);
-  } catch (e) {
-    console.error("Failed to copy backend executable into app bundle.");
-    throw e;
-  }
-  console.log(`Bundled backend executable into: ${destBackendPath}`);
 }

@@ -34,6 +34,12 @@ interface VolumeViewerProps {
   showRoiOverlays?: boolean;
   roiOverlays?: RoiOverlay[];
   roiMasks?: RoiMaskVolume[];
+
+  paintEnabled?: boolean;
+  paintRadius?: number;
+  paintVoxels?: Array<{ row: number; col: number; z: number }>;
+  paintColor?: string;
+  onPaintVoxel?: (v: { row: number; col: number; z: number; t: number }) => void;
 }
 
 export function VolumeViewer({
@@ -45,6 +51,11 @@ export function VolumeViewer({
   showRoiOverlays = false,
   roiOverlays = [],
   roiMasks = [],
+  paintEnabled = false,
+  paintRadius = 0,
+  paintVoxels = [],
+  paintColor,
+  onPaintVoxel,
 }: VolumeViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hotkeyRef = useRef<HTMLDivElement>(null);
@@ -71,8 +82,15 @@ export function VolumeViewer({
   const [showKeybindings, setShowKeybindings] = useState(false);
   const [roiHover, setRoiHover] = useState<{ x: number; y: number; labels: string[] } | null>(null);
 
+  const [painting, setPainting] = useState(false);
+
   const VIEW_ROTATION_DEG = -90;
   const VIEW_SCALE = 1.06;
+
+  useEffect(() => {
+    if (paintEnabled && viewMode !== 'single') setViewMode('single');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paintEnabled]);
 
   useEffect(() => {
     setActiveKind(kind);
@@ -543,6 +561,52 @@ export function VolumeViewer({
 
     ctx.putImageData(imageData, 0, 0);
 
+    // Preview: painted voxels (raw nibabel row/col coordinates).
+    try {
+      if (paintEnabled && Array.isArray(paintVoxels) && paintVoxels.length > 0) {
+        const start = Math.max(0, sliceZ - 4);
+        const sliceIndices =
+          viewMode === 'grid'
+            ? Array.from({ length: 9 }, (_, i) => Math.min(maxZ, start + i))
+            : [sliceZ];
+
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = paintColor || computedCssColor('var(--primary)', 'rgba(0, 160, 255, 0.95)');
+
+        const byZ = new Map<number, Array<{ row: number; col: number }>>();
+        for (const v of paintVoxels) {
+          const z = Number((v as any)?.z);
+          const row = Number((v as any)?.row);
+          const col = Number((v as any)?.col);
+          if (!Number.isFinite(z) || !Number.isFinite(row) || !Number.isFinite(col)) continue;
+          const rr = Math.max(0, Math.min(height - 1, Math.floor(row)));
+          const cc = Math.max(0, Math.min(width - 1, Math.floor(col)));
+          if (!byZ.has(z)) byZ.set(z, []);
+          byZ.get(z)!.push({ row: rr, col: cc });
+        }
+
+        for (let tile = 0; tile < tilesX * tilesY; tile++) {
+          const tileX = tile % tilesX;
+          const tileY = Math.floor(tile / tilesX);
+          const ox = tileX * width;
+          const oy = tileY * height;
+          const zForTile = sliceIndices[Math.min(tile, sliceIndices.length - 1)] ?? sliceZ;
+          const pts = byZ.get(zForTile);
+          if (!pts || pts.length === 0) continue;
+          for (const p of pts) {
+            const px = ox + p.col;
+            const py = oy + (height - 1 - p.row);
+            ctx.fillRect(px, py, 1, 1);
+          }
+        }
+
+        ctx.restore();
+      }
+    } catch {
+      // ignore paint overlay errors
+    }
+
     if (showRoiOverlays && Array.isArray(roiOverlays) && roiOverlays.length > 0) {
       try {
         const stroke = computedCssColor('var(--destructive)', 'rgba(255, 0, 0, 0.95)');
@@ -600,6 +664,10 @@ export function VolumeViewer({
   };
 
   const updateRoiHover = (clientX: number, clientY: number) => {
+    if (paintEnabled && painting) {
+      setRoiHover(null);
+      return;
+    }
     if (!showRoiOverlays) {
       setRoiHover(null);
       return;
@@ -681,6 +749,76 @@ export function VolumeViewer({
       y: Math.max(8, Math.min(cardRect.height - 8, clientY - cardRect.top + 12)),
       labels,
     });
+  };
+
+  const clientToVoxel = (clientX: number, clientY: number): { row: number; col: number; z: number; t: number } | null => {
+    const wrap = viewWrapRef.current;
+    const meta = renderMetaRef.current;
+    if (!wrap || !meta) return null;
+
+    const rect = wrap.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Invert the view transform: rotate(-90) scale(1.06) about center.
+    const dx = (clientX - cx) / VIEW_SCALE;
+    const dy = (clientY - cy) / VIEW_SCALE;
+    // Original = R(+90) * transformed
+    const x0 = -dy;
+    const y0 = dx;
+
+    const w0 = Math.max(1, wrap.clientWidth);
+    const h0 = Math.max(1, wrap.clientHeight);
+    const lx = x0 + w0 / 2;
+    const ly = y0 + h0 / 2;
+    if (lx < 0 || lx >= w0 || ly < 0 || ly >= h0) return null;
+
+    const canvasW = meta.width * meta.tilesX;
+    const canvasH = meta.height * meta.tilesY;
+    const cX = Math.max(0, Math.min(canvasW - 1, Math.floor((lx / w0) * canvasW)));
+    const cY = Math.max(0, Math.min(canvasH - 1, Math.floor((ly / h0) * canvasH)));
+
+    const tileX = Math.max(0, Math.min(meta.tilesX - 1, Math.floor(cX / meta.width)));
+    const tileY = Math.max(0, Math.min(meta.tilesY - 1, Math.floor(cY / meta.height)));
+    const tileIndex = tileY * meta.tilesX + tileX;
+
+    const col = cX - tileX * meta.width;
+    const yCanvas = cY - tileY * meta.height;
+    const row = meta.height - 1 - yCanvas;
+
+    const start = Math.max(0, sliceZ - 4);
+    const sliceIndices =
+      viewMode === 'grid'
+        ? Array.from({ length: 9 }, (_, i) => Math.min(maxZ, start + i))
+        : [sliceZ];
+    const z = sliceIndices[Math.min(tileIndex, sliceIndices.length - 1)] ?? sliceZ;
+
+    return {
+      row: Math.max(0, Math.min(meta.height - 1, Math.floor(row))),
+      col: Math.max(0, Math.min(meta.width - 1, Math.floor(col))),
+      z: Math.max(0, Math.min(maxZ, Math.floor(z))),
+      t: Math.max(0, Math.min(maxT, Math.floor(timeFrame))),
+    };
+  };
+
+  const emitPaintAt = (clientX: number, clientY: number) => {
+    if (!paintEnabled || typeof onPaintVoxel !== 'function') return;
+    const v = clientToVoxel(clientX, clientY);
+    if (!v) return;
+    const r = Math.max(0, Math.floor(paintRadius || 0));
+    if (r <= 0) {
+      onPaintVoxel(v);
+      return;
+    }
+    for (let dr = -r; dr <= r; dr++) {
+      for (let dc = -r; dc <= r; dc++) {
+        if (dr * dr + dc * dc > r * r) continue;
+        const rr = v.row + dr;
+        const cc = v.col + dc;
+        if (rr < 0 || cc < 0) continue;
+        onPaintVoxel({ ...v, row: rr, col: cc });
+      }
+    }
   };
 
   const getViridisColor = (t: number): [number, number, number] => {
@@ -835,8 +973,26 @@ export function VolumeViewer({
             ref={viewWrapRef}
             className="flex h-full w-full items-center justify-center"
             style={{ transform: `rotate(${VIEW_ROTATION_DEG}deg) scale(${VIEW_SCALE})`, transformOrigin: 'center' }}
-            onPointerMove={(e: any) => updateRoiHover(e.clientX, e.clientY)}
-            onPointerLeave={() => setRoiHover(null)}
+            onPointerDown={(e: any) => {
+              if (!paintEnabled) return;
+              try {
+                (e.currentTarget as any)?.setPointerCapture?.(e.pointerId);
+              } catch {
+                // ignore
+              }
+              setPainting(true);
+              emitPaintAt(e.clientX, e.clientY);
+            }}
+            onPointerMove={(e: any) => {
+              if (paintEnabled && painting) emitPaintAt(e.clientX, e.clientY);
+              updateRoiHover(e.clientX, e.clientY);
+            }}
+            onPointerUp={() => setPainting(false)}
+            onPointerCancel={() => setPainting(false)}
+            onPointerLeave={() => {
+              setPainting(false);
+              setRoiHover(null);
+            }}
           >
             <img
               alt="Volume preview"
@@ -849,8 +1005,26 @@ export function VolumeViewer({
             ref={viewWrapRef}
             className="flex h-full w-full items-center justify-center"
             style={{ transform: `rotate(${VIEW_ROTATION_DEG}deg) scale(${VIEW_SCALE})`, transformOrigin: 'center' }}
-            onPointerMove={(e: any) => updateRoiHover(e.clientX, e.clientY)}
-            onPointerLeave={() => setRoiHover(null)}
+            onPointerDown={(e: any) => {
+              if (!paintEnabled) return;
+              try {
+                (e.currentTarget as any)?.setPointerCapture?.(e.pointerId);
+              } catch {
+                // ignore
+              }
+              setPainting(true);
+              emitPaintAt(e.clientX, e.clientY);
+            }}
+            onPointerMove={(e: any) => {
+              if (paintEnabled && painting) emitPaintAt(e.clientX, e.clientY);
+              updateRoiHover(e.clientX, e.clientY);
+            }}
+            onPointerUp={() => setPainting(false)}
+            onPointerCancel={() => setPainting(false)}
+            onPointerLeave={() => {
+              setPainting(false);
+              setRoiHover(null);
+            }}
           >
             <canvas
               ref={canvasRef}

@@ -18,6 +18,9 @@ launcher/build-resources/
 launcher/release/
 launcher/*.dmg
 
+# Local packaged artifacts
+*.dmg
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -45,6 +48,7 @@ backend/db.json
 backend/.pbrain-web/
 backend/certs/
 backend/.venv/
+backend/.venv-build/
 
 # Generated analysis artifacts
 backend/*.png
@@ -60,4 +64,5 @@ backend/AI/**
 
 # Ignore generated backend binaries
 /tauri-launcher/src-tauri/resources/backend/pbrain-web-backend
+/tauri-launcher/src-tauri/resources/backend/*.zip
 /tauri-launcher/src-tauri/resources/pyi-work/

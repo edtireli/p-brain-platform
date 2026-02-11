@@ -25,7 +25,7 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/backend/pbrain-web-backend"
+      "resources/backend/pbrain-web-backend.zip"
     ],
     "icon": [
       "icons/32x32.png",

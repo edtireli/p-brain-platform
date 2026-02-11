@@ -57,7 +57,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'Ki_per_voxel',
           label: 'Ki (voxel)',
           group: 'modelling',
-          candidates: ['Ki_per_voxel_tikhonov', 'Ki_per_voxel_patlak', 'Ki_per_voxel_two_compartment'],
+          candidates: ['Ki_per_voxel', 'Ki_per_voxel_tikhonov', 'Ki_per_voxel_patlak'],
         },
       },
       {
@@ -67,7 +67,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'Ki_map_atlas',
           label: 'Ki (atlas)',
           group: 'modelling',
-          candidates: ['Ki_map_atlas', 'Ki_map_atlas_tikhonov', 'Ki_map_atlas_patlak', 'Ki_map_atlas_two_compartment'],
+          candidates: ['Ki_map_atlas', 'Ki_map_atlas_tikhonov', 'Ki_map_atlas_patlak'],
         },
       },
       {
@@ -80,16 +80,12 @@ const MAP_GROUPS: MapGroupDef[] = [
           candidates: [
             'Ki_wm_tikhonov',
             'Ki_wm_patlak',
-            'Ki_wm_two_compartment',
             'Ki_cortical_gm_tikhonov',
             'Ki_cortical_gm_patlak',
-            'Ki_cortical_gm_two_compartment',
             'Ki_subcortical_gm_tikhonov',
             'Ki_subcortical_gm_patlak',
-            'Ki_subcortical_gm_two_compartment',
             'Ki_boundary_tikhonov',
             'Ki_boundary_patlak',
-            'Ki_boundary_two_compartment',
           ],
         },
       },
@@ -107,7 +103,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'vp_per_voxel',
           label: 'vp (voxel)',
           group: 'modelling',
-          candidates: ['vp_per_voxel_tikhonov', 'vp_per_voxel_patlak', 'vp_per_voxel_two_compartment'],
+          candidates: ['vp_per_voxel', 'vp_per_voxel_tikhonov', 'vp_per_voxel_patlak'],
         },
       },
       {
@@ -117,7 +113,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'vp_map_atlas',
           label: 'vp (atlas)',
           group: 'modelling',
-          candidates: ['vp_map_atlas_tikhonov', 'vp_map_atlas_patlak', 'vp_map_atlas_two_compartment'],
+          candidates: ['vp_map_atlas_tikhonov', 'vp_map_atlas_patlak'],
         },
       },
       {
@@ -139,7 +135,7 @@ const MAP_GROUPS: MapGroupDef[] = [
           id: 'CBF_per_voxel',
           label: 'CBF (voxel)',
           group: 'modelling',
-          candidates: ['CBF_per_voxel_tikhonov', 'CBF_per_voxel_patlak', 'CBF_per_voxel_two_compartment'],
+          candidates: ['CBF_per_voxel_tikhonov', 'CBF_per_voxel_patlak'],
         },
       },
       {
@@ -292,8 +288,8 @@ function basenameFromPath(p: string): string {
 function parseTissueInfoFromName(name: string): TissueInfo {
   const n = String(name || '').toLowerCase();
 
-  const methodKey = /_patlak\b/.test(n) ? 'patlak' : /_two_compartment\b/.test(n) ? 'two_compartment' : /_tikhonov\b/.test(n) ? 'tikhonov' : 'default';
-  const methodLabel = methodKey === 'patlak' ? 'Patlak' : methodKey === 'two_compartment' ? '2-comp' : methodKey === 'tikhonov' ? 'Tikhonov' : 'Default';
+  const methodKey = /_patlak\b/.test(n) ? 'patlak' : /_tikhonov\b/.test(n) ? 'tikhonov' : 'default';
+  const methodLabel = methodKey === 'patlak' ? 'Patlak' : methodKey === 'tikhonov' ? 'Tikhonov' : 'Default';
 
   // Tissue regions seen in real outputs (plus a few common ones).
   const regionMatchers: Array<{ key: string; label: string; re: RegExp }> = [
@@ -545,7 +541,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
 
                         const methods = Array.from(new Set(enriched.map(x => x.info.methodKey)));
                         const methodKey = methods.includes(activeTissueMethod) ? activeTissueMethod : methods[0] || 'default';
-                        const methodLabelFor = (mk: string) => (mk === 'patlak' ? 'Patlak' : mk === 'two_compartment' ? '2-comp' : mk === 'tikhonov' ? 'Tikhonov' : 'Default');
+                        const methodLabelFor = (mk: string) => (mk === 'patlak' ? 'Patlak' : mk === 'tikhonov' ? 'Tikhonov' : 'Default');
 
                         return (
                           <div className="space-y-3">

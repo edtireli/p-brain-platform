@@ -200,7 +200,15 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       const res = await engine.warmBackend();
       if (res?.error) {
         setWarmStatus('failed');
-        toast.warning('Backend warmup encountered an optional dependency issue. You can keep using the app.');
+        try {
+          const g: any = globalThis as any;
+          if (!g.__PBRAIN_WARMUP_DEP_WARNING_SHOWN) {
+            g.__PBRAIN_WARMUP_DEP_WARNING_SHOWN = true;
+            toast.warning('Backend warmup encountered an optional dependency issue. You can keep using the app.');
+          }
+        } catch {
+          // ignore
+        }
         console.warn(res.error);
       } else {
         setWarmStatus('done');
@@ -219,8 +227,16 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
     let discoverTimer: number | null = null;
     let startupTimeout: number | null = null;
 
+    const clearStartupTimeout = () => {
+      if (startupTimeout != null) {
+        clearTimeout(startupTimeout);
+        startupTimeout = null;
+      }
+    };
+
     const onBackendReady = () => {
       if (disposed) return;
+      clearStartupTimeout();
       setBackendStatus('ready');
       setStartupNote('Backend ready. Loading projects…');
       loadProjects();
@@ -229,6 +245,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
     const onBackendError = () => {
       if (disposed) return;
+      clearStartupTimeout();
       try {
         const err = (globalThis as any)?.window?.__PBRAIN_BACKEND_ERROR;
         const msg = typeof err === 'string' && err.trim().length > 0 ? err : 'Backend startup failed';
@@ -250,6 +267,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       try {
         const injected = (globalThis as any)?.window?.__PBRAIN_BACKEND_URL;
         if (typeof injected === 'string' && injected.trim().length > 0) {
+          clearStartupTimeout();
           setBackendStatus('ready');
           setStartupNote('Backend ready. Loading projects…');
           loadProjects();
@@ -276,6 +294,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
           if (!found || disposed) return;
 
           (globalThis as any).window.__PBRAIN_BACKEND_URL = found;
+          clearStartupTimeout();
           setBackendStatus('ready');
           setStartupNote('Backend ready. Loading projects…');
           loadProjects();
@@ -292,15 +311,16 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
       setIsLoading(false);
       try {
         const err = (globalThis as any)?.window?.__PBRAIN_BACKEND_ERROR;
-        const msg = typeof err === 'string' && err.trim().length > 0 ? err : 'Backend not connected. Quit and reopen the app.';
+        const msg = typeof err === 'string' && err.trim().length > 0 ? err : 'Backend not connected yet. Still starting…';
         toast.error(msg);
-        setBackendStatus('error');
+        // Only force an error state when the backend explicitly reported one.
+        setBackendStatus(typeof err === 'string' && err.trim().length > 0 ? 'error' : 'waiting');
         setStartupNote(msg);
       } catch {
-        toast.error('Backend not connected. Quit and reopen the app.');
-        setBackendStatus('error');
+        toast.error('Backend not connected yet. Still starting…');
+        setBackendStatus('waiting');
       }
-    }, 120000);
+    }, 150000);
 
     loadProjects();
     (async () => {
@@ -319,7 +339,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
 
       if (pollTimer != null) clearInterval(pollTimer);
       if (discoverTimer != null) clearTimeout(discoverTimer);
-      if (startupTimeout != null) clearTimeout(startupTimeout);
+      clearStartupTimeout();
     };
   }, [kickoffWarm]);
 

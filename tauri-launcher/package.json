@@ -9,6 +9,7 @@
     "build": "npm run prepare:resources && tauri build",
     "tauri:build": "npm run prepare:resources && tauri build --bundles app dmg && node scripts/postbuild-copy-backend.mjs",
     "tauri:install": "APP_SRC=\"$PWD/src-tauri/target/release/bundle/macos/p-brain.app\" && rm -rf \"/Applications/p-brain.app\" 2>/dev/null || true && ditto \"$APP_SRC\" \"/Applications/p-brain.app\" && xattr -dr com.apple.quarantine \"/Applications/p-brain.app\" || true && echo \"Installed to /Applications/p-brain.app\"",
+    "install": "npm run tauri:install",
     "tauri": "tauri"
   },
   "devDependencies": {

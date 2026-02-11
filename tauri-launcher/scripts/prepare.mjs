@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -25,6 +26,32 @@ function exists(p) {
   } catch {
     return false;
   }
+}
+
+function which(cmd) {
+  const res = spawnSync('bash', ['-lc', `command -v ${cmd}`], { encoding: 'utf8' });
+  if (res.status !== 0) return null;
+  const out = String(res.stdout || '').trim();
+  return out.length ? out : null;
+}
+
+function expandHome(p) {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function looksLikeBackendBundle(dir) {
+  if (!dir) return false;
+  const exe = path.join(dir, 'pbrain-web-backend');
+  const internal = path.join(dir, '_internal');
+  return exists(exe) && exists(internal);
+}
+
+function truthy(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'on';
 }
 
 function pythonVersion(pythonPath) {
@@ -70,6 +97,51 @@ const outBackend = path.join(outRoot, 'backend');
 console.log('Building frontend…');
 run('npm', ['run', 'build'], { cwd: webRoot });
 
+rmrf(outBackend);
+fs.mkdirSync(outBackend, { recursive: true });
+
+// Optional: reuse a previously-built backend bundle (PyInstaller onedir output)
+// to avoid slow rebuilds when frontend changes only.
+const prebuiltEnv = expandHome(process.env.PBRAIN_PREBUILT_BACKEND_DIR);
+const allowDefaultPrebuilt = truthy(process.env.PBRAIN_USE_PREBUILT_BACKEND);
+const prebuiltDefault = path.join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'com.edt.pbrain',
+  'backend',
+  'pbrain-web-backend'
+);
+
+// Policy:
+// - If PBRAIN_PREBUILT_BACKEND_DIR is set, treat it as an explicit request.
+// - Otherwise only use the default prebuilt backend when PBRAIN_USE_PREBUILT_BACKEND=1.
+const prebuiltCandidates = [prebuiltEnv, allowDefaultPrebuilt ? prebuiltDefault : null].filter(Boolean);
+const prebuiltDir = prebuiltCandidates.find((p) => looksLikeBackendBundle(p));
+
+const zipPath = path.join(outBackend, 'pbrain-web-backend.zip');
+rmrf(zipPath);
+
+const ditto = process.platform === 'darwin' ? '/usr/bin/ditto' : null;
+function zipFolderKeepParent(folderPath) {
+  if (ditto && exists(ditto)) {
+    run(ditto, ['-c', '-k', '--sequesterRsrc', '--keepParent', folderPath, zipPath]);
+    return;
+  }
+  const zipBin = which('zip');
+  if (!zipBin) {
+    throw new Error('Neither /usr/bin/ditto nor zip is available to create pbrain-web-backend.zip');
+  }
+  run(zipBin, ['-qry', zipPath, path.basename(folderPath)], { cwd: path.dirname(folderPath) });
+}
+
+if (prebuiltDir) {
+  console.log(`Using prebuilt backend bundle: ${prebuiltDir}`);
+  zipFolderKeepParent(prebuiltDir);
+  console.log('Done.');
+  process.exit(0);
+}
+
 const python = pickPython(webRoot);
 const pyVer = pythonVersion(python);
 console.log(`Using Python for PyInstaller: ${python}${pyVer ? ` (v${pyVer.raw})` : ''}`);
@@ -80,8 +152,6 @@ run(python, ['-m', 'pip', 'install', '-r', path.join(webRoot, 'backend', 'dev-re
 });
 
 console.log('Building backend binary (PyInstaller)…');
-rmrf(outBackend);
-fs.mkdirSync(outBackend, { recursive: true });
 const excludedModules = [
   'torch',
   'torchvision',
@@ -111,7 +181,6 @@ const pyInstallerArgs = [
   'anyio._backends._asyncio',
   '--name',
   'pbrain-web-backend',
-  '--onefile',
   '--noupx',
   '--clean',
   '--distpath',
@@ -130,19 +199,26 @@ pyInstallerArgs.push(path.join(webRoot, 'backend', 'launcher_entry.py'));
 
 run(python, pyInstallerArgs, { cwd: webRoot });
 
-// PyInstaller emits a single binary into resources/backend/.
-const produced = [
-  path.join(outBackend, 'pbrain-web-backend'),
-  path.join(outBackend, 'pbrain-web-backend.exe'),
-];
-const producedPath = produced.find(exists);
-if (!producedPath) {
-  throw new Error('Expected PyInstaller output not found in resources/backend/.');
+// PyInstaller (onedir) emits a folder into resources/backend/.
+// macOS/Linux: resources/backend/pbrain-web-backend/pbrain-web-backend
+// Windows: resources/backend/pbrain-web-backend/pbrain-web-backend.exe
+const producedDir = path.join(outBackend, 'pbrain-web-backend');
+if (!exists(producedDir)) {
+  throw new Error('Expected PyInstaller output dir not found in resources/backend/pbrain-web-backend/.');
 }
 
-// Normalize name for bundling.
-if (producedPath.endsWith('.exe')) {
-  copyFile(producedPath, path.join(outBackend, 'pbrain-web-backend'));
+// Normalize Windows executable name for the launcher.
+const winExe = path.join(producedDir, 'pbrain-web-backend.exe');
+const normalized = path.join(producedDir, 'pbrain-web-backend');
+if (exists(winExe) && !exists(normalized)) {
+  copyFile(winExe, normalized);
 }
+
+// Bundle the onedir output as a single zip file so Tauri's build-time
+// resource scanning doesn't have to traverse thousands of files.
+// The launcher will extract this zip to the app data directory at runtime.
+zipFolderKeepParent(producedDir);
+
+rmrf(producedDir);
 
 console.log('Done.');

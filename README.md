@@ -125,8 +125,24 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r dev-requirements.txt
 # optional: export PBRAIN_MAIN_PY to point to your p-brain main.py if not co-located
+# optional: export PBRAIN_PYTHON to point to a Python env that has numpy+nibabel installed
 uvicorn app:app --host 127.0.0.1 --port 8787 --reload
 ```
+
+If you see “No available Python interpreter passed dependency preflight”, either:
+- Set `PBRAIN_PYTHON` to a known-good interpreter (e.g. a conda env), or
+- Use the app-managed venv (desktop app) and run the built-in “Install p-brain requirements”.
+
+## Per-project p-brain execution defaults
+
+The UI persists per-project p-brain execution settings in the project config and forwards them to the p-brain subprocess as environment variables:
+
+- `strictMetadata` → `P_BRAIN_STRICT_METADATA` (`0`/`1`)
+- `multiprocessing` → `P_BRAIN_MULTIPROCESSING` (`0`/`1`)
+- `cores` → `P_BRAIN_CORES` (supports `auto`, integer, or fraction like `0.8`)
+- `flipAngle` → `P_BRAIN_FLIP_ANGLE` (`auto` or numeric degrees)
+
+Edit these in the Project dashboard under the **CTC** dialog.
 
 ## Desktop app (Tauri)
 

@@ -307,7 +307,7 @@ export function TractographyView({ subjectId }: TractographyViewProps) {
     // clear existing
     linesRef.current.forEach(line => {
       const mat = (line as any).material as THREE.Material | undefined;
-      if (mat && mat !== baseMaterial && mat !== selectedMaterial) {
+      if (mat && mat !== baseMaterial && mat !== selectedMaterialRef.current) {
         try {
           mat.dispose();
         } catch {

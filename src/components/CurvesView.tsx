@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import Plot from 'react-plotly.js';
+import createPlotlyComponent from 'react-plotly.js/factory';
+import Plotly from 'plotly.js-dist-min';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { engine, isBackendEngine } from '@/lib/engine';
 import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
+
+const Plot = createPlotlyComponent(Plotly);
 
 interface CurvesViewProps {
   subjectId: string;
