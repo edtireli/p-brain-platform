@@ -3,6 +3,17 @@ import { Folder, FolderOpen, FileCode, TreeStructure, FloppyDisk, ArrowCounterCl
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -14,6 +25,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { FolderStructureConfig as FolderConfig, Project } from '@/types';
 import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
+import { engine } from '@/lib/engine';
 
 interface PatternValidation {
   isValid: boolean;
@@ -411,6 +423,7 @@ function FolderTreeNode({
 
 export function FolderStructureConfig({ project, onSave }: FolderStructureConfigProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isClearingDerived, setIsClearingDerived] = useState(false);
   const [config, setConfig] = useState<FolderConfig>(
     { ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) }
   );
@@ -491,6 +504,28 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   const handleReset = () => {
     setConfig({ ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) });
     toast.info('Configuration reset');
+  };
+
+  const handleClearDerived = async () => {
+    if (!project?.id) return;
+    setIsClearingDerived(true);
+    try {
+      const res = await engine.clearProjectDerivedData(project.id);
+      if (res?.ok) {
+        toast.success(`Cleared derived data for ${res.subjectsCleared} subject${res.subjectsCleared === 1 ? '' : 's'}`);
+      } else {
+        toast.error('Failed to clear derived data', {
+          description: `Unexpected response: ${JSON.stringify(res)}`,
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to clear derived data', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setIsClearingDerived(false);
+    }
   };
 
   const toggleFolder = (folderId: string) => {
@@ -1090,10 +1125,34 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
         </div>
 
         <div className="flex justify-between pt-4 border-t border-border mt-4">
-          <Button variant="ghost" onClick={handleReset} className="gap-2">
-            <ArrowCounterClockwise size={16} />
-            Reset
-          </Button>
+          <div className="flex gap-3">
+            <Button variant="ghost" onClick={handleReset} className="gap-2">
+              <ArrowCounterClockwise size={16} />
+              Reset
+            </Button>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" disabled={isClearingDerived}>
+                  Delete Analysis + Images
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete derived outputs for this project?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This deletes <span className="mono">Analysis/</span> and <span className="mono">Images/</span> inside every subject folder in this project. It keeps NIfTI and all source data.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={isClearingDerived}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleClearDerived} disabled={isClearingDerived}>
+                    {isClearingDerived ? 'Deleting…' : 'Delete'}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
           <div className="flex gap-3">
             <Button variant="secondary" onClick={() => setIsOpen(false)}>
               Cancel

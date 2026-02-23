@@ -567,6 +567,16 @@ def _run_pbrain(
 		cmd.append("--diffusion")
 
 	env = os.environ.copy()
+	# Keep AI input-function defaults stable for batch/worker runs.
+	# Do not let runner host env accidentally change ROI quality.
+	for k in (
+		"P_BRAIN_AI_ICA_FRAME_MODE",
+		"P_BRAIN_AI_ICA_FRAME_OVERRIDE",
+		"P_BRAIN_AI_ROI_POSTPROCESS",
+	):
+		env.pop(k, None)
+	env.setdefault("P_BRAIN_AI_ICA_FRAME_MODE", "intensity")
+	env.setdefault("P_BRAIN_AI_ROI_POSTPROCESS", "1")
 	if cfg.pbrain_turbo:
 		env["PBRAIN_TURBO"] = "1"
 		# Ensure headless matplotlib backend for batch runs.

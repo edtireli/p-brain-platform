@@ -142,6 +142,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   const [draftFlipAngleAuto, setDraftFlipAngleAuto] = useState<boolean>(true);
   const [draftFlipAngleDeg, setDraftFlipAngleDeg] = useState<number>(30);
   const [draftT1FitMode, setDraftT1FitMode] = useState<T1FitMode>('auto');
+  const [draftT1m0Force, setDraftT1m0Force] = useState<boolean>(true);
   const [draftAiSliceConfStartPct, setDraftAiSliceConfStartPct] = useState<number>(50);
   const [draftAiSliceConfMinPct, setDraftAiSliceConfMinPct] = useState<number>(10);
   const [draftAiSliceConfStepPct, setDraftAiSliceConfStepPct] = useState<number>(5);
@@ -319,6 +320,8 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
     const pb = (project as any)?.config?.pbrain;
     setDraftStrictMetadata(Boolean(pb?.strictMetadata ?? false));
     setDraftMultiprocessing(Boolean(pb?.multiprocessing ?? true));
+    // Default true: always run a fresh T1/M0 fit unless user disables it.
+    setDraftT1m0Force(Boolean(pb?.t1m0Force ?? true));
     {
       const raw = String(pb?.t1Fit ?? 'auto').trim().toLowerCase();
       if (raw === 'ir') setDraftT1FitMode('ir');
@@ -507,6 +510,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
           cores,
           flipAngle: draftFlipAngleAuto ? 'auto' : Math.max(0.0001, Number(draftFlipAngleDeg) || 30),
           t1Fit: draftT1FitMode,
+          t1m0Force: Boolean(draftT1m0Force),
         },
         model: {
           pkModel: draftPkModel,
@@ -988,6 +992,57 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
 
                       <div className="flex items-start justify-between gap-4">
                         <div className="space-y-1">
+                          <Label className="text-xs font-medium">Flip angle</Label>
+                          <div className="text-xs text-muted-foreground">Auto reads FlipAngle from the NIfTI JSON sidecar.</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[11px] text-muted-foreground">Auto</Label>
+                            <Switch checked={draftFlipAngleAuto} onCheckedChange={(v) => setDraftFlipAngleAuto(Boolean(v))} />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={String(Number.isFinite(draftFlipAngleDeg) ? draftFlipAngleDeg : 30)}
+                              onChange={(e) => setDraftFlipAngleDeg(Number(e.target.value) || 0)}
+                              className="h-9 w-[120px] text-right"
+                              disabled={draftFlipAngleAuto}
+                            />
+                            <div className="text-xs text-muted-foreground">deg</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">T1/M0 fit method</Label>
+                          <div className="text-xs text-muted-foreground">Auto prefers IR if present, otherwise tries VFA.</div>
+                        </div>
+                        <Select value={draftT1FitMode} onValueChange={(v) => setDraftT1FitMode(((v as any) || 'auto') as T1FitMode)}>
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">auto</SelectItem>
+                            <SelectItem value="ir">ir</SelectItem>
+                            <SelectItem value="vfa">vfa</SelectItem>
+                            <SelectItem value="none">none</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">New T1/M0 fit</Label>
+                          <div className="text-xs text-muted-foreground">Always refit T1/M0 (overrides cached outputs).</div>
+                        </div>
+                        <Switch checked={draftT1m0Force} onCheckedChange={(v) => setDraftT1m0Force(Boolean(v))} />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
                           <Label className="text-xs font-medium">Multiprocessing</Label>
                           <div className="text-xs text-muted-foreground">Enable multiprocessing in p-brain runs.</div>
                         </div>
@@ -1043,49 +1098,6 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
                             </div>
                           </div>
                         </div>
-                      </div>
-
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-1">
-                          <Label className="text-xs font-medium">Flip angle</Label>
-                          <div className="text-xs text-muted-foreground">Auto reads FlipAngle from the NIfTI JSON sidecar.</div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-2">
-                            <Label className="text-[11px] text-muted-foreground">Auto</Label>
-                            <Switch checked={draftFlipAngleAuto} onCheckedChange={(v) => setDraftFlipAngleAuto(Boolean(v))} />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              step={0.1}
-                              value={String(Number.isFinite(draftFlipAngleDeg) ? draftFlipAngleDeg : 30)}
-                              onChange={(e) => setDraftFlipAngleDeg(Number(e.target.value) || 0)}
-                              className="h-9 w-[120px] text-right"
-                              disabled={draftFlipAngleAuto}
-                            />
-                            <div className="text-xs text-muted-foreground">deg</div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-1">
-                          <Label className="text-xs font-medium">T1/M0 fit method</Label>
-                          <div className="text-xs text-muted-foreground">Auto prefers IR if present, otherwise tries VFA.</div>
-                        </div>
-                        <Select value={draftT1FitMode} onValueChange={(v) => setDraftT1FitMode(((v as any) || 'auto') as T1FitMode)}>
-                          <SelectTrigger className="h-9 w-[200px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">auto</SelectItem>
-                            <SelectItem value="ir">ir</SelectItem>
-                            <SelectItem value="vfa">vfa</SelectItem>
-                            <SelectItem value="none">none</SelectItem>
-                          </SelectContent>
-                        </Select>
                       </div>
 
                       <div className="flex items-start justify-between gap-4">

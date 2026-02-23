@@ -544,6 +544,9 @@ def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
 def _python_env_for_pbrain() -> Dict[str, str]:
     env = {**os.environ}
     env.setdefault("PBRAIN_TURBO", "1")
+    # Headless execution: prevent matplotlib from selecting GUI backends (e.g. TkAgg).
+    # This must be set in the subprocess env *before* matplotlib is imported.
+    env["MPLBACKEND"] = "Agg"
     # Defaults for p-brain execution when project config doesn't override.
     # The platform focuses on the TurboFLASH pipeline and IR-based T1 fitting.
     env.setdefault("P_BRAIN_CTC_MODEL", "advanced")
@@ -567,6 +570,33 @@ def _python_env_for_pbrain() -> Dict[str, str]:
     env.setdefault("P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX", "1")
     env.setdefault("P_BRAIN_MODELLING_INPUT_FUNCTION", "tscc")
     env.setdefault("P_BRAIN_AIF_USE_SSS", "1")
+
+    # Do not let a user's shell env (or a prior run) silently change AI AIF/VIF
+    # behavior. These are controlled via project config only.
+    for k in (
+        "P_BRAIN_AIF_ARTERY",
+        "PBRAIN_AUTO_ARTERY",
+        "P_BRAIN_ROI_METHOD",
+        "ROI_METHOD",
+        "P_BRAIN_AI_ROT90_K",
+        "P_BRAIN_AI_SLICE_CONF_THRESHOLDS",
+        "P_BRAIN_AI_SLICE_CONF_START",
+        "P_BRAIN_AI_SLICE_CONF_MIN",
+        "P_BRAIN_AI_SLICE_CONF_STEP",
+        "P_BRAIN_AI_ICA_FRAME_STRIDE",
+        "P_BRAIN_AI_ICA_FRAME_MODE",
+        "P_BRAIN_AI_ICA_FRAME_OVERRIDE",
+        "P_BRAIN_AI_ICA_FRAME_SEARCH_MAX",
+        "P_BRAIN_AI_ICA_FRAME_SEARCH_STRIDE",
+        "P_BRAIN_AI_INPUT_MISSING_FALLBACK",
+        "P_BRAIN_AI_ROI_POSTPROCESS",
+    ):
+        env.pop(k, None)
+
+    # Platform default: pick the ICA frame by intensity peak unless project config overrides.
+    # (This matches the validated behavior for robust ICA ROIs.)
+    env.setdefault("P_BRAIN_AI_ICA_FRAME_MODE", "intensity")
+    env.setdefault("P_BRAIN_AI_ROI_POSTPROCESS", "1")
 
     # Do not let a user's shell env (or a prior run) silently change TSCC/CTC selection
     # and export behavior. Explicit overrides should come from project config only.
@@ -3179,6 +3209,15 @@ def _pbrain_stage_cli_args_with_python(*, python_exe: str, data_root: Path, subj
     return args
 
 
+def _project_t1m0_force_enabled(project: Project) -> bool:
+    try:
+        cfg = project.config if isinstance(project.config, dict) else {}
+        pb = cfg.get("pbrain") if isinstance(cfg.get("pbrain"), dict) else {}
+        return bool(pb.get("t1m0Force", True))
+    except Exception:
+        return True
+
+
 async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: Job, env_overrides: Optional[Dict[str, str]] = None) -> None:
     async with _RUN_SEMAPHORE:
         data_root = Path(project.storagePath).expanduser().resolve()
@@ -3237,6 +3276,9 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                 t1_fit = str(pb.get("t1Fit") or "").strip().lower()
                 if t1_fit in {"auto", "ir", "vfa", "none"}:
                     args += ["--t1-fit", t1_fit]
+                # Project-level default: always do a fresh T1/M0 fit unless user disables it.
+                if job.stageId == "t1_fit" and bool(pb.get("t1m0Force", True)):
+                    args.append("--t1m0-force")
             except Exception:
                 pass
 
@@ -3293,6 +3335,9 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                     "P_BRAIN_AIF_USE_SSS",
                     "P_BRAIN_VASCULAR_ROI_CURVE_METHOD",
                     "P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX",
+                    "P_BRAIN_AI_ICA_FRAME_MODE",
+                    "P_BRAIN_AI_ICA_FRAME_OVERRIDE",
+                    "P_BRAIN_AI_ROI_POSTPROCESS",
                     "P_BRAIN_TSCC_SKIP_FORKED_PEAKS",
                     "P_BRAIN_CTC_MAPS",
                     "P_BRAIN_CTC_4D",
@@ -4742,11 +4787,11 @@ def main() -> int:
         if stage == 't1_fit':
             # User requirement: T1/M0 fitting must follow p-brain's CLI semantics.
             # Delegate to `main.py --t1m0-only` and forward relevant flags.
+            if getattr(args, 't1m0_force', False):
+                _maybe_force_delete_t1m0_outputs(analysis_directory)
             cmd = [sys.executable, '-u', 'main.py', '--id', subject_id, '--data-dir', data_root, '--t1m0-only']
             if getattr(args, 't1_fit', None):
                 cmd += ['--t1-fit', str(args.t1_fit)]
-            if getattr(args, 't1m0_force', False):
-                cmd += ['--t1m0-force']
             if getattr(args, 'compare_matlab', False):
                 cmd += ['--compare-matlab']
                 if getattr(args, 'compare_matlab_path', None):
@@ -6808,6 +6853,7 @@ def create_project(req: CreateProjectRequest) -> Dict[str, Any]:
             },
             "pbrain": {
                 "t1Fit": "ir",
+                "t1m0Force": True,
                 "flipAngle": "auto",
             },
         },
@@ -7623,7 +7669,15 @@ async def _start_subject_stage_run(
         chain = _stage_chain_for_request(subject, stage)
 
     # Only auto-run dependencies that aren't already done; always include the requested stage.
-    stages: List[StageId] = [s for s in chain if s == stage or subject.stageStatuses.get(str(s)) != "done"]
+    # Exception: when project defaults require a fresh T1/M0 fit, always include t1_fit.
+    t1m0_force = _project_t1m0_force_enabled(project)
+    stages: List[StageId] = [
+        s
+        for s in chain
+        if s == stage
+        or subject.stageStatuses.get(str(s)) != "done"
+        or (t1m0_force and s == "t1_fit")
+    ]
     if not stages:
         stages = [stage]
 
@@ -7830,6 +7884,77 @@ async def clear_subject_data(subject_id: str) -> Dict[str, Any]:
             "runner": deleted_runner,
         },
         "subject": asdict(subject),
+    }
+
+
+@app.post("/projects/{project_id}/clear-derived-data")
+async def clear_project_derived_data(project_id: str) -> Dict[str, Any]:
+    """Clear derived outputs for all subjects in a project.
+
+    Deletes:
+      - <subject>/Analysis
+      - <subject>/Images
+    Keeps:
+      - <subject>/NIfTI and all source data
+
+    Also cancels queued/running jobs for impacted subjects, resets stage statuses,
+    and clears job history so the UI reflects a clean slate.
+    """
+
+    project = _find_project(project_id)
+    subjects = [s for s in db.subjects if s.projectId == project.id]
+
+    cancelled_total = 0
+    terminated_total = 0
+    deleted_analysis_dirs = 0
+    deleted_images_dirs = 0
+
+    def _rm_tree(p: Path) -> bool:
+        try:
+            if p.exists():
+                shutil.rmtree(p)
+                return True
+        except Exception:
+            return False
+        return False
+
+    for subject in subjects:
+        cancelled, terminated = _cancel_jobs_for_subject(subject.id)
+        cancelled_total += int(cancelled)
+        terminated_total += int(terminated)
+
+        subject_path = Path(subject.sourcePath).expanduser().resolve()
+        if _rm_tree(subject_path / "Analysis"):
+            deleted_analysis_dirs += 1
+        if _rm_tree(subject_path / "Images"):
+            deleted_images_dirs += 1
+
+        subject.stageStatuses = _default_stage_statuses()
+        subject.updatedAt = _now_iso()
+
+    subject_ids = {s.id for s in subjects}
+    if subject_ids:
+        to_remove = [j for j in db.jobs if j.subjectId in subject_ids]
+        for j in to_remove:
+            db._job_by_id.pop(j.id, None)
+            db._job_processes.pop(j.id, None)
+            db._job_tasks.pop(j.id, None)
+        db.jobs = [j for j in db.jobs if j.subjectId not in subject_ids]
+        for sid in subject_ids:
+            db._subject_job_ids.pop(sid, None)
+        db._touch_jobs()
+
+    db.save()
+    return {
+        "ok": True,
+        "projectId": project.id,
+        "subjectsCleared": len(subjects),
+        "cancelledJobs": cancelled_total,
+        "terminatedProcesses": terminated_total,
+        "deleted": {
+            "analysisDirs": deleted_analysis_dirs,
+            "imagesDirs": deleted_images_dirs,
+        },
     }
 
 

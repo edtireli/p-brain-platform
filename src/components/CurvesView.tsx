@@ -18,6 +18,9 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   const [patlakData, setPatlakData] = useState<PatlakData | null>(null);
   const [toftsData, setToftsData] = useState<ToftsData | null>(null);
   const [deconvData, setDeconvData] = useState<DeconvolutionData | null>(null);
+  const fmt = (value: unknown, digits: number): string => {
+    return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+  };
   const [availableRegions, setAvailableRegions] = useState<Array<{ key: string; label: string }>>([]);
   const [activeRegion, setActiveRegion] = useState<string>('gm');
   const [ensuring, setEnsuring] = useState(false);
@@ -310,20 +313,20 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">Ki</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData!.Ki.toFixed(2)}
+                      {fmt(patlakData?.Ki, 2)}
                       <span className="ml-2 text-sm font-normal">ml/100g/min</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">vp</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData!.vp.toFixed(3)}
+                      {fmt(patlakData?.vp, 3)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">R²</div>
                     <div className="mono text-2xl font-semibold">
-                      {patlakData!.r2.toFixed(3)}
+                      {fmt(patlakData?.r2, 3)}
                     </div>
                   </div>
                 </div>
@@ -401,17 +404,17 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">Ktrans</div>
                     <div className="mono text-2xl font-semibold">
-                      {toftsData!.Ktrans.toFixed(3)}
+                      {fmt(toftsData?.Ktrans, 3)}
                       <span className="ml-2 text-sm font-normal">min⁻¹</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">ve</div>
-                    <div className="mono text-2xl font-semibold">{toftsData!.ve.toFixed(3)}</div>
+                    <div className="mono text-2xl font-semibold">{fmt(toftsData?.ve, 3)}</div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">vp</div>
-                    <div className="mono text-2xl font-semibold">{toftsData!.vp.toFixed(3)}</div>
+                    <div className="mono text-2xl font-semibold">{fmt(toftsData?.vp, 3)}</div>
                   </div>
                 </div>
               </div>
@@ -509,21 +512,21 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">CBF</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData!.CBF.toFixed(1)}
+                      {fmt(deconvData?.CBF, 1)}
                       <span className="ml-2 text-sm font-normal">ml/100g/min</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">MTT</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData!.MTT.toFixed(2)}
+                      {fmt(deconvData?.MTT, 2)}
                       <span className="ml-2 text-sm font-normal">s</span>
                     </div>
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="mb-1 text-sm text-muted-foreground">CTH</div>
                     <div className="mono text-2xl font-semibold">
-                      {deconvData!.CTH.toFixed(2)}
+                      {fmt(deconvData?.CTH, 2)}
                       <span className="ml-2 text-sm font-normal">s</span>
                     </div>
                   </div>

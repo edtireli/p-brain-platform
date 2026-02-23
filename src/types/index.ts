@@ -152,6 +152,10 @@ export interface PBrainExecutionConfig {
   // Matches p-brain env: P_BRAIN_T1_FIT=auto|ir|vfa|none
   t1Fit?: T1FitMode;
 
+  // When true, force a fresh T1/M0 refit even if cached outputs exist.
+  // Maps to stage-runner flag: --t1m0-force
+  t1m0Force?: boolean;
+
   // Optional discovery overrides for non-standard acquisition naming.
   // These map to p-brain env vars used by series discovery:
   // - P_BRAIN_VFA_GLOB (comma-separated glob(s) relative to NIfTI dir)
@@ -466,6 +470,7 @@ export const DEFAULT_CONFIG: PipelineConfig = {
     cores: 'auto',
     flipAngle: 'auto',
     t1Fit: 'ir',
+    t1m0Force: true,
     vfaGlob: '*VFA*.nii*',
     irPrefixes: 'WIPTI_,WIPDelRec-TI_',
     irTi: '00120,00300,00600,01000,02000,04000,10000',

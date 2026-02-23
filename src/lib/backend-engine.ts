@@ -232,11 +232,13 @@ export function getBackendBaseUrl(): string {
   return url;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+type ApiRequestInit = RequestInit & { timeoutMs?: number };
+
+async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   const url = backendUrl();
   if (!url) throw new Error('BACKEND_NOT_CONFIGURED');
 
-  const timeoutMs = 30_000;
+  const timeoutMs = typeof init?.timeoutMs === 'number' && Number.isFinite(init.timeoutMs) ? init.timeoutMs : 30_000;
   const timeoutController = new AbortController();
   const timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
   const signals: AbortSignal[] = [];
@@ -265,12 +267,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   try {
+    // Do not forward our custom field to fetch.
+    const { timeoutMs: _timeoutMs, ...fetchInit } = (init || {}) as ApiRequestInit;
     const res = await fetch(`${url}${path}`, {
-      ...init,
+      ...fetchInit,
       signal,
       headers: {
         'Content-Type': 'application/json',
-        ...(init?.headers || {}),
+        ...(fetchInit?.headers || {}),
       },
     });
     if (!res.ok) {
@@ -839,6 +843,27 @@ export class BackendEngineAPI {
     }>(
       `/subjects/${encodeURIComponent(subjectId)}/clear-data`,
       { method: 'POST', body: JSON.stringify({}) }
+    );
+  }
+
+  async clearProjectDerivedData(projectId: string): Promise<{
+    ok: boolean;
+    projectId: string;
+    subjectsCleared: number;
+    cancelledJobs: number;
+    terminatedProcesses: number;
+    deleted: { analysisDirs: number; imagesDirs: number };
+  }> {
+    return api<{
+      ok: boolean;
+      projectId: string;
+      subjectsCleared: number;
+      cancelledJobs: number;
+      terminatedProcesses: number;
+      deleted: { analysisDirs: number; imagesDirs: number };
+    }>(
+      `/projects/${encodeURIComponent(projectId)}/clear-derived-data`,
+      { method: 'POST', body: JSON.stringify({}), timeoutMs: 5 * 60_000 }
     );
   }
 
