@@ -742,7 +742,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
           Configure
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-4xl h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <TreeStructure size={22} className="text-accent" />
@@ -762,8 +762,8 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
             </TabsList>
 
             <div className="flex-1 min-h-0 overflow-hidden mt-4">
-              <TabsContent value="presets" className="mt-0 h-full min-h-0">
-                <ScrollArea className="h-full pr-4">
+              <TabsContent value="presets" className="mt-0 h-full min-h-0 flex flex-col">
+                <ScrollArea className="flex-1 min-h-0 pr-4">
                   <div className="grid gap-4 sm:grid-cols-2 pb-4">
                     {PRESET_STRUCTURES.map((preset) => (
                       <Card 
@@ -812,8 +812,8 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                 </ScrollArea>
               </TabsContent>
 
-              <TabsContent value="patterns" className="mt-0 h-full min-h-0">
-                <ScrollArea className="h-full pr-4">
+              <TabsContent value="patterns" className="mt-0 h-full min-h-0 flex flex-col">
+                <ScrollArea className="flex-1 min-h-0 pr-4">
                   <div className="space-y-6 pb-4">
                   <Card>
                     <CardHeader className="pb-3">
@@ -1045,8 +1045,8 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                 </ScrollArea>
               </TabsContent>
 
-              <TabsContent value="preview" className="mt-0 h-full min-h-0">
-                <ScrollArea className="h-full pr-4">
+              <TabsContent value="preview" className="mt-0 h-full min-h-0 flex flex-col">
+                <ScrollArea className="flex-1 min-h-0 pr-4">
                   <div className="grid gap-4 lg:grid-cols-2 pb-4">
                   <Card className="h-full">
                     <CardHeader className="pb-3">
@@ -1099,34 +1099,34 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                       <div className="space-y-2">
                         <p className="text-xs font-medium">File patterns:</p>
                         <div className="space-y-1.5">
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 min-w-0">
                             <span className="h-2 w-2 rounded-full bg-success" />
                             <span className="text-xs text-muted-foreground">T1:</span>
-                            <span className="mono text-xs">{config.t1Pattern}</span>
+                            <span className="mono text-xs truncate" title={config.t1Pattern}>{config.t1Pattern}</span>
                           </div>
                           {(config as any).t2Pattern ? (
-                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 min-w-0">
                               <span className="h-2 w-2 rounded-full bg-success" />
                               <span className="text-xs text-muted-foreground">T2:</span>
-                              <span className="mono text-xs">{(config as any).t2Pattern}</span>
+                              <span className="mono text-xs truncate" title={(config as any).t2Pattern}>{(config as any).t2Pattern}</span>
                             </div>
                           ) : null}
                           {(config as any).flairPattern ? (
-                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 min-w-0">
                               <span className="h-2 w-2 rounded-full bg-success" />
                               <span className="text-xs text-muted-foreground">FLAIR:</span>
-                              <span className="mono text-xs">{(config as any).flairPattern}</span>
+                              <span className="mono text-xs truncate" title={(config as any).flairPattern}>{(config as any).flairPattern}</span>
                             </div>
                           ) : null}
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 min-w-0">
                             <span className="h-2 w-2 rounded-full bg-accent" />
                             <span className="text-xs text-muted-foreground">DCE:</span>
-                            <span className="mono text-xs">{config.dcePattern}</span>
+                            <span className="mono text-xs truncate" title={config.dcePattern}>{config.dcePattern}</span>
                           </div>
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 min-w-0">
                             <span className="h-2 w-2 rounded-full bg-warning" />
                             <span className="text-xs text-muted-foreground">Diffusion:</span>
-                            <span className="mono text-xs">{config.diffusionPattern}</span>
+                            <span className="mono text-xs truncate" title={config.diffusionPattern}>{config.diffusionPattern}</span>
                           </div>
                         </div>
                       </div>
@@ -1146,15 +1146,15 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                         <div className="mt-3 rounded-lg border border-border bg-background">
                           <ScrollArea className="h-[280px]">
                             <div className="min-w-[720px]">
-                              <table className="w-full text-xs">
+                              <table className="w-full text-xs table-fixed">
                                 <thead className="sticky top-0 bg-background border-b border-border">
                                   <tr>
-                                    <th className="text-left font-medium px-3 py-2">Subject</th>
-                                    <th className="text-left font-medium px-3 py-2">T1</th>
-                                    <th className="text-left font-medium px-3 py-2">DCE</th>
-                                    <th className="text-left font-medium px-3 py-2">Diffusion</th>
-                                    <th className="text-left font-medium px-3 py-2">T2</th>
-                                    <th className="text-left font-medium px-3 py-2">FLAIR</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[140px]">Subject</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[160px]">T1</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[160px]">DCE</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[160px]">Diffusion</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[160px]">T2</th>
+                                    <th className="text-left font-medium px-3 py-2 w-[160px]">FLAIR</th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -1163,15 +1163,15 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                                     const cell = (v: any) => {
                                       const txt = typeof v === 'string' && v.trim() ? v : '';
                                       return (
-                                        <span className={txt ? 'mono' : 'text-muted-foreground'} title={txt || ''}>
+                                        <div className={txt ? 'mono truncate' : 'text-muted-foreground truncate'} title={txt || ''}>
                                           {txt || '—'}
-                                        </span>
+                                        </div>
                                       );
                                     };
 
                                     return (
                                       <tr key={s.name} className="border-b border-border last:border-b-0">
-                                        <td className="px-3 py-2 mono">{s.name}</td>
+                                        <td className="px-3 py-2 mono truncate" title={s.name}>{s.name}</td>
                                         <td className="px-3 py-2">{cell(m.t1)}</td>
                                         <td className="px-3 py-2">{cell(m.dce)}</td>
                                         <td className="px-3 py-2">{cell(m.diffusion)}</td>
