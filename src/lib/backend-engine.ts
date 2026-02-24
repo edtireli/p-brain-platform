@@ -711,10 +711,17 @@ export class BackendEngineAPI {
     );
   }
 
-  async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
+  async runFullPipeline(
+    projectId: string,
+    subjectIds: string[],
+    opts?: { stageIds?: StageId[] }
+  ): Promise<Job[]> {
     return api<Job[]>(`/projects/${encodeURIComponent(projectId)}/run-full`, {
       method: 'POST',
-      body: JSON.stringify({ subjectIds }),
+      body: JSON.stringify({
+        subjectIds,
+        ...(opts?.stageIds && opts.stageIds.length ? { stageIds: opts.stageIds } : {}),
+      }),
     });
   }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check } from '@phosphor-icons/react';
+import { Play, UserPlus, ArrowLeft, X, List, CheckSquare, Square, MinusSquare, FolderOpen, Trash, Check, CaretDown } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -11,6 +11,14 @@ import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
@@ -156,6 +164,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   const [activeJobsCount, setActiveJobsCount] = useState(0);
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
+  const [runAllStageIds, setRunAllStageIds] = useState<Set<StageId>>(() => new Set(STAGES));
   const previousJobStatusesRef = useRef<Map<string, Job['status']>>(new Map());
   const lastSelectedIndexRef = useRef<number | null>(null);
   
@@ -705,12 +714,18 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
       return;
     }
 
+    const selectedStages = Array.from(runAllStageIds);
+    if (selectedStages.length === 0) {
+      toast.error('No modules selected');
+      return;
+    }
+
     resumeAudioContext();
     setIsRunning(true);
     try {
       const subjectIds = subjects.map(s => s.id);
       setRunningSubjectIds(new Set(subjectIds));
-      await engine.runFullPipeline(projectId, subjectIds);
+      await engine.runFullPipeline(projectId, subjectIds, { stageIds: selectedStages });
       toast.success('Pipeline started for all subjects');
     } catch (error) {
       toast.error('Failed to start pipeline');
@@ -1618,10 +1633,54 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
                 </DialogContent>
               </Dialog>
 
-              <Button onClick={handleRunFullPipeline} disabled={isRunning || subjects.length === 0} className="gap-2">
-                <Play size={20} weight="fill" />
-                Run All
-              </Button>
+              <div className="flex items-center">
+                <Button
+                  onClick={handleRunFullPipeline}
+                  disabled={isRunning || subjects.length === 0}
+                  className="gap-2 rounded-r-none"
+                >
+                  <Play size={20} weight="fill" />
+                  Run All
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      disabled={isRunning || subjects.length === 0}
+                      className="rounded-l-none px-2"
+                      aria-label="Select modules to run"
+                    >
+                      <CaretDown size={16} />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-72">
+                    <DropdownMenuLabel>Modules to run</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {STAGES.map((stageId) => (
+                      <DropdownMenuCheckboxItem
+                        key={stageId}
+                        checked={runAllStageIds.has(stageId)}
+                        onSelect={(e) => e.preventDefault()}
+                        onCheckedChange={(checked) => {
+                          const isChecked = checked === true;
+                          setRunAllStageIds((prev) => {
+                            const next = new Set(prev);
+                            if (isChecked) next.add(stageId);
+                            else next.delete(stageId);
+                            return next;
+                          });
+                        }}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setRunAllStageIds(new Set([stageId]));
+                        }}
+                      >
+                        {STAGE_NAMES[stageId]}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           </div>
         </div>

@@ -1063,7 +1063,11 @@ export class SupabaseEngineAPI {
     return { subjects: [] };
   }
 
-  async runFullPipeline(projectId: string, subjectIds: string[]): Promise<Job[]> {
+  async runFullPipeline(
+    projectId: string,
+    subjectIds: string[],
+    opts?: { stageIds?: StageId[] }
+  ): Promise<Job[]> {
     // Queue one job per stage per subject with a payload the local runner can resolve.
     return safe(async () => {
       const sb = supabase! as any;
@@ -1096,10 +1100,14 @@ export class SupabaseEngineAPI {
         })
       );
 
+      const requestedStages: StageId[] = (opts?.stageIds && opts.stageIds.length)
+        ? STAGES.filter(s => opts.stageIds!.includes(s))
+        : STAGES;
+
       const rows: any[] = [];
       for (const s of normalized) {
-        for (let i = 0; i < STAGES.length; i++) {
-          const stageId = STAGES[i];
+        for (let i = 0; i < requestedStages.length; i++) {
+          const stageId = requestedStages[i];
           rows.push({
             project_id: projectId,
             subject_id: s.id,

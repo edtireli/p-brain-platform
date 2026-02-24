@@ -333,6 +333,9 @@ class ImportSubjectsRequest(BaseModel):
 
 class RunFullPipelineRequest(BaseModel):
     subjectIds: List[str]
+    # Optional subset of stages to run (comma order not important).
+    # When provided, the backend expands required dependencies and runs a minimal chain.
+    stageIds: Optional[List[StageId]] = None
 
 
 class RunStageRequest(BaseModel):
@@ -7670,7 +7673,7 @@ async def run_full(project_id: str, req: RunFullPipelineRequest) -> List[Dict[st
 
     for subject_id in req.subjectIds:
         subject = _find_subject(subject_id)
-        created.extend(await _start_subject_run(project=project, subject=subject))
+        created.extend(await _start_subject_run(project=project, subject=subject, stage_ids=req.stageIds))
 
     db.save()
     return [asdict(j) for j in created]
@@ -7695,7 +7698,7 @@ async def run_stage(subject_id: str, req: RunStageRequest) -> Dict[str, Any]:
     return asdict(job)
 
 
-async def _start_subject_run(*, project: Project, subject: Subject) -> List[Job]:
+async def _start_subject_run(*, project: Project, subject: Subject, stage_ids: Optional[List[StageId]] = None) -> List[Job]:
     # Disallow starting if there is an active run for this subject.
     if any(j.subjectId == subject.id and j.status in {"queued", "running"} for j in db.jobs):
         raise HTTPException(status_code=409, detail="Subject already has a queued/running job")
@@ -7704,10 +7707,41 @@ async def _start_subject_run(*, project: Project, subject: Subject) -> List[Job]
     job_ids: List[str] = []
     shared_start = _now_iso()
     stages_to_run: List[StageId] = []
-    for stage in STAGES:
-        if stage == "diffusion" and not subject.hasDiffusion:
-            continue
-        stages_to_run.append(stage)
+
+    if stage_ids is None:
+        # Original behavior: always queue the full chain.
+        for stage in STAGES:
+            if stage == "diffusion" and not subject.hasDiffusion:
+                continue
+            stages_to_run.append(stage)
+    else:
+        # Minimal chain: expand dependencies for the requested subset,
+        # always including explicitly requested stages.
+        requested: List[StageId] = [s for s in (stage_ids or []) if s in STAGES]
+        requested_set = set(requested)
+
+        expanded: set[StageId] = set()
+        for s in requested:
+            # If a subject doesn't have diffusion data, don't attempt diffusion or its downstream stages.
+            if s == "diffusion" and not subject.hasDiffusion:
+                continue
+            for st in _stage_chain_for_request(subject, s):
+                expanded.add(st)
+
+        if expanded:
+            t1m0_force = _project_t1m0_force_enabled(project)
+            for st in STAGES:
+                if st not in expanded:
+                    continue
+                if st == "diffusion" and not subject.hasDiffusion:
+                    continue
+                if st in requested_set:
+                    stages_to_run.append(st)
+                    continue
+                if subject.stageStatuses.get(str(st)) != "done" or (t1m0_force and st == "t1_fit"):
+                    stages_to_run.append(st)
+
+        # If everything was filtered out (e.g. diffusion requested but absent), do nothing.
 
     for stage in stages_to_run:
         jid = f"job_{int(datetime.utcnow().timestamp()*1000)}_{subject.id}_{stage}"
