@@ -11,9 +11,9 @@ import type {
   StageId,
   StageStatus,
   Subject,
-  ToftsData,
   VolumeFile,
   VolumeInfo,
+  FolderStructurePreviewResponse,
 } from '@/types';
 import { DEFAULT_CONFIG } from '@/types';
 import { supabase } from '@/lib/supabase';
@@ -996,6 +996,10 @@ export class SupabaseEngineAPI {
     }, undefined);
   }
 
+  async previewFolderStructure(_projectId: string, _folderStructure: any): Promise<FolderStructurePreviewResponse> {
+    throw new Error('previewFolderStructure is not supported for Supabase engine');
+  }
+
   async updateProjectConfig(projectId: string, configUpdate: any): Promise<Project | undefined> {
     return safe(async () => {
       const sb = supabase! as any;
@@ -1517,10 +1521,6 @@ export class SupabaseEngineAPI {
 
   async getPatlakData(_subjectId: string, _region: string): Promise<PatlakData> {
     return { x: [], y: [], Ki: 0, vp: 0, r2: 0, fitLineX: [], fitLineY: [], windowStart: 0 };
-  }
-
-  async getToftsData(_subjectId: string, _region: string): Promise<ToftsData> {
-    return { timePoints: [], measured: [], fitted: [], Ktrans: 0, ve: 0, vp: 0, residuals: [] };
   }
 
   async getDeconvolutionData(_subjectId: string, _region: string): Promise<DeconvolutionData> {

@@ -14,7 +14,6 @@ import type {
   ScanSystemDepsResponse,
   Subject,
   SystemDeps,
-  ToftsData,
   TractographyData,
   ConnectomeData,
   VolumeFile,
@@ -26,6 +25,7 @@ import type {
   ProjectAnalysisOlsResponse,
   InputFunctionForces,
   ForcedRoiRef,
+  FolderStructurePreviewResponse,
 } from '@/types';
 import type { StageId } from '@/types';
 
@@ -867,15 +867,16 @@ export class BackendEngineAPI {
     );
   }
 
-  async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {
-    return api<PatlakData>(
-      `/subjects/${encodeURIComponent(subjectId)}/patlak?region=${encodeURIComponent(region)}`
+  async previewFolderStructure(projectId: string, folderStructure: any): Promise<FolderStructurePreviewResponse> {
+    return api<FolderStructurePreviewResponse>(
+      `/projects/${encodeURIComponent(projectId)}/folder-structure/preview`,
+      { method: 'POST', body: JSON.stringify({ folderStructure }) }
     );
   }
 
-  async getToftsData(subjectId: string, region: string): Promise<ToftsData> {
-    return api<ToftsData>(
-      `/subjects/${encodeURIComponent(subjectId)}/tofts?region=${encodeURIComponent(region)}`
+  async getPatlakData(subjectId: string, region: string): Promise<PatlakData> {
+    return api<PatlakData>(
+      `/subjects/${encodeURIComponent(subjectId)}/patlak?region=${encodeURIComponent(region)}`
     );
   }
 

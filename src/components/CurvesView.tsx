@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { engine, isBackendEngine } from '@/lib/engine';
-import type { Curve, PatlakData, ToftsData, DeconvolutionData } from '@/types';
+import type { Curve, PatlakData, DeconvolutionData } from '@/types';
 
 const Plot = createPlotlyComponent(Plotly);
 
@@ -16,7 +16,6 @@ interface CurvesViewProps {
 export function CurvesView({ subjectId }: CurvesViewProps) {
   const [curves, setCurves] = useState<Curve[]>([]);
   const [patlakData, setPatlakData] = useState<PatlakData | null>(null);
-  const [toftsData, setToftsData] = useState<ToftsData | null>(null);
   const [deconvData, setDeconvData] = useState<DeconvolutionData | null>(null);
   const fmt = (value: unknown, digits: number): string => {
     return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
@@ -94,13 +93,6 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
     }
 
     try {
-      const tofts = await engine.getToftsData(subjectId, regionKey || 'gm');
-      setToftsData(tofts);
-    } catch {
-      setToftsData(null);
-    }
-
-    try {
       const deconv = await engine.getDeconvolutionData(subjectId, regionKey || 'gm');
       setDeconvData(deconv);
     } catch {
@@ -157,7 +149,6 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
   }, [subjectId, curves.length, ensureOnce]);
 
   const hasPatlak = !!patlakData && (patlakData.x?.length ?? 0) > 0 && (patlakData.y?.length ?? 0) > 0;
-  const hasTofts = !!toftsData && (toftsData.timePoints?.length ?? 0) > 0 && (toftsData.measured?.length ?? 0) > 0;
   const hasDeconv = !!deconvData && (deconvData.timePoints?.length ?? 0) > 0 && (deconvData.residue?.length ?? 0) > 0;
 
   const hasInputCurves = curves.some(c => /^aif_/i.test(c.id) || /^vif_/i.test(c.id));
@@ -172,8 +163,7 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
         <TabsList>
           <TabsTrigger value="concentration">Concentration Curves</TabsTrigger>
           <TabsTrigger value="patlak">Patlak Analysis</TabsTrigger>
-          <TabsTrigger value="tofts">Extended Tofts</TabsTrigger>
-          <TabsTrigger value="deconvolution">Deconvolution</TabsTrigger>
+          <TabsTrigger value="deconvolution">Tikhonov</TabsTrigger>
         </TabsList>
 
         <TabsContent value="concentration">
@@ -334,93 +324,6 @@ export function CurvesView({ subjectId }: CurvesViewProps) {
             ) : (
               <div className="flex h-[400px] items-center justify-center text-muted-foreground">
                 No Patlak data available
-              </div>
-            )}
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="tofts">
-          <Card className="p-6">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">Extended Tofts Model ({regionLabel})</h2>
-              {availableRegions.length > 1 ? (
-                <div className="flex flex-wrap gap-2">
-                  {availableRegions.map(r => (
-                    <Button
-                      key={r.key}
-                      type="button"
-                      size="sm"
-                      variant={r.key === activeRegion ? 'default' : 'outline'}
-                      onClick={() => setActiveRegion(r.key)}
-                    >
-                      {r.label}
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            {hasTofts ? (
-              <div className="space-y-6">
-                <Plot
-                  data={[
-                    {
-                      x: toftsData!.timePoints,
-                      y: toftsData!.measured,
-                      name: 'Measured Ct(t)',
-                      type: 'scatter',
-                      mode: 'markers',
-                      marker: { size: 5, color: '#4A90E2' },
-                    },
-                    {
-                      x: toftsData!.timePoints,
-                      y: toftsData!.fitted,
-                      name: 'Fitted Ct(t)',
-                      type: 'scatter',
-                      mode: 'lines',
-                      line: { width: 3, color: '#E94B3C' },
-                    },
-                  ]}
-                  layout={{
-                    autosize: true,
-                    margin: { l: 60, r: 40, t: 40, b: 60 },
-                    xaxis: {
-                      title: 'Time (s)',
-                      gridcolor: '#e0e0e0',
-                    },
-                    yaxis: {
-                      title: 'Tissue Concentration (mM)',
-                      gridcolor: '#e0e0e0',
-                    },
-                    paper_bgcolor: 'rgba(0,0,0,0)',
-                    plot_bgcolor: 'rgba(0,0,0,0)',
-                    font: { family: 'IBM Plex Sans, sans-serif' },
-                    legend: { orientation: 'h', y: -0.2 },
-                  }}
-                  config={{ responsive: true, displayModeBar: true }}
-                  style={{ width: '100%', height: '500px' }}
-                />
-
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="rounded-lg border border-border bg-card p-4">
-                    <div className="mb-1 text-sm text-muted-foreground">Ktrans</div>
-                    <div className="mono text-2xl font-semibold">
-                      {fmt(toftsData?.Ktrans, 3)}
-                      <span className="ml-2 text-sm font-normal">min⁻¹</span>
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-card p-4">
-                    <div className="mb-1 text-sm text-muted-foreground">ve</div>
-                    <div className="mono text-2xl font-semibold">{fmt(toftsData?.ve, 3)}</div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-card p-4">
-                    <div className="mb-1 text-sm text-muted-foreground">vp</div>
-                    <div className="mono text-2xl font-semibold">{fmt(toftsData?.vp, 3)}</div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="flex h-[400px] items-center justify-center text-muted-foreground">
-                No Tofts data available
               </div>
             )}
           </Card>

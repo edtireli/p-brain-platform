@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.5 (2026-02-24)
+
+- Make Folder Structure Configuration dialog scrollable on all tabs.
+- Remove the “Delete Analysis + Images” action from the configuration dialog.
+- Improve Preview to show per-subject matched filenames (T1/DCE/Diffusion/T2/FLAIR).
+
 ## v1.2.0 (2026-02-23)
 
 - Make modelling metric rendering null-safe (prevents UI crashes on empty ROIs).

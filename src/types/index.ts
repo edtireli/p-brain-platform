@@ -99,6 +99,27 @@ export interface FolderStructureConfig {
   aiModelsPath: string;
 }
 
+export interface FolderStructurePreviewSubject {
+  name: string;
+  subjectId: string;
+  base: string;
+  fileCount: number;
+  matches: {
+    t1?: string | null;
+    t2?: string | null;
+    flair?: string | null;
+    dce?: string | null;
+    diffusion?: string | null;
+    [k: string]: string | null | undefined;
+  };
+}
+
+export interface FolderStructurePreviewResponse {
+  ok: boolean;
+  subjects: FolderStructurePreviewSubject[];
+  errors?: string[];
+}
+
 export type CtcModel = 'saturation' | 'turboflash' | 'advanced';
 
 export type PkModel =
@@ -344,16 +365,6 @@ export interface PatlakData {
   windowStart: number;
 }
 
-export interface ToftsData {
-  timePoints: number[];
-  measured: number[];
-  fitted: number[];
-  Ktrans: number;
-  ve: number;
-  vp: number;
-  residuals: number[];
-}
-
 export interface DeconvolutionData {
   timePoints: number[];
   residue: number[];
@@ -368,8 +379,6 @@ export interface MetricsTable {
     region: string;
     Ki?: number;
     vp?: number;
-    Ktrans?: number;
-    ve?: number;
     CBF?: number;
     MTT?: number;
     CTH?: number;

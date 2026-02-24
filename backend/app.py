@@ -260,6 +260,73 @@ class UpdateProjectConfigRequest(BaseModel):
     configUpdate: Dict[str, Any] = Field(default_factory=dict)
 
 
+class FolderStructurePreviewRequest(BaseModel):
+    folderStructure: Dict[str, Any] = Field(default_factory=dict)
+
+
+def _split_fallback_patterns(raw: Any) -> List[str]:
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.split(",")]
+    return [p for p in parts if p]
+
+
+def _extract_subject_id_from_pattern(pattern: str, folder_name: str) -> str:
+    if "{subject_id}" not in pattern:
+        return folder_name
+    parts = pattern.split("{subject_id}")
+    if len(parts) != 2:
+        return folder_name
+    prefix, suffix = parts
+    if prefix and not folder_name.startswith(prefix):
+        return folder_name
+    if suffix and not folder_name.endswith(suffix):
+        return folder_name
+    start = len(prefix)
+    end = len(folder_name) - len(suffix) if suffix else len(folder_name)
+    if end < start:
+        return folder_name
+    return folder_name[start:end]
+
+
+def _iter_nifti_relpaths(base_dir: Path, max_files: int = 5000) -> List[str]:
+    out: List[str] = []
+    try:
+        for root, _dirs, files in os.walk(str(base_dir)):
+            for fn in files:
+                lf = fn.lower()
+                if not (lf.endswith(".nii") or lf.endswith(".nii.gz")):
+                    continue
+                p = Path(root) / fn
+                try:
+                    rel = p.relative_to(base_dir)
+                except Exception:
+                    rel = p.name
+                out.append(rel.as_posix())
+                if len(out) >= max_files:
+                    return sorted(out)
+    except Exception:
+        return []
+    return sorted(out)
+
+
+def _first_match(files: List[str], pattern_list: List[str]) -> Optional[str]:
+    if not files or not pattern_list:
+        return None
+    for pat in pattern_list:
+        cleaned = str(pat).strip().lstrip("/")
+        if not cleaned:
+            continue
+        for f in files:
+            try:
+                if fnmatch.fnmatchcase(f, cleaned):
+                    return f
+            except Exception:
+                continue
+    return None
+
+
 class ImportSubjectsRequest(BaseModel):
     subjects: List[Dict[str, str]]  # {name, sourcePath}
 
@@ -1978,20 +2045,29 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
     _require_numpy()
     assert np is not None
     analysis_dir = _analysis_dir_for_subject(subject)
-    time_path = analysis_dir / "Fitting" / "time_points_s.npy"
-    if not time_path.exists():
-        return []
-    tp = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
-    time_points = tp.astype(float).tolist()
+    tp = _load_time_points_best_effort(subject)
 
     curves: List[Dict[str, Any]] = []
+
+    def _default_time_points(n: int) -> List[float]:
+        return np.arange(int(n), dtype=float).astype(float).tolist()
+
+    def _time_points_for_len(n: int) -> List[float]:
+        if tp is None:
+            return _default_time_points(n)
+        nn = int(min(int(tp.size), int(n)))
+        return tp[:nn].astype(float).tolist()
 
     def _aligned_time_and_values(values: Any) -> Optional[tuple[List[float], List[float]]]:
         try:
             vv = np.asarray(values, dtype=float).reshape(-1)
         except Exception:
             return None
-        if vv.size < 3 or tp.size < 3:
+        if vv.size < 3:
+            return None
+        if tp is None:
+            return _default_time_points(int(vv.size)), vv.astype(float).tolist()
+        if tp.size < 3:
             return None
         n = int(min(int(tp.size), int(vv.size)))
         if n < 3:
@@ -2037,12 +2113,12 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
     tscc = _load_tscc_max_curve()
     if tscc is not None:
         label, arr = tscc
-        n = min(int(tp.size), int(arr.size))
+        n = int(arr.size) if tp is None else min(int(tp.size), int(arr.size))
         curves.append(
             {
                 "id": "aif_tscc_max",
                 "name": f"AIF (Time-shifted VIF: {label})",
-                "timePoints": time_points[:n],
+                "timePoints": _time_points_for_len(n),
                 "values": arr[:n].astype(float).tolist(),
                 "unit": "mM",
             }
@@ -2119,7 +2195,7 @@ def _analysis_curves(subject: Subject) -> List[Dict[str, Any]]:
                     {
                         "id": f"tissue_ai_{region}",
                         "name": f"Tissue ({region})",
-                        "timePoints": time_points[:min_len],
+                        "timePoints": _time_points_for_len(min_len),
                         "values": vals,
                         "unit": "mM",
                     }
@@ -2547,9 +2623,21 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
     assert np is not None
     analysis_dir = subject_dir.expanduser().resolve() / "Analysis"
     time_path = analysis_dir / "Fitting" / "time_points_s.npy"
-    if not time_path.exists():
-        return []
-    time_points = np.load(str(time_path)).astype(float).tolist()
+    time_points: Optional[List[float]] = None
+    if time_path.exists():
+        try:
+            tp = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
+            if tp.size >= 3 and np.all(np.isfinite(tp)):
+                time_points = tp.astype(float).tolist()
+        except Exception:
+            time_points = None
+
+    def _tp_for(n: int) -> List[float]:
+        nn = int(n)
+        if time_points is None:
+            return np.arange(nn, dtype=float).astype(float).tolist()
+        n2 = int(min(int(len(time_points)), nn))
+        return [float(x) for x in time_points[:n2]]
 
     curves: List[Dict[str, Any]] = []
 
@@ -2590,12 +2678,12 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
     tscc = _load_tscc_max_curve()
     if tscc is not None:
         label, arr = tscc
-        n = min(len(time_points), int(arr.size))
+        n = int(arr.size) if time_points is None else min(len(time_points), int(arr.size))
         curves.append(
             {
                 "id": "aif_tscc_max",
                 "name": f"AIF (Time-shifted VIF: {label})",
-                "timePoints": time_points[:n],
+                "timePoints": _tp_for(n),
                 "values": arr[:n].astype(float).tolist(),
                 "unit": "mM",
             }
@@ -2606,12 +2694,13 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
             for subtype_dir in sorted([d for d in artery_dir.iterdir() if d.is_dir()]):
                 pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
                 if pth and pth.exists():
-                    vals = np.load(str(pth)).astype(float).tolist()
+                    vv = np.asarray(np.load(str(pth)), dtype=float).reshape(-1)
+                    n = int(vv.size) if time_points is None else min(int(len(time_points)), int(vv.size))
                     curves.append({
                         "id": f"aif_{subtype_dir.name}",
                         "name": f"AIF ({subtype_dir.name})",
-                        "timePoints": time_points,
-                        "values": vals,
+                        "timePoints": _tp_for(n),
+                        "values": vv[:n].astype(float).tolist(),
                         "unit": "mM",
                     })
                     break
@@ -2621,12 +2710,13 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
         for subtype_dir in sorted([d for d in vein_dir.iterdir() if d.is_dir()]):
             pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
-                vals = np.load(str(pth)).astype(float).tolist()
+                vv = np.asarray(np.load(str(pth)), dtype=float).reshape(-1)
+                n = int(vv.size) if time_points is None else min(int(len(time_points)), int(vv.size))
                 curves.append({
                     "id": f"vif_{subtype_dir.name}",
                     "name": f"VIF ({subtype_dir.name})",
-                    "timePoints": time_points,
-                    "values": vals,
+                    "timePoints": _tp_for(n),
+                    "values": vv[:n].astype(float).tolist(),
                     "unit": "mM",
                 })
                 break
@@ -2636,12 +2726,13 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
         for subtype_dir in sorted([d for d in tissue_dir.iterdir() if d.is_dir()]):
             pth = pick_curve(subtype_dir / "CTC_shifted_slice_*.npy") or pick_curve(subtype_dir / "CTC_slice_*.npy")
             if pth and pth.exists():
-                vals = np.load(str(pth)).astype(float).tolist()
+                vv = np.asarray(np.load(str(pth)), dtype=float).reshape(-1)
+                n = int(vv.size) if time_points is None else min(int(len(time_points)), int(vv.size))
                 curves.append({
                     "id": f"tissue_{subtype_dir.name}",
                     "name": f"Tissue ({subtype_dir.name})",
-                    "timePoints": time_points,
-                    "values": vals,
+                    "timePoints": _tp_for(n),
+                    "values": vv[:n].astype(float).tolist(),
                     "unit": "mM",
                 })
 
@@ -2671,7 +2762,7 @@ def _analysis_curves_from_dir(subject_dir: Path) -> List[Dict[str, Any]]:
                     {
                         "id": f"tissue_ai_{region}",
                         "name": f"Tissue ({region})",
-                        "timePoints": time_points[:min_len],
+                        "timePoints": _tp_for(min_len),
                         "values": vals,
                         "unit": "mM",
                     }
@@ -2712,12 +2803,62 @@ def _load_time_points(subject: Subject) -> Any:
     assert np is not None
     analysis_dir = _analysis_dir_for_subject(subject)
     time_path = analysis_dir / "Fitting" / "time_points_s.npy"
-    if not time_path.exists():
-        raise HTTPException(status_code=404, detail="Missing time_points_s.npy")
-    t = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
-    if t.size < 3 or not np.all(np.isfinite(t)):
-        raise HTTPException(status_code=400, detail="Invalid time points")
-    return t
+    if time_path.exists():
+        t = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
+        if t.size >= 3 and np.all(np.isfinite(t)):
+            return t
+
+    # Fallback: derive time points from the configured DCE volume NIfTI header.
+    t2 = _load_time_points_best_effort(subject)
+    if t2 is None or int(t2.size) < 3 or not np.all(np.isfinite(t2)):
+        raise HTTPException(status_code=404, detail="Missing time points (time_points_s.npy and DCE header fallback unavailable)")
+    return t2
+
+
+def _load_time_points_best_effort(subject: Subject) -> Optional[Any]:
+    """Best-effort time axis for plotting/modelling.
+
+    Prefers Analysis/Fitting/time_points_s.npy, otherwise derives from the DCE NIfTI
+    header (4th zoom) and 4D length.
+    """
+    _require_numpy()
+    assert np is not None
+    analysis_dir = _analysis_dir_for_subject(subject)
+    time_path = analysis_dir / "Fitting" / "time_points_s.npy"
+    if time_path.exists():
+        try:
+            t = np.asarray(np.load(str(time_path)), dtype=float).reshape(-1)
+            if t.size >= 3 and np.all(np.isfinite(t)):
+                return t
+        except Exception:
+            pass
+
+    try:
+        project = _find_project(subject.projectId)
+    except Exception:
+        return None
+
+    try:
+        dce_path = _resolve_default_volume_path(project, subject, "dce")
+    except Exception:
+        return None
+
+    try:
+        _require_nibabel()
+        img = _load_nifti(str(dce_path))
+        shape = img.shape
+        if len(shape) < 4:
+            return None
+        n = int(shape[3])
+        if n < 3:
+            return None
+        zooms = img.header.get_zooms()
+        dt = float(zooms[3]) if len(zooms) >= 4 else 1.0
+        if not np.isfinite(dt) or dt <= 0:
+            dt = 1.0
+        return (np.arange(n, dtype=float) * dt).astype(float)
+    except Exception:
+        return None
 
 
 
@@ -2994,60 +3135,6 @@ def _patlak_from_curves(t: Any, aif: Any, tissue: Any, *, window_start_fraction:
         "fitLineX": x_line,
         "fitLineY": [float(v) for v in y_line],
         "windowStart": float(ws),
-    }
-
-
-def _extended_tofts_model(t: Any, Ktrans: float, ve: float, vp: float, Cp: Any) -> Any:
-    _require_numpy()
-    assert np is not None
-    Ktrans = float(max(Ktrans, 1e-12))
-    ve = float(max(ve, 1e-12))
-    vp = float(max(vp, 0.0))
-    out = np.zeros_like(t, dtype=float)
-    for i in range(t.size):
-        tau = t[: i + 1]
-        cp = Cp[: i + 1]
-        integrand = cp * np.exp(-(t[i] - tau) * Ktrans / ve)
-        out[i] = Ktrans * float(np.trapz(integrand, x=tau))
-    out = out + vp * Cp
-    return out
-
-
-def _tofts_from_curves(t: Any, aif: Any, tissue: Any, *, lambd: float) -> Dict[str, Any]:
-    _require_numpy()
-    _require_scipy()
-    assert np is not None
-    ls = _get_least_squares()
-    if ls is None:
-        raise HTTPException(status_code=500, detail="Backend missing dependency: scipy")
-
-    # Fit Ktrans, ve, vp (all >= 0)
-    x0 = np.array([0.001, 0.2, 0.05], dtype=float)
-
-    def residual(theta: Any) -> Any:
-        theta = np.clip(theta, 1e-12, None)
-        Ktrans, ve, vp = float(theta[0]), float(theta[1]), float(theta[2])
-        Ct_pred = _extended_tofts_model(t, Ktrans, ve, vp, aif)
-        misfit = (Ct_pred - tissue).astype(float)
-        # Tikhonov-style penalty to keep params reasonable
-        lam = float(max(lambd, 0.0))
-        w = float(np.linalg.norm(misfit) / max(np.linalg.norm(theta), 1e-8))
-        penalty = np.sqrt(lam) * w * theta
-        return np.concatenate([misfit, penalty.astype(float)])
-
-    sol = ls(residual, x0, bounds=(0.0, np.inf))
-    Ktrans, ve, vp = [float(v) for v in sol.x]
-    fitted = _extended_tofts_model(t, Ktrans, ve, vp, aif)
-    residuals = (tissue - fitted).astype(float)
-    return {
-        "timePoints": t.astype(float).tolist(),
-        "measured": tissue.astype(float).tolist(),
-        "fitted": fitted.astype(float).tolist(),
-        # UI labels min^-1
-        "Ktrans": float(Ktrans * 60.0),
-        "ve": float(ve),
-        "vp": float(vp),
-        "residuals": residuals.tolist(),
     }
 
 
@@ -6817,6 +6904,71 @@ def scan_subject_folders(project_id: str) -> Dict[str, Any]:
     return {"subjects": subjects}
 
 
+@app.post("/projects/{project_id}/folder-structure/preview")
+def preview_folder_structure(project_id: str, req: FolderStructurePreviewRequest) -> Dict[str, Any]:
+    p = _find_project(project_id)
+    root = Path(p.storagePath).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail="Project storage path is not a directory")
+
+    cfg = req.folderStructure or {}
+    subject_folder_pattern = str(cfg.get("subjectFolderPattern") or "{subject_id}").strip() or "{subject_id}"
+    subject_glob = subject_folder_pattern.replace("{subject_id}", "*")
+    use_nested = bool(cfg.get("useNestedStructure", True))
+    nifti_subfolder = str(cfg.get("niftiSubfolder") or "").strip()
+
+    keys_and_patterns: List[Tuple[str, List[str]]] = [
+        ("t1", _split_fallback_patterns(cfg.get("t1Pattern"))),
+        ("t2", _split_fallback_patterns(cfg.get("t2Pattern"))),
+        ("flair", _split_fallback_patterns(cfg.get("flairPattern"))),
+        ("dce", _split_fallback_patterns(cfg.get("dcePattern"))),
+        ("diffusion", _split_fallback_patterns(cfg.get("diffusionPattern"))),
+    ]
+
+    subjects_out: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    try:
+        for entry in os.scandir(root):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name.startswith("."):
+                continue
+            try:
+                if not fnmatch.fnmatchcase(name, subject_glob):
+                    continue
+            except Exception:
+                continue
+
+            subject_path = Path(entry.path).resolve()
+            base_dir = subject_path
+            if use_nested and nifti_subfolder:
+                candidate = subject_path / nifti_subfolder
+                if candidate.exists() and candidate.is_dir():
+                    base_dir = candidate
+
+            files = _iter_nifti_relpaths(base_dir)
+            matches: Dict[str, Optional[str]] = {}
+            for key, pats in keys_and_patterns:
+                matches[key] = _first_match(files, pats)
+
+            subjects_out.append(
+                {
+                    "name": name,
+                    "subjectId": _extract_subject_id_from_pattern(subject_folder_pattern, name),
+                    "base": str(base_dir),
+                    "matches": matches,
+                    "fileCount": len(files),
+                }
+            )
+    except Exception as e:
+        errors.append(str(e))
+
+    subjects_out.sort(key=lambda x: str(x.get("name", "")).lower())
+    return {"ok": True, "subjects": subjects_out, "errors": errors}
+
+
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: str) -> Dict[str, Any]:
     _find_project(project_id)
@@ -7376,20 +7528,6 @@ def get_subject_patlak(subject_id: str, region: str = "gm") -> Dict[str, Any]:
 
     window_start = float(_get_config_value(project, ["model", "patlakWindowStartFraction"], 0.4))
     return _patlak_from_curves(t, aif, tissue, window_start_fraction=window_start)
-
-
-@app.get("/subjects/{subject_id}/tofts")
-def get_subject_tofts(subject_id: str, region: str = "gm") -> Dict[str, Any]:
-    subject = _find_subject(subject_id)
-    project = _find_project(subject.projectId)
-
-    t = _load_time_points(subject)
-    aif = _load_aif_curve(subject)
-    tissue = _load_ai_tissue_curve(subject, _region_to_ai_key(region))
-    t, aif, tissue, _dt = _align_curves(t, aif, tissue)
-
-    lambd = float(_get_config_value(project, ["model", "lambdaTikhonov"], 0.1))
-    return _tofts_from_curves(t, aif, tissue, lambd=lambd)
 
 
 @app.get("/subjects/{subject_id}/deconvolution")

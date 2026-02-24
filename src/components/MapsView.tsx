@@ -454,7 +454,7 @@ export function MapsView({ subjectId }: MapsViewProps) {
           if (!open) setOpenGroupId('');
         }}
       >
-        <DialogContent className="max-w-6xl p-4">
+        <DialogContent className="max-h-[90vh] max-w-6xl overflow-y-auto p-4">
           <DialogHeader className="space-y-1">
             <DialogTitle>{openGroup?.label || 'Map'}</DialogTitle>
           </DialogHeader>

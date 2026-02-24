@@ -73,6 +73,8 @@ export function VolumeViewer({
   const [dataMax, setDataMax] = useState(1);
   const [windowMin, setWindowMin] = useState(0);
   const [windowMax, setWindowMax] = useState(2000);
+  const [windowMinText, setWindowMinText] = useState('');
+  const [windowMaxText, setWindowMaxText] = useState('');
   const [colormap, setColormap] = useState<'grayscale' | 'viridis' | 'hlcolour'>(() => (kind === 'map' ? 'hlcolour' : 'grayscale'));
   const [viewMode, setViewMode] = useState<'single' | 'grid'>(() => 'single');
   const [slices, setSlices] = useState<number[][][] | null>(null);
@@ -159,6 +161,36 @@ export function VolumeViewer({
     const fmt = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 3 });
     return (x: number) => (Number.isFinite(x) ? fmt.format(x) : '—');
   }, []);
+
+  const formatForInput = (x: number): string => {
+    if (!Number.isFinite(x)) return '';
+    const rounded = Math.round(x * 1e6) / 1e6;
+    return String(rounded);
+  };
+
+  const mapPresetWindow = (p: string | null): { min: number; max: number } | null => {
+    if (!p) return null;
+    const base = String(p).split('?')[0].replace(/\\/g, '/').split('/').pop() || '';
+    const name = base.replace(/\.(nii|nii\.gz|png)$/i, '').toLowerCase();
+
+    if (/^ki\b|\bki_/.test(name) || name.includes('ki_per_voxel') || name.includes('ki_map')) {
+      return { min: -0.05, max: 0.1 };
+    }
+    if (/^cbf\b|\bcbf_/.test(name) || name.includes('cbf_per_voxel') || name.includes('cbf_map') || name.includes('cbf_tikhonov')) {
+      return { min: 0, max: 120 };
+    }
+    return null;
+  };
+
+  useEffect(() => {
+    setWindowMinText(formatForInput(windowMin));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowMin]);
+
+  useEffect(() => {
+    setWindowMaxText(formatForInput(windowMax));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowMax]);
 
   useEffect(() => {
     const onFs = () => {
@@ -309,8 +341,8 @@ export function VolumeViewer({
         setTimeFrame(prev => Math.min(prev, tMax));
       const rawMin = Number.isFinite(Number(primaryInfo.min)) ? Number(primaryInfo.min) : 0;
       const rawMax = Number.isFinite(Number(primaryInfo.max)) ? Number(primaryInfo.max) : 1;
-			const dMin = Math.min(rawMin, rawMax);
-			const dMax = Math.max(rawMin, rawMax);
+      const dMin = Math.min(rawMin, rawMax);
+      const dMax = Math.max(rawMin, rawMax);
 
       let mergedDataMin = dMin;
       let mergedDataMax = dMax;
@@ -341,8 +373,23 @@ export function VolumeViewer({
 
       setDataMin(mergedDataMin);
       setDataMax(mergedDataMax);
-      setWindowMin(Math.min(mergedDispMin, mergedDispMax));
-      setWindowMax(Math.max(mergedDispMin, mergedDispMax));
+
+      const isMap = String(activeKind).toLowerCase() === 'map';
+      if (isMap) {
+        const preset = mapPresetWindow(volumePath);
+        const loBound = Math.min(mergedDataMin, mergedDataMax);
+        const hiBound = Math.max(mergedDataMin, mergedDataMax);
+
+        const desiredMin = preset ? preset.min : loBound;
+        const desiredMax = preset ? preset.max : hiBound;
+        const lo = Math.max(loBound, Math.min(hiBound, Math.min(desiredMin, desiredMax)));
+        const hi = Math.max(loBound, Math.min(hiBound, Math.max(desiredMin, desiredMax)));
+        setWindowMin(lo);
+        setWindowMax(hi);
+      } else {
+        setWindowMin(Math.min(mergedDispMin, mergedDispMax));
+        setWindowMax(Math.max(mergedDispMin, mergedDispMax));
+      }
       } catch (error) {
         console.error('Failed to load volume info:', error);
       }
@@ -1096,9 +1143,48 @@ export function VolumeViewer({
 
           {String(activeKind).toLowerCase() === 'map' ? (
             <div className="space-y-2">
-              <Label>
-                Colourbar range: {format3Sig(windowMin)} → {format3Sig(windowMax)}
-              </Label>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <Label>Colourbar range</Label>
+                <div className="flex items-center gap-2 text-xs">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={windowMinText}
+                    className="h-8 w-[120px]"
+                    onChange={e => {
+                      const raw = e.target.value;
+                      setWindowMinText(raw);
+                      const v = Number(raw);
+                      if (!Number.isFinite(v)) return;
+                      const loBound = Math.min(dataMin, dataMax);
+                      const hiBound = Math.max(dataMin, dataMax);
+                      const clamped = Math.max(loBound, Math.min(hiBound, v));
+                      setWindowMin(clamped);
+                      if (clamped > windowMax) setWindowMax(clamped);
+                    }}
+                    onBlur={() => setWindowMinText(formatForInput(windowMin))}
+                  />
+                  <div className="text-muted-foreground">→</div>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={windowMaxText}
+                    className="h-8 w-[120px]"
+                    onChange={e => {
+                      const raw = e.target.value;
+                      setWindowMaxText(raw);
+                      const v = Number(raw);
+                      if (!Number.isFinite(v)) return;
+                      const loBound = Math.min(dataMin, dataMax);
+                      const hiBound = Math.max(dataMin, dataMax);
+                      const clamped = Math.max(loBound, Math.min(hiBound, v));
+                      setWindowMax(clamped);
+                      if (clamped < windowMin) setWindowMin(clamped);
+                    }}
+                    onBlur={() => setWindowMaxText(formatForInput(windowMax))}
+                  />
+                </div>
+              </div>
               <Slider
                 value={[windowMin, windowMax]}
                 onValueChange={([a, b]) => {
@@ -1112,6 +1198,9 @@ export function VolumeViewer({
                 step={Math.max(1e-6, (Math.max(dataMin, dataMax) - Math.min(dataMin, dataMax)) / 500)}
                 className="w-full"
               />
+              <div className="text-xs text-muted-foreground">
+                Data range: {format3Sig(Math.min(dataMin, dataMax))} → {format3Sig(Math.max(dataMin, dataMax))}
+              </div>
             </div>
           ) : null}
 

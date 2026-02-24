@@ -14,9 +14,7 @@ interface TablesViewProps {
 
 const metricDescriptions: Record<string, string> = {
   Ki: 'Transfer constant from Patlak analysis — unidirectional transport rate across blood-brain barrier',
-  vp: 'Plasma volume fraction from Patlak or Extended Tofts model',
-  Ktrans: 'Volume transfer constant from Extended Tofts — indicates vascular permeability',
-  ve: 'Extravascular extracellular volume fraction',
+  vp: 'Plasma volume fraction from Patlak analysis',
   CBF: 'Cerebral blood flow from deconvolution analysis',
   MTT: 'Mean transit time — average time for blood to traverse capillary network',
   CTH: 'Capillary transit-time heterogeneity — standard deviation of transit-time distribution',
@@ -59,13 +57,11 @@ export function TablesView({ subjectId }: TablesViewProps) {
   const handleExport = () => {
     if (!metricsTable) return;
 
-    const headers = ['Region', 'Ki (ml/100g/min)', 'vp', 'Ktrans (min⁻¹)', 've', 'CBF (ml/100g/min)', 'MTT (s)', 'CTH (s)'];
+    const headers = ['Region', 'Ki (ml/100g/min)', 'vp', 'CBF (ml/100g/min)', 'MTT (s)', 'CTH (s)'];
     const rows = metricsTable.rows.map(row => [
       row.region,
       row.Ki?.toFixed(2) || 'N/A',
       row.vp?.toFixed(3) || 'N/A',
-      row.Ktrans?.toFixed(3) || 'N/A',
-      row.ve?.toFixed(3) || 'N/A',
       row.CBF?.toFixed(1) || 'N/A',
       row.MTT?.toFixed(2) || 'N/A',
       row.CTH?.toFixed(2) || 'N/A',
@@ -134,12 +130,6 @@ export function TablesView({ subjectId }: TablesViewProps) {
                     <MetricHeader label="vp" unit="fraction" />
                   </TableHead>
                   <TableHead className="text-right">
-                    <MetricHeader label="Ktrans" unit="min⁻¹" />
-                  </TableHead>
-                  <TableHead className="text-right">
-                    <MetricHeader label="ve" unit="fraction" />
-                  </TableHead>
-                  <TableHead className="text-right">
                     <MetricHeader label="CBF" unit="ml/100g/min" />
                   </TableHead>
                   <TableHead className="text-right">
@@ -162,8 +152,6 @@ export function TablesView({ subjectId }: TablesViewProps) {
                     <TableCell className="font-medium text-[12px]">{row.region}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.Ki?.toFixed(2) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.vp?.toFixed(3) || '—'}</TableCell>
-                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.Ktrans?.toFixed(3) || '—'}</TableCell>
-                    <TableCell className="mono text-right text-[12px] tabular-nums">{row.ve?.toFixed(3) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.CBF?.toFixed(1) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.MTT?.toFixed(2) || '—'}</TableCell>
                     <TableCell className="mono text-right text-[12px] tabular-nums">{row.CTH?.toFixed(2) || '—'}</TableCell>
@@ -189,14 +177,6 @@ export function TablesView({ subjectId }: TablesViewProps) {
           <div>
             <span className="mono font-semibold text-foreground">vp</span> — Plasma volume fraction representing the
             vascular space within tissue
-          </div>
-          <div>
-            <span className="mono font-semibold text-foreground">Ktrans</span> — Volume transfer constant from Extended
-            Tofts model indicating vessel permeability
-          </div>
-          <div>
-            <span className="mono font-semibold text-foreground">ve</span> — Extravascular extracellular volume
-            fraction
           </div>
           <div>
             <span className="mono font-semibold text-foreground">CBF</span> — Cerebral blood flow from deconvolution

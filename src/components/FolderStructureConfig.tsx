@@ -3,17 +3,6 @@ import { Folder, FolderOpen, FileCode, TreeStructure, FloppyDisk, ArrowCounterCl
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -26,6 +15,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { FolderStructureConfig as FolderConfig, Project } from '@/types';
 import { DEFAULT_FOLDER_STRUCTURE } from '@/types';
 import { engine } from '@/lib/engine';
+import type { FolderStructurePreviewSubject } from '@/types';
 
 interface PatternValidation {
   isValid: boolean;
@@ -423,7 +413,7 @@ function FolderTreeNode({
 
 export function FolderStructureConfig({ project, onSave }: FolderStructureConfigProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [isClearingDerived, setIsClearingDerived] = useState(false);
+  const [tab, setTab] = useState<'presets' | 'patterns' | 'preview'>('presets');
   const [config, setConfig] = useState<FolderConfig>(
     { ...DEFAULT_FOLDER_STRUCTURE, ...(project.config.folderStructure || {}) }
   );
@@ -434,6 +424,10 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     new Set(['root', 'subject', 'nifti', 'anat', 'perf', 'dwi'])
   );
+
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewSubjects, setPreviewSubjects] = useState<FolderStructurePreviewSubject[]>([]);
 
   const validationState = useMemo(() => {
     const subjectValidation = validateGlobPattern(config.subjectFolderPattern, 'folder');
@@ -460,6 +454,34 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
     const ti = String(pb?.irTi ?? '00120,00300,00600,01000,02000,04000,10000').trim();
     setPbrainIrTi(ti || '00120,00300,00600,01000,02000,04000,10000');
   }, [project?.id, project?.updatedAt]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (tab !== 'preview') return;
+    if (!project?.id) return;
+
+    const t = window.setTimeout(() => {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      void (async () => {
+        try {
+          const res = await (engine as any).previewFolderStructure(project.id, config);
+          const subjects = (res?.subjects || []) as FolderStructurePreviewSubject[];
+          setPreviewSubjects(subjects);
+          if (Array.isArray(res?.errors) && res.errors.length > 0) {
+            setPreviewError(res.errors[0]);
+          }
+        } catch (e) {
+          setPreviewSubjects([]);
+          setPreviewError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setPreviewLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => window.clearTimeout(t);
+  }, [isOpen, tab, project?.id, config]);
 
   useEffect(() => {
     const comparable = { ...config, aiModelsPath: '' };
@@ -506,27 +528,6 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
     toast.info('Configuration reset');
   };
 
-  const handleClearDerived = async () => {
-    if (!project?.id) return;
-    setIsClearingDerived(true);
-    try {
-      const res = await engine.clearProjectDerivedData(project.id);
-      if (res?.ok) {
-        toast.success(`Cleared derived data for ${res.subjectsCleared} subject${res.subjectsCleared === 1 ? '' : 's'}`);
-      } else {
-        toast.error('Failed to clear derived data', {
-          description: `Unexpected response: ${JSON.stringify(res)}`,
-        });
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error('Failed to clear derived data', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setIsClearingDerived(false);
-    }
-  };
 
   const toggleFolder = (folderId: string) => {
     setExpandedFolders(prev => {
@@ -741,7 +742,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
           Configure
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <TreeStructure size={22} className="text-accent" />
@@ -752,16 +753,16 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-hidden">
-          <Tabs defaultValue="presets" className="h-full flex flex-col">
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <Tabs value={tab} onValueChange={(v) => setTab(v as any)} className="h-full min-h-0 flex flex-col">
             <TabsList className="w-full justify-start">
               <TabsTrigger value="presets">Presets</TabsTrigger>
               <TabsTrigger value="patterns">File Patterns</TabsTrigger>
               <TabsTrigger value="preview">Preview</TabsTrigger>
             </TabsList>
 
-            <div className="flex-1 overflow-hidden mt-4">
-              <TabsContent value="presets" className="mt-0 h-full">
+            <div className="flex-1 min-h-0 overflow-hidden mt-4">
+              <TabsContent value="presets" className="mt-0 h-full min-h-0">
                 <ScrollArea className="h-full pr-4">
                   <div className="grid gap-4 sm:grid-cols-2 pb-4">
                     {PRESET_STRUCTURES.map((preset) => (
@@ -811,7 +812,7 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                 </ScrollArea>
               </TabsContent>
 
-              <TabsContent value="patterns" className="mt-0 h-full">
+              <TabsContent value="patterns" className="mt-0 h-full min-h-0">
                 <ScrollArea className="h-full pr-4">
                   <div className="space-y-6 pb-4">
                   <Card>
@@ -1044,9 +1045,9 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                 </ScrollArea>
               </TabsContent>
 
-              <TabsContent value="preview" className="mt-0 h-full">
+              <TabsContent value="preview" className="mt-0 h-full min-h-0">
                 <ScrollArea className="h-full pr-4">
-                  <div className="grid gap-4 lg:grid-cols-2 h-full pb-4">
+                  <div className="grid gap-4 lg:grid-cols-2 pb-4">
                   <Card className="h-full">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-sm font-medium">
@@ -1103,6 +1104,20 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                             <span className="text-xs text-muted-foreground">T1:</span>
                             <span className="mono text-xs">{config.t1Pattern}</span>
                           </div>
+                          {(config as any).t2Pattern ? (
+                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                              <span className="h-2 w-2 rounded-full bg-success" />
+                              <span className="text-xs text-muted-foreground">T2:</span>
+                              <span className="mono text-xs">{(config as any).t2Pattern}</span>
+                            </div>
+                          ) : null}
+                          {(config as any).flairPattern ? (
+                            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+                              <span className="h-2 w-2 rounded-full bg-success" />
+                              <span className="text-xs text-muted-foreground">FLAIR:</span>
+                              <span className="mono text-xs">{(config as any).flairPattern}</span>
+                            </div>
+                          ) : null}
                           <div className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5">
                             <span className="h-2 w-2 rounded-full bg-accent" />
                             <span className="text-xs text-muted-foreground">DCE:</span>
@@ -1114,6 +1129,66 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
                             <span className="mono text-xs">{config.diffusionPattern}</span>
                           </div>
                         </div>
+                      </div>
+
+                      <div className="border-t border-border pt-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-medium">Per-subject matches</p>
+                          <span className="text-[10px] text-muted-foreground">
+                            {previewLoading ? 'Scanning…' : `${previewSubjects.length} subject${previewSubjects.length === 1 ? '' : 's'}`}
+                          </span>
+                        </div>
+
+                        {previewError ? (
+                          <p className="text-[10px] text-destructive mt-2">{previewError}</p>
+                        ) : null}
+
+                        <div className="mt-3 rounded-lg border border-border bg-background">
+                          <ScrollArea className="h-[280px]">
+                            <div className="min-w-[720px]">
+                              <table className="w-full text-xs">
+                                <thead className="sticky top-0 bg-background border-b border-border">
+                                  <tr>
+                                    <th className="text-left font-medium px-3 py-2">Subject</th>
+                                    <th className="text-left font-medium px-3 py-2">T1</th>
+                                    <th className="text-left font-medium px-3 py-2">DCE</th>
+                                    <th className="text-left font-medium px-3 py-2">Diffusion</th>
+                                    <th className="text-left font-medium px-3 py-2">T2</th>
+                                    <th className="text-left font-medium px-3 py-2">FLAIR</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {previewSubjects.map((s) => {
+                                    const m: any = (s as any).matches || {};
+                                    const cell = (v: any) => {
+                                      const txt = typeof v === 'string' && v.trim() ? v : '';
+                                      return (
+                                        <span className={txt ? 'mono' : 'text-muted-foreground'} title={txt || ''}>
+                                          {txt || '—'}
+                                        </span>
+                                      );
+                                    };
+
+                                    return (
+                                      <tr key={s.name} className="border-b border-border last:border-b-0">
+                                        <td className="px-3 py-2 mono">{s.name}</td>
+                                        <td className="px-3 py-2">{cell(m.t1)}</td>
+                                        <td className="px-3 py-2">{cell(m.dce)}</td>
+                                        <td className="px-3 py-2">{cell(m.diffusion)}</td>
+                                        <td className="px-3 py-2">{cell(m.t2)}</td>
+                                        <td className="px-3 py-2">{cell(m.flair)}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </ScrollArea>
+                        </div>
+
+                        <p className="text-[10px] text-muted-foreground mt-2">
+                          Matches show the first file found per pattern (comma-separated fallbacks supported).
+                        </p>
                       </div>
                     </CardContent>
                   </Card>
@@ -1130,28 +1205,6 @@ export function FolderStructureConfig({ project, onSave }: FolderStructureConfig
               <ArrowCounterClockwise size={16} />
               Reset
             </Button>
-
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" disabled={isClearingDerived}>
-                  Delete Analysis + Images
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete derived outputs for this project?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This deletes <span className="mono">Analysis/</span> and <span className="mono">Images/</span> inside every subject folder in this project. It keeps NIfTI and all source data.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={isClearingDerived}>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={handleClearDerived} disabled={isClearingDerived}>
-                    {isClearingDerived ? 'Deleting…' : 'Delete'}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
           </div>
           <div className="flex gap-3">
             <Button variant="secondary" onClick={() => setIsOpen(false)}>
