@@ -14,6 +14,7 @@ import sys
 import hashlib
 import importlib
 import colorsys
+import pickle
 from functools import lru_cache
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -663,21 +664,14 @@ def _python_env_for_pbrain() -> Dict[str, str]:
     ):
         env.pop(k, None)
 
-    # Platform default: pick the ICA frame by intensity peak unless project config overrides.
-    # (This matches the validated behavior for robust ICA ROIs.)
-    env.setdefault("P_BRAIN_AI_ICA_FRAME_MODE", "intensity")
-    env.setdefault("P_BRAIN_AI_ROI_POSTPROCESS", "1")
-
-    # Do not let a user's shell env (or a prior run) silently change TSCC/CTC selection
-    # and export behavior. Explicit overrides should come from project config only.
-    env.pop("P_BRAIN_TSCC_SKIP_FORKED_PEAKS", None)
-    env.pop("P_BRAIN_CTC_MAPS", None)
-    env.pop("P_BRAIN_CTC_4D", None)
-    env.pop("P_BRAIN_CTC_MAP_SLICE", None)
-    env["P_BRAIN_TSCC_SKIP_FORKED_PEAKS"] = "1"
-    env["P_BRAIN_CTC_MAPS"] = "1"
-    env["P_BRAIN_CTC_4D"] = "1"
-    env["P_BRAIN_CTC_MAP_SLICE"] = "5"
+    # Default to the same behavior as the plain CLI:
+    # - If an artery side isn't explicitly configured, extract BOTH ICAs.
+    # - Avoid forcing runner-specific heuristics/exports here; let p-brain defaults
+    #   (or project config) control ICA frame choice, postprocessing, TSCC selection,
+    #   and which intermediate artifacts are written.
+    env.setdefault("P_BRAIN_AIF_ARTERY", "BOTH")
+    # Keep noninteractive prompts deterministic when p-brain still asks for a choice.
+    env.setdefault("PBRAIN_AUTO_ARTERY", "rica")
     # Always run p-brain in non-interactive mode when orchestrated by the app.
     # Some stages prompt via input(), which otherwise EOFs in headless subprocesses.
     env.setdefault("PBRAIN_NONINTERACTIVE", "1")
@@ -1027,6 +1021,9 @@ def _apply_project_pbrain_env_overrides(env: Dict[str, str], project: Project) -
             env["P_BRAIN_AIF_ARTERY"] = artery.upper()
             # Keep noninteractive prompts aligned with the selected artery.
             env["PBRAIN_AUTO_ARTERY"] = artery
+        elif artery in {"both", "bilateral", "rica+lica", "lica+rica"}:
+            env["P_BRAIN_AIF_ARTERY"] = "BOTH"
+            env.setdefault("PBRAIN_AUTO_ARTERY", "rica")
     except Exception:
         pass
 
@@ -3423,6 +3420,8 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                     "P_BRAIN_CTC_PEAK_RESCALE_THRESHOLD",
                     "P_BRAIN_MODELLING_INPUT_FUNCTION",
                     "P_BRAIN_AIF_USE_SSS",
+                    "P_BRAIN_AIF_ARTERY",
+                    "PBRAIN_AUTO_ARTERY",
                     "P_BRAIN_VASCULAR_ROI_CURVE_METHOD",
                     "P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX",
                     "P_BRAIN_AI_ICA_FRAME_MODE",
@@ -3576,7 +3575,29 @@ async def _select_pbrain_python(*, write_line_sync=None) -> str:
         else:
             add_candidate(shutil.which(override))
     else:
-        # First choice: app-managed venv (auto-installs deps if missing).
+        # If p-brain is configured to point at a repo checkout that already has a
+        # virtualenv (common for dev/power-users), prefer that interpreter so the
+        # app uses the exact same deps and behavior as running p-brain from CLI.
+        try:
+            main_py = _resolve_pbrain_main_py()
+            if main_py:
+                root = Path(main_py).expanduser().resolve().parent
+                for candidate in (
+                    root / ".venv" / "bin" / "python3",
+                    root / ".venv" / "bin" / "python",
+                    root / "venv" / "bin" / "python3",
+                    root / "venv" / "bin" / "python",
+                ):
+                    try:
+                        if candidate.exists() and candidate.is_file():
+                            await _preflight_pbrain_python(str(candidate))
+                            return str(candidate)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Next choice: app-managed venv (auto-installs deps if missing).
         try:
             if write_line_sync is None:
                 def write_line_sync(_line: str) -> None:
@@ -7380,6 +7401,10 @@ class InputFunctionForcesRequest(BaseModel):
     forcedVif: Optional[ForcedRoiRef] = None
 
 
+class IgnoreFromAnalysisRequest(BaseModel):
+    ignore: bool
+
+
 @app.get("/subjects/{subject_id}/input-function-forces")
 def get_subject_input_function_forces(subject_id: str) -> Dict[str, Any]:
     subject = _find_subject(subject_id)
@@ -7456,6 +7481,53 @@ def set_subject_input_function_forces(subject_id: str, req: InputFunctionForcesR
             pass
 
     return out
+
+
+def _ignore_from_analysis_path(subject: Subject) -> Path:
+    # Store flag in the subject directory (dataset root).
+    return Path(subject.sourcePath).expanduser().resolve() / "ignore_from_analysis.json"
+
+
+@app.get("/subjects/{subject_id}/ignore-from-analysis")
+def get_subject_ignore_from_analysis(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    p = _ignore_from_analysis_path(subject)
+    if not p.exists() or not p.is_file():
+        return {"ignore": False}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict) and isinstance(raw.get("ignore"), bool):
+            return {"ignore": bool(raw.get("ignore"))}
+        if isinstance(raw, bool):
+            return {"ignore": bool(raw)}
+        return {"ignore": False}
+    except Exception:
+        return {"ignore": False}
+
+
+@app.put("/subjects/{subject_id}/ignore-from-analysis")
+def set_subject_ignore_from_analysis(subject_id: str, req: IgnoreFromAnalysisRequest) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    p = _ignore_from_analysis_path(subject)
+    payload = {"ignore": bool(req.ignore)}
+
+    # Atomic write best-effort.
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, p)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+    return payload
 
 
 @app.get("/subjects/{subject_id}/tractography")
@@ -7555,6 +7627,461 @@ def get_subject_deconvolution(subject_id: str, region: str = "gm") -> Dict[str, 
         hematocrit=hematocrit,
         tissue_density=tissue_density,
     )
+
+
+def _discover_ai_region_keys(subject: Subject) -> List[str]:
+    """List available AI tissue region keys from on-disk segmented median curves."""
+    analysis_dir = _analysis_dir_for_subject(subject)
+    ai_dir = analysis_dir / "CTC Data" / "Tissue" / "AI"
+    if not ai_dir.exists() or not ai_dir.is_dir():
+        return []
+    keys: set[str] = set()
+    for p in ai_dir.glob("*_AI_Tissue_slice_*_segmented_median.npy"):
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        name = p.name
+        if "_AI_Tissue_slice_" not in name:
+            continue
+        key = name.split("_AI_Tissue_slice_")[0]
+        key = (key or "").strip()
+        if key:
+            keys.add(key)
+    return sorted(keys)
+
+
+def _load_central_voxel_tissue_curve(subject: Subject) -> tuple[Any, tuple[int, int, int]]:
+    """Fallback tissue curve from a central voxel in brain_concentration_4d.
+
+    Uses Analysis/CTC Data/Tissue/brain_concentration_4d.nii.gz if present.
+    """
+    _require_numpy()
+    _require_nibabel()
+    assert np is not None
+
+    analysis_dir = _analysis_dir_for_subject(subject)
+    p = analysis_dir / "CTC Data" / "Tissue" / "brain_concentration_4d.nii.gz"
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Missing brain_concentration_4d for central-voxel fallback")
+
+    img = _load_nifti(str(p))
+    shape = tuple(int(x) for x in (img.shape or ()))
+    if len(shape) < 4:
+        raise HTTPException(status_code=400, detail="brain_concentration_4d is not 4D")
+    nx, ny, nz, nt = shape[0], shape[1], shape[2], shape[3]
+    if nt < 3:
+        raise HTTPException(status_code=400, detail="brain_concentration_4d has insufficient time frames")
+
+    proxy = img.dataobj
+    cx, cy, cz = nx // 2, ny // 2, nz // 2
+
+    def try_voxel(x: int, y: int, z: int) -> Optional[Any]:
+        try:
+            arr = np.asarray(proxy[x, y, z, :], dtype=float).reshape(-1)
+        except Exception:
+            return None
+        if arr.size < 3:
+            return None
+        if not np.any(np.isfinite(arr)):
+            return None
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        if float(np.nanmax(np.abs(arr))) <= 1e-8:
+            return None
+        return arr
+
+    # Search outward from center in a small cube.
+    max_r = 10
+    for r in range(0, max_r + 1):
+        for dz in range(-r, r + 1):
+            z = cz + dz
+            if z < 0 or z >= nz:
+                continue
+            for dy in range(-r, r + 1):
+                y = cy + dy
+                if y < 0 or y >= ny:
+                    continue
+                for dx in range(-r, r + 1):
+                    x = cx + dx
+                    if x < 0 or x >= nx:
+                        continue
+                    if dx == 0 and dy == 0 and dz == 0:
+                        pass
+                    curve = try_voxel(x, y, z)
+                    if curve is not None:
+                        return curve, (x, y, z)
+
+    # Fallback: sample a sparse grid for any non-zero voxel.
+    for z in range(0, nz, max(1, nz // 16)):
+        for y in range(0, ny, max(1, ny // 16)):
+            for x in range(0, nx, max(1, nx // 16)):
+                curve = try_voxel(x, y, z)
+                if curve is not None:
+                    return curve, (x, y, z)
+
+    raise HTTPException(status_code=404, detail="No valid central voxel curve found in brain_concentration_4d")
+
+
+def _analysis_tissue_mask_volumes(project: Project, subject: Subject) -> List[Dict[str, Any]]:
+    """Discover tissue segmentation mask volumes aligned to the subject's DCE space.
+
+    p-brain datasets can include binary NIfTI masks under the subject's NIfTI folder, e.g.:
+      NIfTI/segmentation/**/aparc.DKTatlas+aseg.deep_in_DCE_wm.nii.gz
+
+    We expose these as ROI-mask-like volumes so the UI can highlight a region on the DCE slice.
+    """
+
+    root = Path(subject.sourcePath).expanduser().resolve()
+    nifti_dir = _nifti_dir_for_subject(project, subject)
+
+    # Heuristic scan: look for FreeSurfer/atlas-derived tissue masks already in DCE space.
+    candidates: List[Path] = []
+    try:
+        for p in nifti_dir.rglob("*_in_DCE_*.nii*"):
+            if not p.is_file() or p.name.startswith("._"):
+                continue
+            name = p.name
+            if not (name.endswith(".nii") or name.endswith(".nii.gz")):
+                continue
+            candidates.append(p)
+    except Exception:
+        candidates = []
+
+    by_key: Dict[str, Path] = {}
+    for p in sorted(candidates, key=lambda q: q.as_posix()):
+        base = p.name
+        base = re.sub(r"\.(nii\.gz|nii)$", "", base, flags=re.IGNORECASE)
+        if "_in_DCE_" not in base:
+            continue
+        key = base.split("_in_DCE_", 1)[1].strip().lower()
+        if not key:
+            continue
+        # Prefer .nii.gz if both exist; otherwise first seen.
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = p
+        else:
+            prev_gz = prev.name.lower().endswith(".nii.gz")
+            cur_gz = p.name.lower().endswith(".nii.gz")
+            if (not prev_gz) and cur_gz:
+                by_key[key] = p
+
+    out: List[Dict[str, Any]] = []
+    for key in sorted(by_key.keys()):
+        p = by_key[key]
+        # Ensure returned paths are within allowed roots (subject or project).
+        try:
+            _safe_resolve_path(project, subject, str(p))
+        except Exception:
+            continue
+        out.append(
+            {
+                "id": f"tissue_mask_{key}",
+                "name": f"Tissue mask ({key})",
+                "path": str(p),
+                "roiType": "Tissue",
+                "roiSubType": key,
+                "source": "segmentation",
+                "subjectRoot": str(root),
+            }
+        )
+    return out
+
+
+def _deconvolution_lcurve_from_curves(
+    t: Any,
+    aif: Any,
+    tissue: Any,
+    *,
+    dt: float,
+    lambdas: Any,
+) -> Dict[str, Any]:
+    _require_numpy()
+    assert np is not None
+
+    n = int(min(t.size, aif.size, tissue.size))
+    t = t[:n]
+    aif = aif[:n]
+    tissue = tissue[:n]
+
+    A = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        A[i, : i + 1] = aif[i::-1] * dt
+        if i == 0:
+            A[i, 0] = 0.0
+        else:
+            A[i, 0] *= 0.5
+            A[i, i] *= 0.5
+
+    ata = A.T @ A
+    rhs = A.T @ tissue
+    lams = np.asarray(lambdas, dtype=float).reshape(-1)
+    lams = lams[np.isfinite(lams) & (lams > 0)]
+    if lams.size == 0:
+        lams = np.asarray([0.1], dtype=float)
+
+    residual_norms: List[float] = []
+    solution_norms: List[float] = []
+
+    eye = np.eye(n, dtype=float)
+    for lam in lams:
+        lam2 = float(lam) ** 2
+        regularised = ata + lam2 * eye
+        try:
+            g = np.linalg.solve(regularised, rhs)
+        except np.linalg.LinAlgError:
+            g = np.linalg.lstsq(regularised, rhs, rcond=None)[0]
+        r = (A @ g) - tissue
+        residual_norms.append(float(np.linalg.norm(r)))
+        solution_norms.append(float(np.linalg.norm(g)))
+
+    return {
+        "lambdas": lams.astype(float).tolist(),
+        "residualNorms": residual_norms,
+        "solutionNorms": solution_norms,
+    }
+
+
+@app.get("/subjects/{subject_id}/deconvolution/regions")
+def get_subject_deconvolution_regions(subject_id: str, regions: Optional[str] = None) -> Dict[str, Any]:
+    """Compute deconvolution outputs for multiple tissue regions.
+
+    - If `regions` is omitted/empty: uses all on-disk AI tissue region keys.
+    - If no region curves exist: falls back to a central voxel curve from brain_concentration_4d.
+    """
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    t = _load_time_points(subject)
+    aif = _load_aif_curve(subject)
+
+    lambd = float(_get_config_value(project, ["model", "lambdaTikhonov"], 0.1))
+    hematocrit = float(_get_config_value(project, ["physiological", "hematocrit"], 0.42))
+    tissue_density = float(_get_config_value(project, ["physiological", "tissueDensity"], 1.04))
+
+    requested: List[str] = []
+    if regions is not None:
+        requested = [p.strip() for p in str(regions).split(",") if p.strip()]
+
+    keys = requested if requested else _discover_ai_region_keys(subject)
+
+    out_regions: List[Dict[str, Any]] = []
+    for k in keys:
+        try:
+            tissue = _load_ai_tissue_curve(subject, k)
+            t2, a2, tissue2, dt = _align_curves(t, aif, tissue)
+            data = _deconvolution_from_curves(
+                t2,
+                a2,
+                tissue2,
+                dt=dt,
+                lambd=lambd,
+                hematocrit=hematocrit,
+                tissue_density=tissue_density,
+            )
+            out_regions.append({"key": k, "label": k, "data": data})
+        except Exception:
+            continue
+
+    if out_regions:
+        return {"regions": out_regions, "fallback": None}
+
+    # Fallback: central voxel
+    tissue, voxel = _load_central_voxel_tissue_curve(subject)
+    t2, a2, tissue2, dt = _align_curves(t, aif, tissue)
+    data = _deconvolution_from_curves(
+        t2,
+        a2,
+        tissue2,
+        dt=dt,
+        lambd=lambd,
+        hematocrit=hematocrit,
+        tissue_density=tissue_density,
+    )
+    return {
+        "regions": [{"key": "central_voxel", "label": "Central voxel", "data": data}],
+        "fallback": {"kind": "central_voxel", "voxel": [int(voxel[0]), int(voxel[1]), int(voxel[2])]},
+    }
+
+
+@app.get("/subjects/{subject_id}/tissue-masks")
+def get_subject_tissue_masks(subject_id: str) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+    masks = _analysis_tissue_mask_volumes(project, subject)
+    # Keep only the fields the UI expects.
+    cleaned = [
+        {
+            "id": str(m.get("id")),
+            "name": str(m.get("name")),
+            "path": str(m.get("path")),
+            "roiType": str(m.get("roiType")),
+            "roiSubType": str(m.get("roiSubType")),
+        }
+        for m in masks
+    ]
+    return {"masks": cleaned}
+
+
+@app.get("/subjects/{subject_id}/deconvolution/lcurve")
+def get_subject_deconvolution_lcurve(subject_id: str, region: str, points: int = 32) -> Dict[str, Any]:
+    subject = _find_subject(subject_id)
+    project = _find_project(subject.projectId)
+
+    region_key = (region or "").strip()
+    if not region_key:
+        raise HTTPException(status_code=400, detail="region is required")
+
+    t = _load_time_points(subject)
+    aif = _load_aif_curve(subject)
+    tissue = _load_ai_tissue_curve(subject, region_key)
+    t2, a2, tissue2, dt = _align_curves(t, aif, tissue)
+
+    base_lam = float(_get_config_value(project, ["model", "lambdaTikhonov"], 0.1))
+    if not math.isfinite(base_lam) or base_lam <= 0:
+        base_lam = 0.1
+
+    try:
+        npts = int(points)
+    except Exception:
+        npts = 32
+    npts = max(8, min(80, npts))
+
+    lam_min = max(base_lam / 1000.0, 1e-8)
+    lam_max = max(base_lam * 1000.0, lam_min * 10.0)
+    lams = np.logspace(math.log10(lam_min), math.log10(lam_max), npts)
+
+    out = _deconvolution_lcurve_from_curves(t2, a2, tissue2, dt=dt, lambdas=lams)
+    out.update({"region": region_key, "selectedLambda": float(base_lam)})
+    return out
+
+
+def _load_pickle_array(path: Path) -> Any:
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load {path.name}: {exc}")
+
+
+def _t1_ir_saturation_model(ti_ms: Any, m0: float, t1_ms: float) -> Any:
+    np_mod = _load_numpy()
+    if np_mod is None:
+        return None
+    ti = np_mod.asarray(ti_ms, dtype=float)
+    t1 = float(t1_ms)
+    if not np_mod.isfinite(t1) or t1 <= 0:
+        return np_mod.full_like(ti, np_mod.nan, dtype=float)
+    return float(m0) * (1.0 - np_mod.exp(-ti / t1))
+
+
+@app.get("/subjects/{subject_id}/t1fit/ir")
+def get_subject_t1fit_ir(subject_id: str) -> Dict[str, Any]:
+    """Return central-voxel IR TI-series points and a fitted curve.
+
+    Reads p-brain fitting artifacts from Analysis/Fitting:
+    - voxel_matrix.pkl (TI, X, Y, Z)
+    - voxel_T1_matrix.pkl (X, Y, Z) [optional]
+    - voxel_M0_matrix.pkl (X, Y, Z) [optional]
+    """
+
+    subject = _find_subject(subject_id)
+    fit_dir = _analysis_dir_for_subject(subject) / "Fitting"
+
+    voxel_matrix_p = fit_dir / "voxel_matrix.pkl"
+    t1_p = fit_dir / "voxel_T1_matrix.pkl"
+    m0_p = fit_dir / "voxel_M0_matrix.pkl"
+
+    if not voxel_matrix_p.exists() or not voxel_matrix_p.is_file():
+        raise HTTPException(status_code=404, detail="Missing Analysis/Fitting/voxel_matrix.pkl")
+
+    _require_numpy()
+    _require_scipy()
+    np_mod = _load_numpy()
+    lsq = _get_least_squares()
+    if np_mod is None or lsq is None:
+        raise HTTPException(status_code=500, detail="Backend missing dependency: numpy/scipy")
+
+    voxel_matrix = np_mod.asarray(_load_pickle_array(voxel_matrix_p), dtype=float)
+    if voxel_matrix.ndim != 4 or voxel_matrix.shape[0] < 2:
+        raise HTTPException(status_code=500, detail=f"Unexpected voxel_matrix shape: {tuple(voxel_matrix.shape)}")
+
+    n_ti, sx, sy, sz = voxel_matrix.shape
+    x0, y0, z0 = int(sx // 2), int(sy // 2), int(sz // 2)
+
+    def _extract_at(x: int, y: int, z: int) -> Any:
+        return np_mod.asarray(voxel_matrix[:, x, y, z], dtype=float).reshape(-1)
+
+    measured = _extract_at(x0, y0, z0)
+    if (not np_mod.isfinite(measured).any()) or float(np_mod.nanmax(np_mod.abs(measured))) <= 0:
+        try:
+            ref = np_mod.asarray(voxel_matrix[-1, ...], dtype=float)
+            if np_mod.isfinite(ref).any():
+                flat_idx = int(np_mod.nanargmax(ref))
+                x0, y0, z0 = (int(v) for v in np_mod.unravel_index(flat_idx, ref.shape))
+                measured = _extract_at(x0, y0, z0)
+        except Exception:
+            pass
+
+    canonical_ti = [120, 300, 600, 1000, 2000, 4000, 10000]
+    ti_ms = canonical_ti if len(canonical_ti) == int(n_ti) else list(range(int(n_ti)))
+    ti_ms_arr = np_mod.asarray(ti_ms, dtype=float)
+
+    finite = np_mod.isfinite(ti_ms_arr) & np_mod.isfinite(measured)
+    ti_fit = ti_ms_arr[finite]
+    y_fit = measured[finite]
+    if ti_fit.size < 3:
+        raise HTTPException(status_code=404, detail="Not enough IR points for fit")
+
+    y_max = float(np_mod.nanmax(y_fit)) if np_mod.isfinite(y_fit).any() else 0.0
+    if not np_mod.isfinite(y_max) or y_max <= 0:
+        y_max = 1.0
+
+    def _resid(params: Any) -> Any:
+        m0_hat = float(params[0])
+        t1_hat = float(params[1])
+        return _t1_ir_saturation_model(ti_fit, m0_hat, t1_hat) - y_fit
+
+    result = lsq(
+        _resid,
+        x0=np_mod.array([y_max, 1000.0], dtype=float),
+        bounds=(np_mod.array([1e-6, 50.0]), np_mod.array([np_mod.inf, 20000.0])),
+        method="trf",
+    )
+    m0_hat = float(result.x[0])
+    t1_hat = float(result.x[1])
+
+    dense_ti = np_mod.linspace(float(np_mod.nanmin(ti_fit)), float(np_mod.nanmax(ti_fit)), 200)
+    dense_y = _t1_ir_saturation_model(dense_ti, m0_hat, t1_hat)
+
+    map_t1 = None
+    map_m0 = None
+    try:
+        if t1_p.exists() and t1_p.is_file():
+            t1_map = np_mod.asarray(_load_pickle_array(t1_p), dtype=float)
+            if t1_map.ndim == 3 and 0 <= x0 < t1_map.shape[0] and 0 <= y0 < t1_map.shape[1] and 0 <= z0 < t1_map.shape[2]:
+                v = float(t1_map[x0, y0, z0])
+                map_t1 = v if np_mod.isfinite(v) else None
+    except Exception:
+        map_t1 = None
+
+    try:
+        if m0_p.exists() and m0_p.is_file():
+            m0_map = np_mod.asarray(_load_pickle_array(m0_p), dtype=float)
+            if m0_map.ndim == 3 and 0 <= x0 < m0_map.shape[0] and 0 <= y0 < m0_map.shape[1] and 0 <= z0 < m0_map.shape[2]:
+                v = float(m0_map[x0, y0, z0])
+                map_m0 = v if np_mod.isfinite(v) else None
+    except Exception:
+        map_m0 = None
+
+    return {
+        "voxel": [x0, y0, z0],
+        "tiMs": [float(x) for x in ti_ms_arr.tolist()],
+        "measured": [float(x) if np_mod.isfinite(x) else None for x in measured.tolist()],
+        "fit": {"model": "saturation", "m0": m0_hat, "t1Ms": t1_hat},
+        "curve": {"tiMs": [float(x) for x in dense_ti.tolist()], "values": [float(x) for x in dense_y.tolist()]},
+        "map": {"m0": map_m0, "t1Ms": map_t1},
+    }
 
 
 @app.post("/projects/{project_id}/subjects/import")

@@ -329,6 +329,10 @@ export interface InputFunctionForces {
   forcedVif: ForcedRoiRef | null;
 }
 
+export interface IgnoreFromAnalysisResponse {
+  ignore: boolean;
+}
+
 export interface RoiMaskVolume {
   id: string;
   name: string;
@@ -372,6 +376,28 @@ export interface DeconvolutionData {
   CBF: number;
   MTT: number;
   CTH: number;
+}
+
+export interface DeconvolutionRegionsResponse {
+  regions: Array<{ key: string; label: string; data: DeconvolutionData }>;
+  fallback: null | { kind: 'central_voxel'; voxel: [number, number, number] };
+}
+
+export interface DeconvolutionLCurveResponse {
+  region: string;
+  selectedLambda: number;
+  lambdas: number[];
+  residualNorms: number[];
+  solutionNorms: number[];
+}
+
+export interface T1IrFitResponse {
+  voxel: [number, number, number];
+  tiMs: number[];
+  measured: Array<number | null>;
+  fit: { model: 'saturation'; m0: number; t1Ms: number };
+  curve: { tiMs: number[]; values: number[] };
+  map: { m0: number | null; t1Ms: number | null };
 }
 
 export interface MetricsTable {

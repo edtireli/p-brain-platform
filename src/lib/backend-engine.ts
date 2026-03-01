@@ -24,8 +24,12 @@ import type {
   ProjectAnalysisGroupCompareResponse,
   ProjectAnalysisOlsResponse,
   InputFunctionForces,
+  IgnoreFromAnalysisResponse,
   ForcedRoiRef,
   FolderStructurePreviewResponse,
+  DeconvolutionRegionsResponse,
+  DeconvolutionLCurveResponse,
+  T1IrFitResponse,
 } from '@/types';
 import type { StageId } from '@/types';
 
@@ -553,6 +557,11 @@ export class BackendEngineAPI {
     return Array.isArray(payload?.masks) ? payload.masks : [];
   }
 
+  async getSubjectTissueMasks(subjectId: string): Promise<RoiMaskVolume[]> {
+    const payload = await api<{ masks: RoiMaskVolume[] }>(`/subjects/${encodeURIComponent(subjectId)}/tissue-masks`);
+    return Array.isArray(payload?.masks) ? payload.masks : [];
+  }
+
   async getSubjectInputFunctionForces(subjectId: string): Promise<InputFunctionForces> {
     const payload = await api<InputFunctionForces>(
       `/subjects/${encodeURIComponent(subjectId)}/input-function-forces`
@@ -570,6 +579,17 @@ export class BackendEngineAPI {
     return api<InputFunctionForces>(`/subjects/${encodeURIComponent(subjectId)}/input-function-forces`, {
       method: 'PUT',
       body: JSON.stringify(forces),
+    });
+  }
+
+  async getSubjectIgnoreFromAnalysis(subjectId: string): Promise<IgnoreFromAnalysisResponse> {
+    return api<IgnoreFromAnalysisResponse>(`/subjects/${encodeURIComponent(subjectId)}/ignore-from-analysis`);
+  }
+
+  async setSubjectIgnoreFromAnalysis(subjectId: string, ignore: boolean): Promise<IgnoreFromAnalysisResponse> {
+    return api<IgnoreFromAnalysisResponse>(`/subjects/${encodeURIComponent(subjectId)}/ignore-from-analysis`, {
+      method: 'PUT',
+      body: JSON.stringify({ ignore: !!ignore }),
     });
   }
 
@@ -892,10 +912,27 @@ export class BackendEngineAPI {
       `/subjects/${encodeURIComponent(subjectId)}/deconvolution?region=${encodeURIComponent(region)}`
     );
   }
+  
+  async getDeconvolutionRegionsData(subjectId: string, regions?: string[]): Promise<DeconvolutionRegionsResponse> {
+    const qs = regions && regions.length ? `?regions=${encodeURIComponent(regions.join(','))}` : '';
+    return api<DeconvolutionRegionsResponse>(
+      `/subjects/${encodeURIComponent(subjectId)}/deconvolution/regions${qs}`
+    );
+  }
+
+  async getDeconvolutionLCurve(subjectId: string, region: string, points: number = 32): Promise<DeconvolutionLCurveResponse> {
+    return api<DeconvolutionLCurveResponse>(
+      `/subjects/${encodeURIComponent(subjectId)}/deconvolution/lcurve?region=${encodeURIComponent(region)}&points=${encodeURIComponent(String(points))}`
+    );
+  }
 
   async getMetricsTable(subjectId: string, view: 'atlas' | 'tissue' = 'atlas'): Promise<MetricsTable> {
     return api<MetricsTable>(
       `/subjects/${encodeURIComponent(subjectId)}/metrics?view=${encodeURIComponent(view)}`
     );
+  }
+
+  async getT1IrFit(subjectId: string): Promise<T1IrFitResponse> {
+    return api<T1IrFitResponse>(`/subjects/${encodeURIComponent(subjectId)}/t1fit/ir`);
   }
 }

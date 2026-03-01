@@ -120,34 +120,6 @@ export function VolumeViewer({
     return s;
   }, [volumes]);
 
-  useEffect(() => {
-    if (!showRoiOverlays) return;
-    if (!Array.isArray(roiOverlays) || roiOverlays.length === 0) return;
-    if (!Number.isFinite(maxZ) || maxZ <= 0) return;
-
-    const overlayZs = Array.from(
-      new Set(
-        roiOverlays
-          .map(o => Number((o as any)?.sliceIndex))
-          .filter(z => Number.isFinite(z))
-          .map(z => Math.max(0, Math.min(maxZ, z)))
-      )
-    ).sort((a, b) => a - b);
-
-    if (overlayZs.length === 0) return;
-
-    const visibleZs =
-      viewMode === 'grid'
-        ? new Set(Array.from({ length: 9 }, (_, i) => Math.min(maxZ, Math.max(0, sliceZ - 4 + i))))
-        : new Set([sliceZ]);
-
-    // If no overlay would be visible at the current slice selection, jump to the first overlay.
-    const anyVisible = overlayZs.some(z => visibleZs.has(z));
-    if (!anyVisible) {
-      setSliceZ(overlayZs[0]!);
-    }
-  }, [showRoiOverlays, roiOverlays, maxZ, viewMode, sliceZ]);
-
   const isImagePath = (p: string | null): boolean => {
     if (!p) return false;
     const base = p.split('?')[0];
