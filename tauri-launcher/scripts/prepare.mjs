@@ -29,6 +29,12 @@ function exists(p) {
 }
 
 function which(cmd) {
+  if (process.platform === 'win32') {
+    const res = spawnSync('where', [cmd], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    if (res.status !== 0) return null;
+    const out = String(res.stdout || '').trim().split(/\r?\n/)[0];
+    return out.length ? out : null;
+  }
   const res = spawnSync('bash', ['-lc', `command -v ${cmd}`], { encoding: 'utf8' });
   if (res.status !== 0) return null;
   const out = String(res.stdout || '').trim();
@@ -94,8 +100,12 @@ const webRoot = path.resolve(launcherDir, '..');
 const outRoot = path.join(launcherDir, 'src-tauri', 'resources');
 const outBackend = path.join(outRoot, 'backend');
 
-console.log('Building frontend…');
-run('npm', ['run', 'build'], { cwd: webRoot });
+if (truthy(process.env.PBRAIN_SKIP_FRONTEND_BUILD)) {
+  console.log('Skipping frontend build (PBRAIN_SKIP_FRONTEND_BUILD is set)…');
+} else {
+  console.log('Building frontend…');
+  run('npm', ['run', 'build'], { cwd: webRoot });
+}
 
 rmrf(outBackend);
 fs.mkdirSync(outBackend, { recursive: true });
@@ -129,10 +139,20 @@ function zipFolderKeepParent(folderPath) {
     return;
   }
   const zipBin = which('zip');
-  if (!zipBin) {
-    throw new Error('Neither /usr/bin/ditto nor zip is available to create pbrain-web-backend.zip');
+  if (zipBin) {
+    run(zipBin, ['-qry', zipPath, path.basename(folderPath)], { cwd: path.dirname(folderPath) });
+    return;
   }
-  run(zipBin, ['-qry', zipPath, path.basename(folderPath)], { cwd: path.dirname(folderPath) });
+  // Fallback: PowerShell on Windows
+  if (process.platform === 'win32') {
+    console.log('Using PowerShell Compress-Archive for zip…');
+    run('powershell', [
+      '-NoProfile', '-Command',
+      `Compress-Archive -Force -Path '${folderPath}' -DestinationPath '${zipPath}'`
+    ]);
+    return;
+  }
+  throw new Error('Neither /usr/bin/ditto, zip, nor PowerShell is available to create pbrain-web-backend.zip');
 }
 
 if (prebuiltDir) {

@@ -31,9 +31,6 @@ jobs:
             label: linux
 
     runs-on: ${{ matrix.platform }}
-    defaults:
-      run:
-        working-directory: .
 
     steps:
       - name: Checkout
@@ -76,18 +73,33 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev
 
-      # ── Install frontend deps ────────────────────────────────
-      - name: Install npm dependencies
+      # ── Install root (frontend) npm deps ─────────────────────
+      - name: Install frontend npm dependencies
         run: npm ci
 
-      # ── Build Tauri app (prepare.mjs builds frontend + backend) ─
+      # ── Build frontend (vite) ────────────────────────────────
+      - name: Build frontend
+        run: npm run build
+
+      # ── Install tauri-launcher npm deps (skip lifecycle) ─────
+      - name: Install tauri-launcher dependencies
+        working-directory: tauri-launcher
+        run: npm install --ignore-scripts
+
+      # ── Build backend with PyInstaller & zip it ──────────────
+      - name: Install Python backend dependencies
+        run: pip install -r backend/dev-requirements.txt
+
+      - name: Build backend via prepare.mjs
+        working-directory: tauri-launcher
+        run: node scripts/prepare.mjs
+        env:
+          PBRAIN_SKIP_FRONTEND_BUILD: "1"
+
+      # ── Build Tauri app ──────────────────────────────────────
       - name: Build Tauri app
         working-directory: tauri-launcher
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
-        run: |
-          npm install
-          npx tauri build --target ${{ matrix.target }}
+        run: npx tauri build --target ${{ matrix.target }} --ci
 
       # ── Collect artifacts ────────────────────────────────────
       - name: Collect Windows artifacts
@@ -96,10 +108,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
           $base = "tauri-launcher/src-tauri/target/${{ matrix.target }}/release/bundle"
-          # MSI installer
           Get-ChildItem "$base/msi/*.msi" -ErrorAction SilentlyContinue |
             Copy-Item -Destination artifacts/
-          # NSIS installer (.exe)
           Get-ChildItem "$base/nsis/*.exe" -ErrorAction SilentlyContinue |
             Copy-Item -Destination artifacts/
 
