@@ -1,0 +1,148 @@
+name: Build & Release Tauri App
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.6)"
+        required: true
+        default: "v1.2.6"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            label: macos-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Node.js ──────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # ── Python (for PyInstaller backend) ─────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── Rust ─────────────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-launcher/src-tauri -> target
+
+      # ── Linux system deps (WebKitGTK etc.) ───────────────────
+      - name: Install Linux dependencies
+        if: matrix.label == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      # ── Install frontend deps ────────────────────────────────
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── Build Tauri app (prepare.mjs builds frontend + backend) ─
+      - name: Build Tauri app
+        working-directory: tauri-launcher
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+        run: |
+          npm install
+          npx tauri build --target ${{ matrix.target }}
+
+      # ── Collect artifacts ────────────────────────────────────
+      - name: Collect Windows artifacts
+        if: matrix.label == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          $base = "tauri-launcher/src-tauri/target/${{ matrix.target }}/release/bundle"
+          # MSI installer
+          Get-ChildItem "$base/msi/*.msi" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination artifacts/
+          # NSIS installer (.exe)
+          Get-ChildItem "$base/nsis/*.exe" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination artifacts/
+
+      - name: Collect macOS artifacts
+        if: startsWith(matrix.label, 'macos')
+        run: |
+          mkdir -p artifacts
+          base="tauri-launcher/src-tauri/target/${{ matrix.target }}/release/bundle"
+          cp "$base"/dmg/*.dmg artifacts/ 2>/dev/null || true
+
+      - name: Collect Linux artifacts
+        if: matrix.label == 'linux'
+        run: |
+          mkdir -p artifacts
+          base="tauri-launcher/src-tauri/target/${{ matrix.target }}/release/bundle"
+          cp "$base"/deb/*.deb artifacts/ 2>/dev/null || true
+          cp "$base"/appimage/*.AppImage artifacts/ 2>/dev/null || true
+          cp "$base"/rpm/*.rpm artifacts/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: p-brain-${{ matrix.label }}
+          path: artifacts/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lhR release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: "p-brain ${{ github.event.inputs.tag }}"
+          draft: true
+          generate_release_notes: true
+          files: release-assets/*
