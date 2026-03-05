@@ -655,6 +655,26 @@ export class BackendEngineAPI {
     });
   }
 
+  async installFreeSurfer(
+    installDir: string,
+    version?: string
+  ): Promise<{ ok: boolean; freesurferHome: string; alreadyInstalled: boolean }> {
+    return api<{ ok: boolean; freesurferHome: string; alreadyInstalled: boolean }>(
+      '/system/deps/freesurfer/install',
+      {
+        method: 'POST',
+        body: JSON.stringify({ installDir, version: version || '8.1.0' }),
+      }
+    );
+  }
+
+  async installDcm2niix(): Promise<{ ok: boolean; path: string; alreadyInstalled: boolean }> {
+    return api<{ ok: boolean; path: string; alreadyInstalled: boolean }>(
+      '/system/deps/dcm2niix/install',
+      { method: 'POST', body: JSON.stringify({}) }
+    );
+  }
+
   async getProject(id: string): Promise<Project | undefined> {
     return api<Project>(`/projects/${encodeURIComponent(id)}`);
   }

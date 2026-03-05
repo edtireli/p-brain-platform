@@ -20,6 +20,7 @@ export interface AppSettings {
   pbrainMainPy: string;
   fastsurferDir: string;
   freesurferHome: string;
+  segmentationMethod: SegmentationMethod;
 }
 
 export interface SystemDeps {
@@ -30,11 +31,17 @@ export interface SystemDeps {
   freesurfer: {
     reconAll: string;
     freesurferHome: string;
+    version: string;
     ok: boolean;
   };
   fastsurfer: {
     fastsurferDir: string;
     runScript: string;
+    ok: boolean;
+  };
+  dcm2niix: {
+    path: string;
+    version: string;
     ok: boolean;
   };
 }
@@ -128,6 +135,8 @@ export type PkModel =
   | 'both';
 
 export type T1FitMode = 'auto' | 'ir' | 'vfa' | 'none';
+
+export type SegmentationMethod = 'fastsurfer' | 'freesurfer' | 'synthseg' | 'recon-all';
 
 export interface CtcConfig {
   model: CtcModel;
@@ -236,6 +245,10 @@ export interface PipelineConfig {
     // How to summarize tissue/segmentation ROI voxels into representative curves/values.
     // Matches p-brain env: P_BRAIN_TISSUE_ROI_AGGREGATION=mean|median
     roiAggregation?: 'mean' | 'median';
+
+    // Segmentation method: fastsurfer (default), freesurfer (auto-selects
+    // synthseg for FS >= 8 or recon-all for FS < 8), synthseg, recon-all.
+    segmentationMethod?: SegmentationMethod;
   };
   voxelwise: {
     enabled: boolean;

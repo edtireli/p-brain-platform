@@ -447,10 +447,21 @@ class SystemDepsResponse(BaseModel):
     pbrainMainPy: Dict[str, Any]
     freesurfer: Dict[str, Any]
     fastsurfer: Dict[str, Any]
+    dcm2niix: Dict[str, Any]
 
 
 class InstallFastSurferRequest(BaseModel):
     installDir: str
+
+
+class InstallFreeSurferRequest(BaseModel):
+    installDir: str
+    version: str = "7.4.1"
+
+
+class InstallDcm2niixRequest(BaseModel):
+    """Install dcm2niix via Homebrew (macOS) or direct download."""
+    pass
 
 
 class ScanSystemDepsRequest(BaseModel):
@@ -1043,6 +1054,14 @@ def _apply_project_pbrain_env_overrides(env: Dict[str, str], project: Project) -
         agg = str(tissue_cfg.get("roiAggregation") or "").strip().lower()
         if agg in {"mean", "median"}:
             env["P_BRAIN_TISSUE_ROI_AGGREGATION"] = agg
+    except Exception:
+        pass
+
+    # Segmentation method (project-level override)
+    try:
+        seg = str(tissue_cfg.get("segmentationMethod") or "").strip().lower()
+        if seg in {"fastsurfer", "freesurfer", "synthseg", "recon-all"}:
+            env["P_BRAIN_SEGMENTATION_METHOD"] = seg
     except Exception:
         pass
 
@@ -4771,6 +4790,17 @@ def _run_with_heartbeat(label: str, fn, *, heartbeat_s: float = 30.0, watch_path
 def _preamble(subject_id: str, data_root: str):
     data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(subject_id, data_root)
     filenames = global_filenames(nifti_directory)
+
+    # Inject web-app settings overrides into the settings module so that
+    # global_parameters() picks them up (e.g. segmentationMethod).
+    web_settings = _get_settings()
+    # Project-level override (from tissue config) takes priority over global.
+    seg_method = os.environ.get("P_BRAIN_SEGMENTATION_METHOD", "").strip()
+    if not seg_method:
+        seg_method = (web_settings.get("segmentationMethod") or "").strip()
+    if seg_method:
+        settings.SEGMENTATION_METHOD = seg_method
+
     parameters = global_parameters()
 
     # This matches main.py ordering and is expected to be idempotent.
@@ -5154,7 +5184,7 @@ def main() -> int:
                 return 0
             fastsurfer_path = _fastsurfer_run_sh()
             os.makedirs(seg_dir, exist_ok=True)
-            print('[segmentation] Running FastSurfer + mask generation')
+            print(f'[segmentation] Running segmentation (method={SEGMENTATION_METHOD})')
             AIT.segmentation(
                 fastsurfer_path,
                 seg_mgz_path,
@@ -5968,6 +5998,7 @@ def _get_settings() -> Dict[str, Any]:
         "pbrainMainPy": str(s.get("pbrainMainPy") or ""),
         "fastsurferDir": str(s.get("fastsurferDir") or ""),
         "freesurferHome": str(s.get("freesurferHome") or ""),
+        "segmentationMethod": str(s.get("segmentationMethod") or "fastsurfer"),
         "pbrainT1Fit": str(s.get("pbrainT1Fit") or ""),
         "pbrainVfaGlob": str(s.get("pbrainVfaGlob") or ""),
     }
@@ -5986,6 +6017,7 @@ def _set_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
         "pbrainMainPy",
         "fastsurferDir",
         "freesurferHome",
+        "segmentationMethod",
         "pbrainT1Fit",
         "pbrainVfaGlob",
     ]:
@@ -6043,6 +6075,33 @@ def _system_deps() -> Dict[str, Any]:
     fs_home_ok = bool(fs_home) and Path(fs_home).expanduser().exists()
     freesurfer_ok = bool(recon_all) or fs_home_ok
 
+    # Try to detect FreeSurfer version from build-stamp.txt
+    fs_version = ""
+    if fs_home:
+        stamp = Path(fs_home) / "build-stamp.txt"
+        if stamp.is_file():
+            try:
+                import re as _re
+                text = stamp.read_text().strip()
+                m = _re.search(r"(\d+\.\d+\.\d+)", text)
+                if m:
+                    fs_version = m.group(1)
+            except Exception:
+                pass
+    if not fs_version and recon_all:
+        try:
+            import re as _re
+            r = subprocess.run(
+                [recon_all, "--version"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=10,
+            )
+            m = _re.search(r"(\d+\.\d+\.\d+)", r.stdout or "")
+            if m:
+                fs_version = m.group(1)
+        except Exception:
+            pass
+
     # FastSurfer
     fastsurfer_dir = (s.get("fastsurferDir") or "").strip()
     run_sh = ""
@@ -6052,6 +6111,37 @@ def _system_deps() -> Dict[str, Any]:
             run_sh = str(candidate)
     fastsurfer_ok = bool(run_sh)
 
+    # dcm2niix
+    dcm2niix_path = shutil.which("dcm2niix")
+    if not dcm2niix_path:
+        for p in (
+            "/opt/homebrew/bin/dcm2niix",
+            "/usr/local/bin/dcm2niix",
+            "/opt/local/bin/dcm2niix",
+        ):
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                dcm2niix_path = p
+                break
+    dcm2niix_ok = bool(dcm2niix_path)
+
+    # Try to get dcm2niix version
+    dcm2niix_version = ""
+    if dcm2niix_path:
+        try:
+            r = subprocess.run(
+                [dcm2niix_path, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+            )
+            for line in (r.stdout or "").strip().splitlines():
+                if line.strip():
+                    dcm2niix_version = line.strip()
+                    break
+        except Exception:
+            pass
+
     return {
         "pbrainMainPy": {
             "configured": pbrain_main,
@@ -6060,12 +6150,18 @@ def _system_deps() -> Dict[str, Any]:
         "freesurfer": {
             "reconAll": recon_all or "",
             "freesurferHome": fs_home,
+            "version": fs_version,
             "ok": freesurfer_ok,
         },
         "fastsurfer": {
             "fastsurferDir": fastsurfer_dir,
             "runScript": run_sh,
             "ok": fastsurfer_ok,
+        },
+        "dcm2niix": {
+            "path": dcm2niix_path or "",
+            "version": dcm2niix_version,
+            "ok": dcm2niix_ok,
         },
     }
 
@@ -6428,6 +6524,226 @@ def install_fastsurfer(req: InstallFastSurferRequest) -> Dict[str, Any]:
 
     _set_settings({"fastsurferDir": str(target)})
     return {"ok": True, "fastsurferDir": str(target)}
+
+
+@app.post("/system/deps/freesurfer/install")
+def install_freesurfer(req: InstallFreeSurferRequest) -> Dict[str, Any]:
+    """Download and install FreeSurfer on macOS.
+
+    This downloads the official FreeSurfer .pkg installer from Harvard and runs
+    it via the macOS ``installer`` command.  The .pkg always installs into
+    ``/Applications/freesurfer/<version>``, so the *installDir* from the
+    request is only used as a scratch directory for the download.
+
+    Version notes:
+    - 8.x builds are available for both arm64 (Apple Silicon) and x86_64.
+    - 7.4.1 only ships an x86_64 .pkg (runs under Rosetta 2 on Apple Silicon).
+    We default to 8.1.0 (latest with native arm64 support).
+    """
+    import platform
+    import urllib.request
+
+    scratch_dir = Path(req.installDir).expanduser().resolve()
+    version = (req.version or "8.1.0").strip()
+
+    if platform.system() != "Darwin":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Automatic FreeSurfer install is only supported on macOS. "
+                "Please download FreeSurfer manually from "
+                "https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall"
+            ),
+        )
+
+    # Check if already installed
+    for candidate in [
+        Path("/Applications/freesurfer") / version,
+        Path("/Applications/freesurfer"),
+    ]:
+        if (candidate / "bin" / "recon-all").exists():
+            _set_settings({"freesurferHome": str(candidate)})
+            return {"ok": True, "freesurferHome": str(candidate), "alreadyInstalled": True}
+
+    # Determine the correct architecture for the download URL.
+    # FreeSurfer 7.x only has x86_64 .pkg builds; arm64 first appeared in 8.0.0.
+    arch = platform.machine()  # arm64 or x86_64
+    major = 0
+    try:
+        major = int(version.split(".")[0])
+    except (ValueError, IndexError):
+        pass
+
+    if arch == "arm64" and major >= 8:
+        pkg_arch = "darwin_arm64"
+    else:
+        # For 7.x or x86_64 machines, always use the x86_64 build.
+        # On Apple Silicon this runs under Rosetta 2.
+        pkg_arch = "darwin_x86_64"
+
+    pkg_url = (
+        f"https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/"
+        f"{version}/freesurfer-macOS-{pkg_arch}-{version}.pkg"
+    )
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    pkg_path = scratch_dir / f"freesurfer-{version}.pkg"
+
+    try:
+        urllib.request.urlretrieve(pkg_url, str(pkg_path))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download FreeSurfer from {pkg_url}: {e}",
+        )
+
+    # Install the .pkg.
+    # The macOS ``installer`` command requires ``-target`` to be a *volume*
+    # mount-point (e.g. ``/``), NOT an arbitrary directory.  FreeSurfer's
+    # .pkg always installs into /Applications/freesurfer/<version> on the
+    # target volume.
+    try:
+        subprocess.run(
+            ["installer", "-pkg", str(pkg_path), "-target", "/"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        out = (e.stdout or "").strip()
+        raise HTTPException(
+            status_code=500,
+            detail=f"FreeSurfer .pkg install failed (exit {e.returncode}): {out[-800:]}",
+        )
+
+    # Locate FREESURFER_HOME.
+    # The .pkg puts files under /Applications/freesurfer (with or without a
+    # version subdirectory depending on the build).
+    possible_homes = [
+        Path("/Applications/freesurfer") / version,
+        Path("/Applications/freesurfer"),
+    ]
+    found_home = ""
+    for p in possible_homes:
+        if (p / "bin" / "recon-all").exists():
+            found_home = str(p)
+            break
+    if not found_home:
+        # Broader fallback – some .pkg builds drop into /Applications directly
+        for p in Path("/Applications").glob("freesurfer*"):
+            if (p / "bin" / "recon-all").exists():
+                found_home = str(p)
+                break
+            if p.is_dir():
+                for sub in p.iterdir():
+                    if sub.is_dir() and (sub / "bin" / "recon-all").exists():
+                        found_home = str(sub)
+                        break
+            if found_home:
+                break
+
+    # Clean up the downloaded .pkg
+    try:
+        pkg_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    if not found_home:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "FreeSurfer .pkg installed but recon-all was not found. "
+                "Check /Applications/freesurfer/."
+            ),
+        )
+
+    _set_settings({"freesurferHome": found_home})
+    return {"ok": True, "freesurferHome": found_home, "alreadyInstalled": False}
+
+
+@app.post("/system/deps/dcm2niix/install")
+def install_dcm2niix(req: InstallDcm2niixRequest) -> Dict[str, Any]:
+    """Install dcm2niix.
+
+    Strategy:
+    - macOS: try ``brew install dcm2niix`` (Homebrew is the standard way).
+    - Fallback: download a pre-built binary from the dcm2niix GitHub releases.
+    """
+    import platform
+
+    # Check if already available
+    existing = shutil.which("dcm2niix")
+    if existing:
+        return {"ok": True, "path": existing, "alreadyInstalled": True}
+
+    system = platform.system()
+
+    # macOS: prefer Homebrew
+    if system == "Darwin":
+        brew = shutil.which("brew")
+        if brew:
+            try:
+                subprocess.run(
+                    [brew, "install", "dcm2niix"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                path = shutil.which("dcm2niix")
+                if path:
+                    return {"ok": True, "path": path, "alreadyInstalled": False}
+            except subprocess.CalledProcessError as e:
+                out = (e.stdout or "").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"brew install dcm2niix failed: {out[-800:]}",
+                )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Homebrew is not installed. Please install Homebrew first "
+                    "(https://brew.sh) then run: brew install dcm2niix"
+                ),
+            )
+
+    # Linux: try conda / pip / direct download
+    if system == "Linux":
+        for pm in ["conda", "pip3", "pip"]:
+            pm_path = shutil.which(pm)
+            if pm_path:
+                try:
+                    if "conda" in pm:
+                        subprocess.run(
+                            [pm_path, "install", "-y", "-c", "conda-forge", "dcm2niix"],
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
+                    else:
+                        subprocess.run(
+                            [pm_path, "install", "dcm2niix"],
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
+                    path = shutil.which("dcm2niix")
+                    if path:
+                        return {"ok": True, "path": path, "alreadyInstalled": False}
+                except subprocess.CalledProcessError:
+                    continue
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Could not install dcm2niix automatically. "
+            "Please install it manually: https://github.com/rordenlab/dcm2niix#install"
+        ),
+    )
 
 
 def _frontend_dist_dir() -> Optional[Path]:

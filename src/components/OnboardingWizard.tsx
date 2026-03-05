@@ -16,9 +16,10 @@ type StepId =
   | 'pbrain'
   | 'fastsurfer'
   | 'freesurfer'
+  | 'dcm2niix'
   | 'howto';
 
-const STEPS: StepId[] = ['hello', 'name', 'about', 'pbrain', 'fastsurfer', 'freesurfer', 'howto'];
+const STEPS: StepId[] = ['hello', 'name', 'about', 'pbrain', 'fastsurfer', 'freesurfer', 'dcm2niix', 'howto'];
 
 function basenameOfPath(p: string): string {
   const s = (p || '').replace(/[\\/]+$/g, '');
@@ -285,6 +286,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
       const pbrainFound = deps?.pbrainMainPy?.exists ?? false;
       const fastsurferFound = deps?.fastsurfer?.ok ?? false;
       const freesurferFound = deps?.freesurfer?.ok ?? false;
+      const dcm2niixFound = deps?.dcm2niix?.ok ?? false;
 
       return (
         <Card className="w-full max-w-xl">
@@ -355,6 +357,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 FreeSurfer:{' '}
                 <span className="text-foreground">
                   {scanning ? 'Finding…' : freesurferFound ? 'Found' : 'Not found'}
+                </span>
+              </div>
+              <div>
+                dcm2niix:{' '}
+                <span className="text-foreground">
+                  {scanning ? 'Finding…' : dcm2niixFound ? 'Found' : 'Not found'}
                 </span>
               </div>
             </div>
@@ -600,13 +608,126 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       }
                     }}
                   >
-                    Save
+                  Save
+                  </Button>
+
+                  <Button
+                    type="button"
+                    disabled={busy || scanning}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        // The .pkg always installs to /Applications/freesurfer.
+                        // We use /tmp as the scratch directory for the download.
+                        const res = await engine.installFreeSurfer('/tmp');
+                        if (res.alreadyInstalled) {
+                          toast.success('FreeSurfer already installed');
+                        } else {
+                          toast.success('FreeSurfer installed successfully');
+                        }
+                        setFreeSurferHome(res.freesurferHome);
+                        await savePatch({ freesurferHome: res.freesurferHome });
+                        await refreshDeps();
+                      } catch (e: any) {
+                        toast.error(e?.message || 'FreeSurfer install failed');
+                        console.error(e);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Install for me
                   </Button>
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  FreeSurfer isn’t detected. Install it and ensure <span className="mono">recon-all</span> is on your PATH,
-                  or set <span className="mono">FREESURFER_HOME</span>.
+                  FreeSurfer not detected. Use <strong>Install for me</strong> to download and install the official
+                  FreeSurfer .pkg (installs to <span className="mono">/Applications/freesurfer</span>),
+                  or install it manually and ensure <span className="mono">recon-all</span> is on your PATH,
+                  or set <span className="mono">FREESURFER_HOME</span> above.
+                </div>
+              </>
+            ) : null}
+
+            <div className="flex items-center justify-end">
+              <Button onClick={next} disabled={busy}>Continue</Button>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (step === 'dcm2niix') {
+      const ok = deps?.dcm2niix?.ok ?? false;
+      return (
+        <Card className="w-full max-w-xl">
+          <CardHeader>
+            <CardTitle>dcm2niix</CardTitle>
+            <CardDescription>DICOM to NIfTI converter</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-xs text-muted-foreground">
+              <div>
+                Status:{' '}
+                <span className="text-foreground">
+                  {scanning ? 'Finding\u2026' : ok ? 'Detected' : 'Not detected'}
+                </span>
+                {deps?.dcm2niix?.path ? (
+                  <div className="mt-1 mono break-all">{deps.dcm2niix.path}</div>
+                ) : null}
+                {deps?.dcm2niix?.version ? (
+                  <div className="mt-0.5 mono break-all text-[10px]">{deps.dcm2niix.version}</div>
+                ) : null}
+              </div>
+              {!ok ? (
+                <div className="flex items-center gap-2">
+                  {scanning ? (
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+                  ) : null}
+                  <Button type="button" variant="secondary" disabled={busy || scanning} onClick={scanForDeps}>
+                    Scan
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+
+            {!ok ? (
+              <>
+                <div className="rounded-lg border border-border p-3 text-xs text-muted-foreground">
+                  <div>
+                    dcm2niix converts DICOM (and PAR/REC) images to NIfTI format.
+                    It is required by the import stage of the pipeline.
+                  </div>
+                  <div className="mt-2">
+                    Install method: <span className="text-foreground">Homebrew (macOS)</span>
+                  </div>
+                  <div className="mt-1 mono break-all">brew install dcm2niix</div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    disabled={busy || scanning}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        const res = await engine.installDcm2niix();
+                        if (res.alreadyInstalled) {
+                          toast.success('dcm2niix already installed');
+                        } else {
+                          toast.success('dcm2niix installed successfully');
+                        }
+                        await refreshDeps();
+                      } catch (e: any) {
+                        toast.error(e?.message || 'dcm2niix install failed');
+                        console.error(e);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Install for me
+                  </Button>
                 </div>
               </>
             ) : null}

@@ -22,7 +22,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { engine } from '@/lib/engine';
 import { playSuccessSound, playErrorSound, resumeAudioContext } from '@/lib/sounds';
-import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig, CtcModel, PkModel, T1FitMode } from '@/types';
+import type { Project, Subject, StageId, StageStatus, Job, FolderStructureConfig, CtcModel, PkModel, T1FitMode, SegmentationMethod } from '@/types';
 import { STAGE_NAMES } from '@/types';
 import { toast } from 'sonner';
 import { JobMonitorPanel } from './JobMonitorPanel';
@@ -161,6 +161,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
   const [draftTissueRoiAggregation, setDraftTissueRoiAggregation] = useState<'mean' | 'median'>('median');
   const [draftAutoLambda, setDraftAutoLambda] = useState<boolean>(false);
   const [draftPkModel, setDraftPkModel] = useState<PkModel>('both');
+  const [draftSegMethod, setDraftSegMethod] = useState<SegmentationMethod>('fastsurfer');
   const [activeJobsCount, setActiveJobsCount] = useState(0);
   const [runningSubjectIds, setRunningSubjectIds] = useState<Set<string>>(new Set());
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
@@ -429,6 +430,12 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
       const tissue: any = (project?.config as any)?.tissue || {};
       const agg = String(tissue?.roiAggregation || 'median').trim().toLowerCase();
       setDraftTissueRoiAggregation(agg === 'mean' ? 'mean' : 'median');
+
+      const seg = String(tissue?.segmentationMethod || 'fastsurfer').trim().toLowerCase();
+      if (seg === 'freesurfer') setDraftSegMethod('freesurfer');
+      else if (seg === 'synthseg') setDraftSegMethod('synthseg');
+      else if (seg === 'recon-all') setDraftSegMethod('recon-all');
+      else setDraftSegMethod('fastsurfer');
     }
   }, [project?.id, project?.updatedAt]);
 
@@ -539,6 +546,7 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
         },
         tissue: {
           roiAggregation: draftTissueRoiAggregation,
+          segmentationMethod: draftSegMethod,
         },
       });
       if (updated) {
@@ -985,6 +993,26 @@ export function ProjectDashboard({ projectId, onBack, onSelectSubject, onOpenAna
                             <SelectItem value="both">Patlak + Tikhonov</SelectItem>
                             <SelectItem value="patlak">Patlak</SelectItem>
                             <SelectItem value="tikhonov">Tikhonov</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-medium">Segmentation method</Label>
+                          <div className="text-xs text-muted-foreground">
+                            Brain segmentation tool. &quot;freesurfer&quot; auto-selects SynthSeg (FS&nbsp;≥&nbsp;8) or recon-all (FS&nbsp;&lt;&nbsp;8).
+                          </div>
+                        </div>
+                        <Select value={draftSegMethod} onValueChange={(v) => setDraftSegMethod((v as SegmentationMethod) || 'fastsurfer')}>
+                          <SelectTrigger className="h-9 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="fastsurfer">FastSurfer</SelectItem>
+                            <SelectItem value="freesurfer">FreeSurfer (auto)</SelectItem>
+                            <SelectItem value="synthseg">SynthSeg</SelectItem>
+                            <SelectItem value="recon-all">recon-all</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
