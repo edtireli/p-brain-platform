@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FolderPlus, Folder, Calendar, HardDrive, UploadSimple, DotsThreeVertical, PencilSimple, Trash } from '@phosphor-icons/react';
+import { FolderPlus, Folder, Calendar, HardDrive, UploadSimple, DotsThreeVertical, PencilSimple, Trash, ArrowsClockwise } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -108,6 +108,7 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
   const [editStoragePath, setEditStoragePath] = useState('');
   const [isPickingFolder, setIsPickingFolder] = useState(false);
   const [firstName, setFirstName] = useState<string>('');
+  const [isRestarting, setIsRestarting] = useState(false);
 
   const subjectIdRe = /^\d{8}x\d+$/i;
 
@@ -715,7 +716,49 @@ export function ProjectsPage({ onSelectProject }: ProjectsPageProps) {
             <p className="mt-1 text-sm text-muted-foreground">Advanced neuroimaging analysis platform</p>
           </div>
 
-          <div />
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground"
+              disabled={isRestarting}
+              onClick={async () => {
+                setIsRestarting(true);
+                try {
+                  await engine.restartBackend();
+                  toast.message('Restarting backend…');
+                  // Poll health until the backend is back (Tauri watchdog respawns it).
+                  let healthUrl = '';
+                  try {
+                    const { getBackendBaseUrl } = await import('@/lib/backend-engine');
+                    healthUrl = `${getBackendBaseUrl().replace(/\/+$/, '')}/health`;
+                  } catch {
+                    healthUrl = `${(window as any).__PBRAIN_BACKEND_URL ?? 'http://127.0.0.1:8787'}/health`;
+                  }
+                  let ready = false;
+                  for (let i = 0; i < 60; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    try {
+                      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(800) });
+                      if (res.ok) { ready = true; break; }
+                    } catch { /* still down */ }
+                  }
+                  if (ready) {
+                    toast.success('Backend restarted');
+                  } else {
+                    toast.error('Backend did not come back — try restarting the app');
+                  }
+                  window.location.reload();
+                } catch (e: any) {
+                  toast.error(e?.message || 'Failed to restart backend');
+                  setIsRestarting(false);
+                }
+              }}
+            >
+              <ArrowsClockwise size={16} className={isRestarting ? 'animate-spin' : ''} />
+              {isRestarting ? 'Restarting…' : 'Restart backend'}
+            </Button>
+          </div>
 
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>

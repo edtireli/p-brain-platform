@@ -12,6 +12,10 @@ use tauri::Manager;
 struct BackendState {
     child: Mutex<Option<Child>>,
     port: Mutex<Option<u16>>,
+    backend_path: Mutex<Option<PathBuf>>,
+    log_path: Mutex<Option<PathBuf>>,
+    /// Set to `true` when we intentionally stop the backend on app exit.
+    stopping: Mutex<bool>,
 }
 
 fn pick_port() -> std::io::Result<u16> {
@@ -245,43 +249,13 @@ fn start_backend(app: &tauri::AppHandle) -> Result<u16, String> {
         })
         .unwrap_or_else(|| std::env::temp_dir().join("pbrain-backend.log"));
 
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .ok();
-
-    let mut cmd = Command::new(&backend_path);
-    cmd.env("PBRAIN_HOST", "127.0.0.1")
-        .env("PBRAIN_PORT", port.to_string())
-        .env("PBRAIN_LOG_LEVEL", "info")
-        .env("PYTHONUNBUFFERED", "1")
-        .stdin(Stdio::null())
-        .stdout(
-            log_file
-                .as_ref()
-                .and_then(|f| f.try_clone().ok())
-                .map_or(Stdio::null(), Stdio::from),
-        )
-        .stderr(
-            log_file
-                .as_ref()
-                .and_then(|f| f.try_clone().ok())
-                .map_or(Stdio::null(), Stdio::from),
-        );
-
-    let child = cmd
-        .spawn()
-        .map_err(|e| {
-            format!(
-                "Failed to start backend: {e} (path: {})",
-                backend_path.display()
-            )
-        })?;
+    let child = spawn_backend_process(&backend_path, port, &log_path)?;
 
     let state = app.state::<BackendState>();
     *state.child.lock().unwrap() = Some(child);
     *state.port.lock().unwrap() = Some(port);
+    *state.backend_path.lock().unwrap() = Some(backend_path.clone());
+    *state.log_path.lock().unwrap() = Some(log_path.clone());
 
     // PyInstaller onefile cold start can be slow (unpacking + heavy imports).
     // Also, the bootloader may transiently spawn intermediate processes.
@@ -326,11 +300,135 @@ fn start_backend(app: &tauri::AppHandle) -> Result<u16, String> {
         std::thread::sleep(Duration::from_millis(250));
     }
 
+    // Start a watchdog thread that respawns the backend if it exits cleanly
+    // (e.g. from a restart request via the UI).
+    start_backend_watchdog(app);
+
     Ok(port)
+}
+
+/// Spawn the backend process and return the `Child`.
+fn spawn_backend_process(
+    backend_path: &PathBuf,
+    port: u16,
+    log_path: &PathBuf,
+) -> Result<Child, String> {
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .ok();
+
+    let mut cmd = Command::new(backend_path);
+    cmd.env("PBRAIN_HOST", "127.0.0.1")
+        .env("PBRAIN_PORT", port.to_string())
+        .env("PBRAIN_LOG_LEVEL", "info")
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::null())
+        .stdout(
+            log_file
+                .as_ref()
+                .and_then(|f| f.try_clone().ok())
+                .map_or(Stdio::null(), Stdio::from),
+        )
+        .stderr(
+            log_file
+                .as_ref()
+                .and_then(|f| f.try_clone().ok())
+                .map_or(Stdio::null(), Stdio::from),
+        );
+
+    cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to start backend: {e} (path: {})",
+            backend_path.display()
+        )
+    })
+}
+
+/// Background thread that watches the backend child process and restarts it
+/// if it exits cleanly (status 0) — this happens when the UI sends
+/// `POST /system/backend/restart`.
+fn start_backend_watchdog(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+
+            let state = handle.state::<BackendState>();
+
+            // If we're shutting down the whole app, don't respawn.
+            if *state.stopping.lock().unwrap() {
+                return;
+            }
+
+            // Check if the child process has exited.
+            let exited: bool = {
+                let mut guard = state.child.lock().unwrap();
+                let did_exit = if let Some(child) = guard.as_mut() {
+                    matches!(child.try_wait(), Ok(Some(_)))
+                } else {
+                    false
+                };
+                if did_exit {
+                    guard.take(); // consume the dead child
+                }
+                did_exit
+            };
+
+            if !exited {
+                continue;
+            }
+
+            // If stopping was set between our check and here, bail out.
+            if *state.stopping.lock().unwrap() {
+                return;
+            }
+
+            // Backend exited — try to respawn.
+            let port = state.port.lock().unwrap().unwrap_or(8787);
+            let backend_path = state.backend_path.lock().unwrap().clone();
+            let log_path = state.log_path.lock().unwrap().clone();
+
+            if let (Some(bp), Some(lp)) = (backend_path, log_path) {
+                eprintln!("Backend exited, respawning on port {port}...");
+
+                // Brief pause to let the old process fully release the port.
+                std::thread::sleep(Duration::from_millis(500));
+
+                match spawn_backend_process(&bp, port, &lp) {
+                    Ok(child) => {
+                        *state.child.lock().unwrap() = Some(child);
+
+                        // Wait for health before notifying the frontend.
+                        if wait_for_health(port, Duration::from_secs(60)) {
+                            // Tell the frontend the backend is ready again.
+                            if let Some(window) = handle.get_webview_window("main") {
+                                let url = format!("http://127.0.0.1:{port}");
+                                let js = format!(
+                                    "window.__PBRAIN_BACKEND_URL = {}; window.dispatchEvent(new Event('pbrain-backend-ready'));",
+                                    serde_json::to_string(&url).unwrap()
+                                );
+                                eval_with_retry(&window, &js, Duration::from_secs(5));
+                            }
+                            eprintln!("Backend respawned successfully on port {port}.");
+                        } else {
+                            eprintln!("Backend respawned but health check timed out.");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to respawn backend: {e}");
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn stop_backend(app: &tauri::AppHandle) {
     let state = app.state::<BackendState>();
+    // Signal the watchdog thread to stop respawning.
+    *state.stopping.lock().unwrap() = true;
     let mut guard = state.child.lock().unwrap();
     if let Some(mut child) = guard.take() {
         let _ = child.kill();

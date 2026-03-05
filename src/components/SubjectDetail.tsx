@@ -66,6 +66,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     >
   >({});
   const [manualRoiSaving, setManualRoiSaving] = useState(false);
+  const [manualRoiSavedAny, setManualRoiSavedAny] = useState(false);
 
   const jobs = useMemo(() => Object.values(jobsById), [jobsById]);
   const hasActiveRun = useMemo(
@@ -390,6 +391,16 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
     return out;
   }, [manualRoiEntry]);
 
+  // Count of unsaved draft voxels in ROI types *other* than the current selection.
+  const unsavedOtherDraftCount = useMemo(() => {
+    let n = 0;
+    for (const [key, entry] of Object.entries(manualRoiDraft)) {
+      if (key === manualRoiKey) continue;
+      for (const s of Object.values(entry.slices || {})) n += Object.keys(s.voxels || {}).length;
+    }
+    return n;
+  }, [manualRoiDraft, manualRoiKey]);
+
   const onManualPaintVoxel = (v: { row: number; col: number; z: number; t: number }) => {
     if (!inputFunctionsWaiting) return;
     const z = Math.max(0, Math.floor(v.z));
@@ -438,6 +449,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
 
       void ensureRoiOverlaysLoaded({ ensureArtifactsIfEmpty: false });
       if (showRoiOverlays) void ensureRoiMasksLoaded();
+      setManualRoiSavedAny(true);
     } finally {
       setManualRoiSaving(false);
     }
@@ -897,7 +909,7 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                       />
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button type="button" variant="secondary" onClick={clearManualRoi} disabled={manualRoiVoxelCount === 0 || manualRoiSaving}>
                         Clear
                       </Button>
@@ -908,11 +920,17 @@ export function SubjectDetail({ subjectId, onBack }: SubjectDetailProps) {
                         type="button"
                         variant="outline"
                         onClick={() => void rerunInputFunctionsWithFileRoi()}
-                        disabled={manualRoiSaving || runningStageId === 'input_functions'}
+                        disabled={manualRoiSaving || runningStageId === 'input_functions' || !manualRoiSavedAny}
+                        title={!manualRoiSavedAny ? 'Save at least one ROI first' : undefined}
                       >
                         Rerun input functions
                       </Button>
                     </div>
+                    {unsavedOtherDraftCount > 0 && (
+                      <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                        ⚠ You have {unsavedOtherDraftCount} unsaved voxel(s) for another ROI type. Switch back and save before rerunning.
+                      </p>
+                    )}
                   </div>
                 </Card>
               ) : null}

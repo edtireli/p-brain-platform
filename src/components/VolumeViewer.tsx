@@ -626,60 +626,8 @@ export function VolumeViewer({
       // ignore paint overlay errors
     }
 
-    if (showRoiOverlays && Array.isArray(roiOverlays) && roiOverlays.length > 0) {
-      try {
-        const stroke = computedCssColor('var(--destructive)', 'rgba(255, 0, 0, 0.95)');
-
-        const start = Math.max(0, sliceZ - 4);
-        const sliceIndices =
-          viewMode === 'grid'
-            ? Array.from({ length: 9 }, (_, i) => Math.min(maxZ, start + i))
-            : [sliceZ];
-
-        ctx.save();
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 3;
-        ctx.globalAlpha = 0.95;
-
-        for (let tile = 0; tile < tilesX * tilesY; tile++) {
-          const tileX = tile % tilesX;
-          const tileY = Math.floor(tile / tilesX);
-          const ox = tileX * width;
-          const oy = tileY * height;
-          const zForTile = sliceIndices[Math.min(tile, sliceIndices.length - 1)] ?? sliceZ;
-
-          const overlaysForSlice = roiOverlays.filter(o => Number(o.sliceIndex) === Number(zForTile));
-          for (const o of overlaysForSlice) {
-            const row0 = Math.max(0, Math.min(height - 1, Number(o.row0)));
-            const row1 = Math.max(0, Math.min(height - 1, Number(o.row1)));
-            const col0 = Math.max(0, Math.min(width - 1, Number(o.col0)));
-            const col1 = Math.max(0, Math.min(width - 1, Number(o.col1)));
-
-            const r0 = Math.min(row0, row1);
-            const r1 = Math.max(row0, row1);
-            const c0 = Math.min(col0, col1);
-            const c1 = Math.max(col0, col1);
-
-            // Canvas y is vertically flipped relative to voxel row index.
-            const x0 = ox + c0;
-            const y0 = oy + (height - 1 - r1);
-            const w = c1 - c0 + 1;
-            const h = r1 - r0 + 1;
-
-            const cx = x0 + w / 2;
-            const cy = y0 + h / 2;
-            const rx = Math.max(2, w / 2);
-            const ry = Math.max(2, h / 2);
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-            ctx.stroke();
-          }
-        }
-        ctx.restore();
-      } catch {
-        // ignore overlay rendering errors
-      }
-    }
+    // ROI overlays are shown via the semi-transparent mask tiles only;
+    // no extra bounding ellipses are drawn.
   };
 
   const updateRoiHover = (clientX: number, clientY: number) => {

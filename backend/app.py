@@ -708,6 +708,108 @@ def _python_env_for_pbrain() -> Dict[str, str]:
             env.setdefault("P_BRAIN_VFA_GLOB", vfa_glob)
     except Exception:
         pass
+
+    # --- FreeSurfer environment ---
+    # GUI-launched processes (Tauri) don't inherit shell env vars set by .zshrc,
+    # so we resolve FREESURFER_HOME from settings / well-known paths and inject
+    # FS_LICENSE so FastSurfer/FreeSurfer can find the license file.
+    try:
+        _s = _get_settings()
+        fs_home = (env.get("FREESURFER_HOME") or _s.get("freesurferHome") or "").strip()
+
+        def _resolve_fs_home(candidate: str) -> str:
+            """If *candidate* is a container dir (no bin/ inside), look for the
+            newest versioned sub-directory (e.g. 7.4.1) that does have bin/."""
+            p = Path(candidate)
+            if not p.is_dir():
+                return candidate
+            if (p / "bin").is_dir():
+                return candidate  # already a real install root
+            # Container dir (e.g. /Applications/freesurfer with 7.4.1/ inside).
+            versions = sorted(
+                (d for d in p.iterdir() if d.is_dir() and d.name[:1].isdigit()),
+                key=lambda d: d.name,
+                reverse=True,
+            )
+            for v in versions:
+                if (v / "bin").is_dir():
+                    return str(v)
+            return candidate  # give up, keep as-is
+
+        if fs_home:
+            # The inherited/configured value may point to a container dir
+            # (e.g. /Applications/freesurfer) rather than the actual install
+            # (e.g. /Applications/freesurfer/7.4.1).  Resolve it.
+            fs_home = _resolve_fs_home(fs_home)
+        else:
+            # Check well-known base directories, including versioned subdirs.
+            _fs_bases = [
+                Path("/Applications/freesurfer"),
+                Path("/usr/local/freesurfer"),
+                Path.home() / "freesurfer",
+            ]
+            for _base in _fs_bases:
+                try:
+                    if not _base.is_dir():
+                        continue
+                    resolved = _resolve_fs_home(str(_base))
+                    if Path(resolved).is_dir() and (Path(resolved) / "bin").is_dir():
+                        fs_home = resolved
+                        break
+                except Exception:
+                    continue
+        if fs_home:
+            env["FREESURFER_HOME"] = fs_home  # always overwrite with resolved value
+            # FreeSurfer tools (mri_convert, mri_synthseg, etc.) live in
+            # $FREESURFER_HOME/bin.  Add it to PATH so subprocess calls find them.
+            fs_bin = str(Path(fs_home) / "bin")
+            cur_path = env.get("PATH", "")
+            if fs_bin not in cur_path.split(os.pathsep):
+                env["PATH"] = fs_bin + os.pathsep + cur_path
+            # FS_LICENSE: FastSurfer requires this to locate the license file.
+            if "FS_LICENSE" not in env:
+                for _lic_name in ("license.txt", ".license", "license.dat"):
+                    _lic = Path(fs_home) / _lic_name
+                    if _lic.is_file():
+                        env["FS_LICENSE"] = str(_lic)
+                        break
+    except Exception:
+        pass
+
+    # --- FSL environment ---
+    # flirt and other FSL tools must be on PATH for axial reconstruction and
+    # coregistration steps.
+    try:
+        fsl_dir = (env.get("FSLDIR") or env.get("FSL_DIR") or "").strip()
+        if not fsl_dir:
+            _fsl_candidates = [
+                Path.home() / "fsl",              # macOS default installer
+                Path("/usr/local/fsl"),            # Linux default
+                Path("/opt/fsl"),                  # alt Linux
+                Path("/opt/homebrew/opt/fsl"),     # Homebrew Apple Silicon
+                Path("/usr/local/opt/fsl"),        # Homebrew Intel
+            ]
+            for _candidate in _fsl_candidates:
+                try:
+                    if _candidate.is_dir() and (_candidate / "bin").is_dir():
+                        fsl_dir = str(_candidate)
+                        break
+                except Exception:
+                    continue
+        if fsl_dir:
+            env.setdefault("FSLDIR", fsl_dir)
+            env.setdefault("FSL_DIR", fsl_dir)
+            # FSLOUTPUTTYPE is required by every FSL command (flirt, fslmaths, …).
+            # The standard installer sets this in fsl.sh; we replicate it here
+            # because Tauri-launched processes never source that script.
+            env.setdefault("FSLOUTPUTTYPE", "NIFTI_GZ")
+            fsl_bin = str(Path(fsl_dir) / "bin")
+            cur_path = env.get("PATH", "")
+            if fsl_bin not in cur_path.split(os.pathsep):
+                env["PATH"] = fsl_bin + os.pathsep + cur_path
+    except Exception:
+        pass
+
     return env
 
 
@@ -2231,14 +2333,17 @@ def _analysis_roi_overlays(subject: Subject) -> List[Dict[str, Any]]:
     and the chosen frame index under:
       Analysis/Frame Data/<type>/<subtype>/frame_index_slice_<N>.npy
 
-    NOTE: p-brain's ROI selection tooling rotates the in-plane axes
-    (np.rot90(..., k=-1, axes=(0, 1))) before saving ROI voxel coordinates.
-    That means the saved coordinates are effectively in a rotated (x, y)
-    frame, not the raw nibabel slice frame.
+    NOTE: p-brain's AI pipeline rotates in-plane axes with
+    ``np.rot90(mri_data, k=-1, axes=(0, 1))`` before inference, and saves ROI
+    voxel coordinates in that rotated frame.  The web save endpoint also
+    converts user-painted native coordinates to the same rotated frame.
 
-    To render these ROIs on slices served by `/volumes/slice` (which returns
-    the raw nibabel in-plane axes), we convert the saved coordinates back into
-    the raw slice frame using the DCE volume shape.
+    To render ROIs on slices served by ``/volumes/slice`` (raw nibabel axes),
+    we convert saved (rotated) coordinates back to the native slice frame using
+    the DCE volume shape:
+        For rot90(k=-1) on array (X, Y) → (Y, X):
+            B[r, c] = A[X-1-c, r]
+        Inverse: native_row = X-1-c_rot,  native_col = r_rot
     """
 
     _require_numpy()
@@ -2250,29 +2355,15 @@ def _analysis_roi_overlays(subject: Subject) -> List[Dict[str, Any]]:
     if not roi_root.exists() or not roi_root.is_dir():
         return []
 
-    # Best-effort: infer in-plane shape from the subject's DCE volume.
-    # This lets us transform rotated ROI coordinates back into the raw slice frame.
+    # Infer in-plane shape from the DCE volume so we can invert the rotation.
     plane_shape: Optional[Tuple[int, int]] = None
     try:
-        root = Path(subject.sourcePath).expanduser().resolve()
-        nifti_dir = root
-        for alt in ("NIfTI", "nifti", "NIFTI"):
-            cand = root / alt
-            if cand.exists() and cand.is_dir():
-                nifti_dir = cand
-                break
-
-        p = (
-            _glob_first(nifti_dir, "*DCE*.nii.gz")
-            or _glob_first(nifti_dir, "*DCE*.nii")
-            or _glob_first(nifti_dir, "*.nii.gz")
-            or _glob_first(nifti_dir, "*.nii")
-        )
-        if p:
-            img = _load_nifti(str(p))
-            sh = tuple(int(x) for x in getattr(img, "shape", ()) or ())
-            if len(sh) >= 2 and sh[0] > 0 and sh[1] > 0:
-                plane_shape = (sh[0], sh[1])
+        project = _find_project(subject.projectId)
+        ref_path = _resolve_default_volume_path(project, subject, "dce")
+        img = _load_nifti(str(ref_path))
+        sh = tuple(int(x) for x in getattr(img, "shape", ()) or ())
+        if len(sh) >= 2 and sh[0] > 0 and sh[1] > 0:
+            plane_shape = (sh[0], sh[1])
     except Exception:
         plane_shape = None
 
@@ -2292,7 +2383,8 @@ def _analysis_roi_overlays(subject: Subject) -> List[Dict[str, Any]]:
             roi_type = str(parts[0])
             roi_subtype = str(parts[1])
 
-            # ROI voxels are saved as 2D integer pairs.
+            # ROI voxels are saved as 2D integer pairs in p-brain's rotated
+            # in-plane frame (after np.rot90(k=-1, axes=(0,1))).
             vox = np.load(str(roi_path))
             arr = np.asarray(vox)
             if arr.ndim != 2 or arr.shape[1] < 2:
@@ -2301,28 +2393,15 @@ def _analysis_roi_overlays(subject: Subject) -> List[Dict[str, Any]]:
             a0 = np.asarray(arr[:, 0], dtype=int)
             a1 = np.asarray(arr[:, 1], dtype=int)
 
-            # If we can infer volume dimensions, map from p-brain's rotated
-            # in-plane frame (x, y) back to raw nibabel slice indices (row, col).
-            # For np.rot90(k=-1): B[i, j] = A[X-1-j, i]  =>  A[row, col] = B[col, X-1-row]
-            # Thus: row = X-1-y, col = x.
+            # Map rotated coords back to native nibabel slice frame.
+            # rot90(k=-1) on (X,Y) → (Y,X):  B[r,c] = A[X-1-c, r]
+            # Inverse: native_row = X-1-c_rot,  native_col = r_rot
             if plane_shape is not None:
-                x_dim, y_dim = plane_shape  # raw slice shape from nibabel: (X, Y)
-                # Only apply the transform if coordinates appear to fall within the rotated bounds.
-                # This is a best-effort heuristic; if it fails we fall back to identity.
-                if (
-                    a0.size > 0
-                    and a1.size > 0
-                    and int(np.min(a0)) >= 0
-                    and int(np.min(a1)) >= 0
-                    and int(np.max(a0)) < y_dim
-                    and int(np.max(a1)) < x_dim
-                ):
-                    rows = (x_dim - 1 - a1).astype(int)
-                    cols = a0.astype(int)
-                else:
-                    rows = a0
-                    cols = a1
+                x_dim = plane_shape[0]  # native dim-0 size
+                rows = (x_dim - 1 - a1).astype(int)
+                cols = a0.astype(int)
             else:
+                # Cannot determine volume shape; fall back to identity (best effort).
                 rows = a0
                 cols = a1
             if rows.size == 0 or cols.size == 0:
@@ -2459,20 +2538,11 @@ def _analysis_roi_mask_volumes(project: Project, subject: Subject) -> List[Dict[
                 if a0.size == 0 or a1.size == 0:
                     continue
 
-                # Map from p-brain's rotated in-plane frame back to raw nibabel slice indices.
-                # For np.rot90(k=-1): A[row, col] = B[col, X-1-row]
-                # Thus: row = X-1-y, col = x.
-                if (
-                    int(np.min(a0)) >= 0
-                    and int(np.min(a1)) >= 0
-                    and int(np.max(a0)) < y_dim
-                    and int(np.max(a1)) < x_dim
-                ):
-                    rows = (x_dim - 1 - a1).astype(int)
-                    cols = a0.astype(int)
-                else:
-                    rows = a0
-                    cols = a1
+                # Voxels are in p-brain's rotated in-plane frame.
+                # Map back to native nibabel indices for the mask volume.
+                # rot90(k=-1) inverse: native_row = X-1-c_rot, native_col = r_rot
+                rows = (x_dim - 1 - a1).astype(int)
+                cols = a0.astype(int)
 
                 # Clamp to bounds.
                 rows = np.clip(rows, 0, x_dim - 1)
@@ -2515,8 +2585,8 @@ def save_subject_roi_voxels(subject_id: str, req: SaveRoiVoxelsRequest) -> Dict[
       Analysis/Frame Data/<roiType>/<roiSubType>/frame_index_slice_<N>.npy
 
     Input voxels are provided in the raw nibabel slice frame as [row, col].
-    p-brain stores ROI coordinates in a rotated in-plane frame (np.rot90(k=-1)).
-    We convert using the DCE volume shape so downstream p-brain stages can consume them.
+    They are converted to p-brain's rotated in-plane frame (np.rot90(k=-1))
+    before saving, so the on-disk format matches AI-generated ROI voxels.
     """
 
     _require_numpy()
@@ -2572,11 +2642,12 @@ def save_subject_roi_voxels(subject_id: str, req: SaveRoiVoxelsRequest) -> Dict[
     if slice_index >= z_dim:
         raise HTTPException(status_code=400, detail=f"sliceIndex out of bounds (0..{max(0, z_dim-1)})")
 
-    # Convert raw [row, col] -> p-brain saved [x, y] in rotated in-plane frame.
-    # Mapping used elsewhere:
-    #   raw row = X-1-y, raw col = x
-    # Inverse:
-    #   x = raw col, y = X-1-raw row
+    # Convert raw [row, col] -> p-brain's rotated in-plane frame.
+    # The viewer serves slices in raw nibabel order (dim-0 = row, dim-1 = col).
+    # p-brain's AI pipeline saves ROI voxels after np.rot90(k=-1, axes=(0,1)):
+    #   B[r,c] = A[X-1-c, r]   (rot90 k=-1 on (X,Y) → (Y,X))
+    # Forward transform (native → rotated):
+    #   rot_r = native_col,  rot_c = X-1 - native_row
     raw_pairs: List[Tuple[int, int]] = []
     for item in (req.voxels or []):
         try:
@@ -2588,7 +2659,10 @@ def save_subject_roi_voxels(subject_id: str, req: SaveRoiVoxelsRequest) -> Dict[
             continue
         if r < 0 or c < 0 or r >= x_dim or c >= y_dim:
             continue
-        raw_pairs.append((r, c))
+        # Convert native (row, col) → rotated (rot_r, rot_c)
+        rot_r = c
+        rot_c = x_dim - 1 - r
+        raw_pairs.append((rot_r, rot_c))
 
     out_vox_path = roi_root / f"ROI_voxels_slice_{slice_index + 1}.npy"
     out_frame_path = frame_root / f"frame_index_slice_{slice_index + 1}.npy"
@@ -2607,11 +2681,7 @@ def save_subject_roi_voxels(subject_id: str, req: SaveRoiVoxelsRequest) -> Dict[
             pass
     else:
         arr = np.asarray(raw_pairs, dtype=np.int64)
-        rows = arr[:, 0]
-        cols = arr[:, 1]
-        xs = cols
-        ys = (x_dim - 1 - rows)
-        saved = np.stack([xs, ys], axis=1).astype(np.int16, copy=False)
+        saved = arr.astype(np.int16, copy=False)
         np.save(str(out_vox_path), saved)
         np.save(str(out_frame_path), np.asarray(int(frame_index), dtype=np.int16))
 
@@ -3453,6 +3523,10 @@ async def _run_pbrain_single_stage(*, project: Project, subject: Subject, job: J
                     "P_BRAIN_STRICT_METADATA",
                     "P_BRAIN_MULTIPROCESSING",
                     "P_BRAIN_CORES",
+                    "FREESURFER_HOME",
+                    "FS_LICENSE",
+                    "FSLDIR",
+                    "FSLOUTPUTTYPE",
                 ]
                 summary = " ".join(f"{k}={env.get(k)!r}" for k in keys if k in env)
                 write_line_sync(f"[{_now_iso()}] ENV: {summary}\n")
@@ -4457,7 +4531,7 @@ def _pbrain_cli_args_with_python(python_exe: str, project: Project, subject: Sub
     return args
 
 
-_STAGE_RUNNER_VERSION = "32"
+_STAGE_RUNNER_VERSION = "34"
 
 
 _STAGE_RUNNER_VERSION_RE = re.compile(r"stage runner \(version:\s*([0-9]+)\)")
@@ -4793,11 +4867,9 @@ def _preamble(subject_id: str, data_root: str):
 
     # Inject web-app settings overrides into the settings module so that
     # global_parameters() picks them up (e.g. segmentationMethod).
-    web_settings = _get_settings()
-    # Project-level override (from tissue config) takes priority over global.
+    # The backend passes project-level settings as environment variables
+    # (P_BRAIN_SEGMENTATION_METHOD etc.) — no db access needed here.
     seg_method = os.environ.get("P_BRAIN_SEGMENTATION_METHOD", "").strip()
-    if not seg_method:
-        seg_method = (web_settings.get("segmentationMethod") or "").strip()
     if seg_method:
         settings.SEGMENTATION_METHOD = seg_method
 
